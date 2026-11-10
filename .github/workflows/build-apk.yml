@@ -20,11 +20,11 @@ on:
     inputs:
       version_name:
         type: string
-        description: "Override versionName (blank = build.gradle default, currently '1.0'). Bump together with version_code for a new release."
+        description: "Override versionName (blank = build.gradle default, currently '1.1'). Bump together with version_code for a new release."
         default: ""
       version_code:
         type: string
-        description: "Override versionCode (blank = build.gradle default, currently 1). Must increase between published releases."
+        description: "Override versionCode (blank = build.gradle default, currently 2). Must increase between published releases."
         default: ""
 
 env:
