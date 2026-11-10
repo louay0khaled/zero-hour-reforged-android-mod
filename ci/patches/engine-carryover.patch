@@ -1,0 +1,61 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/Thing/ThingTemplate.cpp b/GeneralsMD/Code/GameEngine/Source/Common/Thing/ThingTemplate.cpp
+index 778e57f..dc0488a 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/Thing/ThingTemplate.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/Thing/ThingTemplate.cpp
+@@ -786,6 +786,15 @@ void ThingTemplate::parseRemoveModule(INI *ini, void *instance, void *store, con
+ 
+ 	self->m_moduleParsingMode = MODULEPARSE_ADD_REMOVE_REPLACE;
+ 
++	// GeneralsX @bugfix Zero Hour Reforged 10/11/2026 Locomotor carry-over, ported
++	// from the Reforged engine (defect: a replaced AI module took the object's
++	// Locomotor lines with it, since they are stored in the AI module's data).
++	// Snapshot the outgoing AI module's locomotor sets before the replace; the
++	// merge after the parse gives the replacement back every set it did not
++	// state itself.
++	const AIUpdateModuleData *aiBefore = self->friend_getAIModuleInfo();
++	const LocomotorTemplateMap locomotorsBefore = aiBefore ? aiBefore->m_locomotorTemplates : LocomotorTemplateMap();
++
+ 	const char *modToRemove = ini->getNextToken();
+ 	AsciiString removedModuleName;
+ 	Bool removed = self->removeModuleInfo(modToRemove, removedModuleName);
+@@ -811,6 +820,15 @@ void ThingTemplate::parseReplaceModule(INI *ini, void *instance, void *store, co
+ 
+ 	self->m_moduleParsingMode = MODULEPARSE_ADD_REMOVE_REPLACE;
+ 
++	// GeneralsX @bugfix Zero Hour Reforged 10/11/2026 Locomotor carry-over, ported from
++	// the Reforged engine (defect: a replaced AI module took the object's Locomotor
++	// lines with it, since they are stored in the AI module's data). Snapshot the
++	// outgoing AI module's locomotor sets; if the replacement AI module parsed
++	// without any of its own, it inherits them. A replacement that re-states a
++	// set is refused by parseLocomotorSet, exactly as upstream.
++	const AIUpdateModuleData *aiBefore = self->friend_getAIModuleInfo();
++	const LocomotorTemplateMap locomotorsBefore = aiBefore ? aiBefore->m_locomotorTemplates : LocomotorTemplateMap();
++
+ 	const char *modToRemove = ini->getNextToken();
+ 	AsciiString removedModuleName;
+ 	Bool removed = self->removeModuleInfo(modToRemove, removedModuleName);
+@@ -827,6 +845,24 @@ void ThingTemplate::parseReplaceModule(INI *ini, void *instance, void *store, co
+ 	self->m_moduleBeingReplacedName.clear();
+ 	self->m_moduleBeingReplacedTag.clear();
+ 
++	// GeneralsX @bugfix Zero Hour Reforged 10/11/2026 Carry-over (see above): if the
++	// replaced module was the AI module and the replacement AI module parsed in with
++	// no locomotor sets of its own, it inherits the replaced module's sets. Sets the
++	// replacement DOES state merge over the inherited ones (per-set, as Reforged's
++	// data expects: a replacement that re-states only SET_NORMAL must not lose
++	// SET_TAXIING). The merge writes the target's fields directly because
++	// parseLocomotorSet refuses to re-specify a non-empty set outside map overrides.
++	AIUpdateModuleData *aiAfter = self->friend_getAIModuleInfo();
++	if (aiBefore != nullptr && aiAfter != nullptr && aiAfter != aiBefore)
++	{
++		for (LocomotorTemplateMap::const_iterator it = locomotorsBefore.begin(); it != locomotorsBefore.end(); ++it)
++		{
++			LocomotorTemplateMap::iterator dst = aiAfter->m_locomotorTemplates.find(it->first);
++			if (dst == aiAfter->m_locomotorTemplates.end() || dst->second.empty())
++				aiAfter->m_locomotorTemplates[it->first] = it->second;
++		}
++	}
++
+ 	self->m_moduleParsingMode = oldMode;
+ }
+ 
