@@ -17,7 +17,7 @@ every run and applies this repo's small overlay on top:
      packaging script run `assembleRelease` (via `GX_GRADLE_TASK`) and
      checks the release output path.
    - `apply-surgery.py` — new applicationId `com.louay.zerohour.reforged`,
-     version 1 / "1.0", the native hardcoded data paths repointed to the
+     version 2 / "1.1", the native hardcoded data paths repointed to the
      new id, the "Zero Hour Reforged" label in all locales, and the OTA
      update channel pointed at this repo (so upstream engine updates can
      never overwrite the patched build).
@@ -30,8 +30,12 @@ every run and applies this repo's small overlay on top:
        removed; the patched engine carries the sets natively). **Not** the
        same bytes as `packages/!ReforgedFixes-v3.big`, which targets the
        *unpatched* engine.
-     - balance: `packages/!ReforgedBalance-v2.big` — the phone-verified
-       v2 package, byte-identical.
+     - balance: `ci/assets/!ReforgedBalance-v2.big` — the *engine-native*
+       variant of the balance package (the v2 content with its data-side
+       locomotor restatement blocks removed; on the patched engine those
+       restatements throw during INI load and the game does not start).
+       **Not** the same bytes as `packages/!ReforgedBalance-v2.big`, which
+       stays byte-identical for the *unpatched* engine.
 3. **Build** exactly like upstream's own `build-android.yml` (same pinned
    NDK/Gradle/vcpkg/CMake preset `android-vulkan`, arm64), with the v1
    build's target list (both `libmain.so` and `libgenerals.so`) and strip
