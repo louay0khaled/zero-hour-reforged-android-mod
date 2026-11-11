@@ -1,0 +1,897 @@
+diff --git a/Core/GameEngineDevice/Include/W3DDevice/GameClient/Module/W3DModelDraw.h b/Core/GameEngineDevice/Include/W3DDevice/GameClient/Module/W3DModelDraw.h
+index 9defb85..2532842 100644
+--- a/Core/GameEngineDevice/Include/W3DDevice/GameClient/Module/W3DModelDraw.h
++++ b/Core/GameEngineDevice/Include/W3DDevice/GameClient/Module/W3DModelDraw.h
+@@ -54,6 +54,7 @@ public:
+ #include "Common/SparseMatchFinder.h"
+ #include "GameClient/ParticleSys.h"
+ #include "Common/STLTypedefs.h"
++#include "W3DDevice/GameClient/W3DSmoothMotion.h"
+ 
+ // FORWARD REFERENCES /////////////////////////////////////////////////////////////////////////////
+ class Thing;
+@@ -368,6 +369,16 @@ public:
+ 	virtual void reactToTransformChange(const Matrix3D* oldMtx, const Coord3D* oldPos, Real oldAngle) override;
+ 	virtual void reactToGeometryChange() override { }
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion, ported from the Reforged
++	// engine (W3DSmoothMotion.h): W3DDisplay::draw's capture, blend and restore.
++	virtual void smoothMotionCapture(UnsignedInt clientFrame, Bool marked) override;
++	virtual void smoothMotionApply(Real alpha) override;
++	virtual void smoothMotionRestore() override;
++	// Read-only time of the displayed transform, for client effects that estimate motion.
++	Real clientOnly_getRenderMotionSamplePhase() const {
++		return m_smoothMotion.Applied && m_smoothMotion.Model == m_renderObject ? TheSmoothMotionAlpha : 1.0f;
++	}
++
+ 	// this method must ONLY be called from the client, NEVER From the logic, not even indirectly.
+ 	virtual Bool clientOnly_getRenderObjInfo(Coord3D* pos, Real* boundingSphereRadius, Matrix3D* transform) const override;
+ 	virtual Bool clientOnly_getRenderObjBoundBox(OBBoxClass * boundbox) const override;
+@@ -499,6 +510,7 @@ private:
+ 	Bool													m_fullyObscuredByShroud;
+ 	Bool													m_shadowEnabled;	///< cached state of shadow.  Used to determine if shadows should be enabled via options screen.
+ 	RenderObjClass*								m_renderObject;										///< W3D Render object for this drawable
++	SmoothMotionTrack							m_smoothMotion;											///< Smooth motion: this model's last two logic transforms
+ 	Shadow*												m_shadow;													///< Updates/Renders shadows of this object
+ 	Shadow*												m_terrainDecal;
+ 	TerrainTracksRenderObjClass*	m_trackRenderObject;							///< This is rendered under object
+diff --git a/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DSmoothMotion.h b/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DSmoothMotion.h
+new file mode 100644
+index 0000000..ccfe39b
+--- /dev/null
++++ b/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DSmoothMotion.h
+@@ -0,0 +1,256 @@
++/*
++**	Copyright 2026 İlyas Akın
++**	Additional terms under GNU GPL section 7 apply: see LICENSE.md.
++**
++**	This program is free software: you can redistribute it and/or modify
++**	it under the terms of the GNU General Public License as published by
++**	the Free Software Foundation, either version 3 of the License, or
++**	(at your option) any later version.
++**
++**	This program is distributed in the hope that it will be useful,
++**	but WITHOUT ANY WARRANTY; without even the implied warranty of
++**	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++**	GNU General Public License for more details.
++**
++**	You should have received a copy of the GNU General Public License
++**	along with this program.  If not, see <http://www.gnu.org/licenses/>.
++*/
++
++// W3DSmoothMotion.h //////////////////////////////////////////////////////////////////////////////
++// Smooth motion: a render object shown between its last two logic states.
++//
++// Ported from the Reforged engine (olcayseygan/cncgeneralszh-reforged, its "R1" smooth motion) for
++// Zero Hour Reforged.  The host logic ticks at 30 Hz (standard engine) while the client draws at the
++// display rate, up to 120 Hz on the target phone, so each logic state would otherwise stay up for
++// several refreshes, unevenly, under a camera that moves every refresh.  On a display faster than
++// the logic (and without -nosmoothmotion), W3DDisplay::draw keeps each model's last two transforms
++// and, just before the scene renders, sets the render object to a blend of them by the fraction of
++// a tick that has passed since the last one was due (GameEngine_logicTickFraction); right after the
++// render it puts the logic transform back, so picking and the logic (ParticleUplinkCannonUpdate
++// reads live bones) see exactly what they saw before.  The picture is one logic tick behind
++// (33.3 ms at 30 Hz) and the game never changes.
++//
++// Header-only on purpose: W3DModelDraw includes it on every platform, and nothing new has to be
++// listed in a build.
++///////////////////////////////////////////////////////////////////////////////////////////////////
++
++#pragma once
++
++#ifndef __W3DSMOOTHMOTION_H_
++#define __W3DSMOOTHMOTION_H_
++
++#include "matrix3d.h"
++#include "quat.h"
++#include "vector3.h"
++
++#include <math.h>
++#include <string.h>
++
++/// This render pass's blend (W3DDisplay.cpp): whether it is on (a display faster than the logic,
++/// and not headless), and how far between the last two logic ticks the picture is.  W3DView's
++/// camera lock reads them too.
++extern bool TheSmoothMotionActive;
++extern float TheSmoothMotionAlpha;
++
++/// Why a model is shown at its logic transform instead of a blend, one count each per logic tick.
++enum SmoothMotionSnap
++{
++	SMOOTH_BLENDED = 0,			///< not a snap: blended
++	SMOOTH_SNAP_FIRST,			///< no earlier transform: a new drawable, or its first tick seen
++	SMOOTH_SNAP_NEW_MODEL,		///< a new render object (a model state change, a replaced drawable)
++	SMOOTH_SNAP_HIDDEN,			///< hidden in either tick: containment, parachutes, garrison, stealth
++	SMOOTH_SNAP_FRAME_GAP,		///< more than one tick between captures (catch-up, or not seen)
++	SMOOTH_SNAP_DISTANCE,		///< moved further than SMOOTH_SNAP_DISTANCE in one tick
++	SMOOTH_SNAP_ROTATION,		///< turned further than SMOOTH_SNAP_ROTATION in one tick
++	SMOOTH_SNAP_NOT_RIGID,		///< a matrix that is not rotation times scale
++	SMOOTH_SNAP_MARKED,			///< Drawable::markMotionDiscontinuity (a teleport the logic named)
++	SMOOTH_SNAP_COUNT
++};
++
++enum
++{
++	SMOOTH_SNAP_DISTANCE_UNITS = 60,		///< world units per tick; a fast jet moves about 7 a 30 Hz tick, half that at 60
++	SMOOTH_SNAP_ROTATION_DEGREES = 120		///< degrees per tick
++};
++
++inline const char *SmoothMotion_SnapName(SmoothMotionSnap s)
++{
++	static const char *NAMES[SMOOTH_SNAP_COUNT] = { "blended", "first", "new model", "hidden", "frame gap", "distance",
++		"rotation", "not rigid", "marked" };
++	return (s >= 0 && s < SMOOTH_SNAP_COUNT) ? NAMES[s] : "?";
++}
++
++/// Per-tick counts of how each captured model was treated, for the snap rules' tuning.
++inline unsigned long long *SmoothMotion_Counts()
++{
++	static unsigned long long counts[SMOOTH_SNAP_COUNT] = { 0 };
++	return counts;
++}
++
++/// The basis of a 3x4 transform split into a pure rotation and its three column scales.  FALSE when
++/// the columns are not orthogonal (shear), or a scale is zero, which a blend must not touch.
++inline bool SmoothMotion_Split(const Matrix3D &m, Matrix3D &rotation, float scale[3])
++{
++	Vector3 axis[3] = { m.Get_X_Vector(), m.Get_Y_Vector(), m.Get_Z_Vector() };
++	for (int i = 0; i < 3; ++i) {
++		scale[i] = axis[i].Length();
++		if (!(scale[i] > 1.0e-6f)) return false;
++		axis[i] /= scale[i];
++	}
++	const float TOLERANCE = 1.0e-3f;
++	if (fabsf(Vector3::Dot_Product(axis[0], axis[1])) > TOLERANCE || fabsf(Vector3::Dot_Product(axis[0], axis[2])) > TOLERANCE
++		|| fabsf(Vector3::Dot_Product(axis[1], axis[2])) > TOLERANCE) {
++		return false;
++	}
++	rotation.Make_Identity();
++	for (int r = 0; r < 3; ++r) {
++		rotation[r][0] = axis[0][r];
++		rotation[r][1] = axis[1][r];
++		rotation[r][2] = axis[2][r];
++	}
++	return true;
++}
++
++/// What a blend between two logic transforms needs, worked out once a tick, so a picture only mixes:
++/// the split, the quaternions and the angle between them cost about as much as the mix itself.
++struct SmoothMotionParts
++{
++	Vector3 From;
++	Vector3 To;
++	Quaternion RotationFrom;
++	Quaternion RotationTo;		///< on RotationFrom's side of the sphere, so the mix turns the short way
++	float Theta;				///< the angle between the two rotations; 0 when they are close enough to mix linearly
++	float OneOverSinTheta;
++	float ScaleFrom[3];
++	float ScaleTo[3];
++};
++
++/// Whether two logic transforms may be blended, and if so their parts.  The rotation mix is WWMath's
++/// Slerp taken apart (its hemisphere flip, its linear threshold, its trig), so a picture comes out
++/// as it did when every picture called Slerp.
++inline SmoothMotionSnap SmoothMotion_Prepare(const Matrix3D &prev, const Matrix3D &cur, SmoothMotionParts &parts)
++{
++	parts.From = prev.Get_Translation();
++	parts.To = cur.Get_Translation();
++	if ((parts.To - parts.From).Length() > (float)SMOOTH_SNAP_DISTANCE_UNITS) {
++		return SMOOTH_SNAP_DISTANCE;
++	}
++	Matrix3D prev_rotation, cur_rotation;
++	if (!SmoothMotion_Split(prev, prev_rotation, parts.ScaleFrom) || !SmoothMotion_Split(cur, cur_rotation, parts.ScaleTo)) {
++		return SMOOTH_SNAP_NOT_RIGID;
++	}
++	parts.RotationFrom = Build_Quaternion(prev_rotation);
++	parts.RotationTo = Build_Quaternion(cur_rotation);
++	const Quaternion &from = parts.RotationFrom;
++	Quaternion &to = parts.RotationTo;
++	float cos_theta = from.X * to.X + from.Y * to.Y + from.Z * to.Z + from.W * to.W;
++	if (cos_theta < 0.0f) {
++		cos_theta = -cos_theta;
++		to.X = -to.X;
++		to.Y = -to.Y;
++		to.Z = -to.Z;
++		to.W = -to.W;
++	}
++	const float turned_degrees = 2.0f * acosf(cos_theta > 1.0f ? 1.0f : cos_theta) * (180.0f / 3.14159265358979f);
++	if (turned_degrees > (float)SMOOTH_SNAP_ROTATION_DEGREES) {
++		return SMOOTH_SNAP_ROTATION;
++	}
++	parts.Theta = 0.0f;
++	parts.OneOverSinTheta = 0.0f;
++	if (1.0f - cos_theta >= WWMATH_EPSILON * WWMATH_EPSILON) {
++		parts.Theta = WWMath::Acos(cos_theta);
++		parts.OneOverSinTheta = 1.0f / WWMath::Sin(parts.Theta);
++	}
++	return SMOOTH_BLENDED;
++}
++
++/// The transform `alpha` of the way from `prev` to `cur` (0 = prev, 1 = cur), from their parts.
++/// Translation is lerped, the rotation slerped, each column's scale lerped.
++inline void SmoothMotion_Pose(const Matrix3D &prev, const Matrix3D &cur, const SmoothMotionParts &parts, float alpha,
++	Matrix3D &out)
++{
++	if (alpha <= 0.0f) { out = prev; return; }
++	if (alpha >= 1.0f) { out = cur; return; }
++	float from_weight = 1.0f - alpha;
++	float to_weight = alpha;
++	if (parts.Theta > 0.0f) {
++		from_weight = WWMath::Sin(parts.Theta - alpha * parts.Theta) * parts.OneOverSinTheta;
++		to_weight = WWMath::Sin(alpha * parts.Theta) * parts.OneOverSinTheta;
++	}
++	Quaternion q;
++	q.X = from_weight * parts.RotationFrom.X + to_weight * parts.RotationTo.X;
++	q.Y = from_weight * parts.RotationFrom.Y + to_weight * parts.RotationTo.Y;
++	q.Z = from_weight * parts.RotationFrom.Z + to_weight * parts.RotationTo.Z;
++	q.W = from_weight * parts.RotationFrom.W + to_weight * parts.RotationTo.W;
++	Matrix3D rotation;
++	Build_Matrix3D(q, rotation);
++	out.Make_Identity();
++	for (int c = 0; c < 3; ++c) {
++		const float s = parts.ScaleFrom[c] + (parts.ScaleTo[c] - parts.ScaleFrom[c]) * alpha;
++		for (int r = 0; r < 3; ++r) out[r][c] = rotation[r][c] * s;
++	}
++	out.Set_Translation(parts.From + (parts.To - parts.From) * alpha);
++}
++
++/// The blend of two logic transforms at `alpha` (0 = prev, 1 = cur) into `out`, or the reason not to
++/// (then `out` is `cur`).
++inline SmoothMotionSnap SmoothMotion_Blend(const Matrix3D &prev, const Matrix3D &cur, float alpha, Matrix3D &out)
++{
++	out = cur;
++	SmoothMotionParts parts;
++	const SmoothMotionSnap snap = SmoothMotion_Prepare(prev, cur, parts);
++	if (snap == SMOOTH_BLENDED) {
++		SmoothMotion_Pose(prev, cur, parts, alpha, out);
++	}
++	return snap;
++}
++
++/// One render object's last two logic transforms, and whether a blend is on it now.
++struct SmoothMotionTrack
++{
++	Matrix3D Prev;
++	Matrix3D Cur;
++	const void *Model;			///< the render object Cur was taken from; another one is a new model
++	unsigned Frame;				///< the client frame Cur was taken on
++	bool HavePrev;
++	bool CurHidden;
++	bool PrevHidden;
++	bool Applied;				///< the render object holds a blend, to be put back
++	bool Still;					///< blended, but Prev and Cur are the same matrix: nothing to blend or put back
++	SmoothMotionSnap Snap;		///< this tick's verdict
++	SmoothMotionParts Parts;	///< Prev to Cur taken apart, when the verdict is a blend
++
++	SmoothMotionTrack() : Model(0), Frame(0), HavePrev(false), CurHidden(false), PrevHidden(false), Applied(false),
++		Still(false), Snap(SMOOTH_SNAP_FIRST) { Prev.Make_Identity(); Cur.Make_Identity(); }
++
++	/// On the first render frame after a tick: the transform the model holds now becomes Cur.  The
++	/// verdict for the whole tick is decided here and counted once.
++	void capture(const Matrix3D &now, const void *model, bool hidden, unsigned frame, bool marked)
++	{
++		const bool same_model = model == Model && Model != 0;
++		const bool next_frame = same_model && frame == Frame + 1;
++		PrevHidden = CurHidden;
++		Prev = Cur;
++		Cur = now;
++		CurHidden = hidden;
++		HavePrev = same_model;
++		Still = false;
++		if (Model == 0) Snap = SMOOTH_SNAP_FIRST;
++		else if (!same_model) Snap = SMOOTH_SNAP_NEW_MODEL;
++		else if (marked) Snap = SMOOTH_SNAP_MARKED;
++		else if (hidden || PrevHidden) Snap = SMOOTH_SNAP_HIDDEN;
++		else if (!next_frame) Snap = SMOOTH_SNAP_FRAME_GAP;
++		else if (memcmp(&Prev, &Cur, sizeof(Matrix3D)) == 0) {
++			// most of a base stands still, and setting a model's transform every picture makes W3D work its
++			// sub-objects out again, so an unmoved model is left alone, and needs no parts
++			Snap = SMOOTH_BLENDED;
++			Still = true;
++		}
++		else Snap = SmoothMotion_Prepare(Prev, Cur, Parts);
++		Model = model;
++		Frame = frame;
++		++SmoothMotion_Counts()[Snap];
++	}
++};
++
++#endif // __W3DSMOOTHMOTION_H_
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.cpp
+index ddcf34c..4a15708 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.cpp
+@@ -3673,6 +3673,56 @@ void W3DModelDraw::reactToTransformChange( const Matrix3D* oldMtx,
+ 	}
+ }
+ 
++//-------------------------------------------------------------------------------------------------
++//-------------------------------------------------------------------------------------------------
++/** Smooth motion (ported from the Reforged engine, W3DSmoothMotion.h): on the first render pass
++	after a logic tick, the transform the render object holds now (doDrawModule's, or
++	reactToTransformChange's for a model out of view) becomes the current one, and the tick's
++	verdict - blend, or show it as it is - is decided and counted. */
++void W3DModelDraw::smoothMotionCapture(UnsignedInt clientFrame, Bool marked)
++{
++	if (m_renderObject == NULL)
++		return;
++	m_smoothMotion.capture(m_renderObject->Get_Transform(), m_renderObject, m_renderObject->Is_Hidden() != 0, clientFrame,
++		marked != FALSE);
++}
++
++//-------------------------------------------------------------------------------------------------
++/** Smooth motion: just before the scene renders, show the render object `alpha` of the way from
++	its previous logic transform to its current one, when this tick's verdict allows it. */
++void W3DModelDraw::smoothMotionApply(Real alpha)
++{
++	if (m_renderObject == NULL || m_smoothMotion.Model != m_renderObject || m_smoothMotion.Snap != SMOOTH_BLENDED)
++		return;
++	// an unmoved model already holds its one transform: shown as blended, nothing set
++	if (m_smoothMotion.Still)
++	{
++		m_smoothMotion.Applied = true;
++		return;
++	}
++	// a whole tick on (a paused game, a pass that fell behind) is the current transform, which it holds
++	if (alpha >= 1.0f)
++		return;
++	// the parts were taken at capture, so a picture only mixes them
++	Matrix3D shown;
++	SmoothMotion_Pose(m_smoothMotion.Prev, m_smoothMotion.Cur, m_smoothMotion.Parts, alpha, shown);
++	m_renderObject->Set_Transform(shown);
++	m_smoothMotion.Applied = true;
++}
++
++//-------------------------------------------------------------------------------------------------
++/** Smooth motion: straight after the render, the logic transform goes back, so picking and
++	anything the logic reads from the render object (ParticleUplinkCannonUpdate's bones) see
++	exactly what they did before. */
++void W3DModelDraw::smoothMotionRestore()
++{
++	if (!m_smoothMotion.Applied)
++		return;
++	m_smoothMotion.Applied = false;
++	if (m_renderObject != NULL && m_smoothMotion.Model == m_renderObject && !m_smoothMotion.Still)
++		m_renderObject->Set_Transform(m_smoothMotion.Cur);
++}
++
+ //-------------------------------------------------------------------------------------------------
+ const ModelConditionInfo* W3DModelDraw::findBestInfo(const ModelConditionFlags& c) const
+ {
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp
+index ce63731..226bb10 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp
+@@ -85,6 +85,7 @@
+ #include "W3DDevice/GameClient/WorldHeightMap.h"
+ #include "W3DDevice/GameClient/W3DAssetManager.h"
+ #include "W3DDevice/GameClient/W3DDisplay.h"
++#include "W3DDevice/GameClient/W3DSmoothMotion.h"
+ #include "W3DDevice/GameClient/W3DScene.h"
+ #include "W3DDevice/GameClient/W3DView.h"
+ #include "d3dx8math.h"
+@@ -1398,6 +1399,10 @@ void W3DView::update()
+ 	}
+ 
+ 	static Real followFactor = -1;
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion, ported from the Reforged
++	// engine: with smooth motion on, the lock aims at the drawable's blended position, except on
++	// a picture a whole tick behind, which captured nothing and would find a stale one.
++	const Bool smoothLock = TheSmoothMotionActive && TheSmoothMotionAlpha < 1.0f;
+ 	ObjectID cameraLock = getCameraLock();
+ 	if (cameraLock == INVALID_ID)
+ 	{
+@@ -1456,6 +1461,14 @@ void W3DView::update()
+ 					// this method must ONLY be called from the client, NEVER From the logic, not even indirectly.
+ 					if (cameraLockDrawable->clientOnly_getFirstRenderObjInfo(&pos, &boundingSphereRadius, &transform))
+ 					{
++						Coord3D shown;
++						if (smoothLock && cameraLockDrawable->getSmoothMotionPosition(TheSmoothMotionAlpha, &shown))
++						{
++							const Coord3D *logicPos = cameraLockDrawable->getPosition();
++							pos.x += shown.x - logicPos->x;
++							pos.y += shown.y - logicPos->y;
++							pos.z += shown.z - logicPos->z;
++						}
+ 						Vector3 zaxis(0,0,1);
+ 
+ 						Vector3 objPos;
+@@ -1483,6 +1496,8 @@ void W3DView::update()
+ 			}
+ 			else
+ 			{	Coord3D objpos = *cameraLockObj->getPosition();
++				if (smoothLock && cameraLockObj->getDrawable() != nullptr)
++					cameraLockObj->getDrawable()->getSmoothMotionPosition(TheSmoothMotionAlpha, &objpos);
+ 				Coord3D curpos = getPosition();
+ 				// don't "snap" directly to the pos, but move there smoothly.
+ 				Real snapThreshSqr = sqr(TheGlobalData->m_partitionCellSize);
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/DrawModule.h b/GeneralsMD/Code/GameEngine/Include/Common/DrawModule.h
+index d2595fc..120de8f 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/DrawModule.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/DrawModule.h
+@@ -90,6 +90,13 @@ public:
+ 	virtual void reactToTransformChange(const Matrix3D* oldMtx, const Coord3D* oldPos, Real oldAngle) = 0;
+ 	virtual void reactToGeometryChange() = 0;
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion, ported from the Reforged
++	// engine (W3DSmoothMotion.h): W3DDisplay::draw's capture, blend and restore.  Only
++	// W3DModelDraw overrides them; every other draw module keeps these empty defaults.
++	virtual void smoothMotionCapture(UnsignedInt /*clientFrame*/, Bool /*marked*/) { }
++	virtual void smoothMotionApply(Real /*alpha*/) { }
++	virtual void smoothMotionRestore() { }
++
+ 	virtual Bool isLaser() const { return false; }
+ 
+ 	// interface acquisition
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/GameEngine.h b/GeneralsMD/Code/GameEngine/Include/Common/GameEngine.h
+index 8fa1ee5..ec2ec4f 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/GameEngine.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/GameEngine.h
+@@ -119,6 +119,14 @@ protected:
+ inline void GameEngine::setQuitting( Bool quitting ) { m_quitting = quitting; }
+ inline Bool GameEngine::getQuitting() { return m_quitting; }
+ 
++/** Smooth motion (ported from the Reforged engine): the renderer's blend reads how far into the
++	next logic tick the wall clock is (0 when the last tick was due, 1 a whole tick later or more;
++	always 1 before the first tick, or when logic is bound to the render update and no tick length
++	is known).  GameEngine_tickFraction is the arithmetic, on a fine clock's ticks: 1 for a tick
++	length of 0, clamped to 0..1 otherwise.  Readout only: pacing itself is unchanged. */
++Real GameEngine_logicTickFraction( void );
++Real GameEngine_tickFraction( Int64 now, Int64 due, Real msPerTick, Int64 ticksPerSecond );
++
+ 	// the game engine singleton
+ extern GameEngine *TheGameEngine;
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h b/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h
+index 7b9f4da..0432f43 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h
+@@ -117,6 +117,10 @@ public:
+ 	Int m_framesPerSecondLimit;
+ 	Int	m_chipSetType;	///<See W3DShaderManager::ChipsetType for options
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion, ported from the Reforged engine.
++	Bool m_smoothMotion;				///< On a display faster than the logic, models drawn between their last two logic states (W3DSmoothMotion.h); -nosmoothmotion turns it off
++	Bool m_smoothMotionAnyDisplay;		///< -smoothmotion: the same whatever the display's refresh rate
++
+ 	// TheSuperHackers @feature helmutbuhler 11/04/2025
+ 	// Run game without graphics, input or audio.
+ 	Bool m_headless;
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/Drawable.h b/GeneralsMD/Code/GameEngine/Include/GameClient/Drawable.h
+index e0e4707..60bd296 100644
+--- a/GeneralsMD/Code/GameEngine/Include/GameClient/Drawable.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameClient/Drawable.h
+@@ -472,6 +472,18 @@ public:
+ 	// this method must ONLY be called from the client, NEVER From the logic, not even indirectly.
+ 	Bool clientOnly_getFirstRenderObjInfo(Coord3D* pos, Real* boundingSphereRadius, Matrix3D* transform);
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion, ported from the Reforged
++	// engine: the logic names a move that is not travel (a teleport), and the picture must not
++	// blend across it.  A client-only flag; nothing in the logic reads it.
++	void markMotionDiscontinuity() { m_motionDiscontinuity = TRUE; }
++	Bool isMotionDiscontinuous() const { return m_motionDiscontinuity; }
++	void clearMotionDiscontinuity() { m_motionDiscontinuity = FALSE; }
++
++	// this method must ONLY be called from the client, NEVER From the logic, not even indirectly.
++	void smoothMotionCapturePosition(UnsignedInt clientFrame);
++	// this method must ONLY be called from the client, NEVER From the logic, not even indirectly.
++	Bool getSmoothMotionPosition(Real alpha, Coord3D *pos) const;
++
+ 	/**
+ 		Find the bone(s) with the given name and return their positions and/or transforms in the given arrays.
+ 		We look for a bone named "boneNamePrefixQQ", where QQ is 01, 02, 03, etc, starting at the
+@@ -678,6 +690,14 @@ private:
+ 	Drawable *m_nextDrawable;
+ 	Drawable *m_prevDrawable;		///< list links
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion position track (the camera
++	// lock follows the blended position) and the discontinuity flag, all client-only.
++	Coord3D m_smoothPrevPos;			///< the position at the previous logic tick
++	Coord3D m_smoothCurPos;				///< the position at the current logic tick
++	UnsignedInt m_smoothFrame;			///< the client frame m_smoothCurPos was taken on
++	Bool m_smoothHavePrev;				///< the two positions are one tick apart and may be blended
++	Bool m_motionDiscontinuity;			///< markMotionDiscontinuity: this tick's move was not travel
++
+   DynamicAudioEventInfo *m_customSoundAmbientInfo; ///< If not nullptr, info about the ambient sound to attach to this object
+ 
+ 	DrawableStatusBits m_status;		///< status bits (see DrawableStatus enum)
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
+index 3cf0e9f..d6c8c00 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
+@@ -356,6 +356,33 @@ Int parseNoDraw(char *args[], int argc)
+ 	return 1;
+ }
+ 
++//=============================================================================
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion opt-out and force-on, ported
++// from the Reforged engine.
++// -nosmoothmotion: every model drawn where the last logic tick left it, a tick's state held
++// until the next, as on a display at the logic's own rate.
++Int parseNoSmoothMotion(char *args[], int)
++{
++	if (TheWritableGlobalData)
++	{
++		TheWritableGlobalData->m_smoothMotion = FALSE;
++	}
++	return 1;
++}
++
++//=============================================================================
++// -smoothmotion: models drawn between their last two logic states whatever the display's
++// refresh rate.
++Int parseSmoothMotion(char *args[], int)
++{
++	if (TheWritableGlobalData)
++	{
++		TheWritableGlobalData->m_smoothMotion = TRUE;
++		TheWritableGlobalData->m_smoothMotionAnyDisplay = TRUE;
++	}
++	return 1;
++}
++
+ #if defined(RTS_DEBUG)
+ 
+ //=============================================================================
+@@ -1217,6 +1244,10 @@ static CommandLineParam paramsForStartup[] =
+ 	{ "-gxCrcEveryFrame", parseGxCrcEveryFrame },
+ 	{ "-gxCheckTrace", parseGxCheckTrace },
+ 	{ "-gxSafeInsets", parseGxSafeInsets },
++
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion (W3DSmoothMotion.h).
++	{ "-nosmoothmotion", parseNoSmoothMotion },
++	{ "-smoothmotion", parseSmoothMotion },
+ };
+ 
+ // These Params are parsed during Engine Init before INI data is loaded
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+index c6546d4..39b338b 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -1172,6 +1172,66 @@ Bool GameEngine::canUpdateRegularGameLogic(UnsignedInt logicTimeQueryFlags)
+ 
+ 	return false;
+ }
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion tick readout, ported from the
++// Reforged engine: when the pass's last logic tick was due, and the tick's length, so the renderer
++// can blend between the last two logic states (W3DSmoothMotion.h).  Readout only -- every pacing
++// decision in this file is untouched.  The fine clock is the steady clock in microseconds, the
++// same clock the catch-up code below already uses.
++static Int64 s_smoothLastTickDueTicks = 0;
++static Real s_smoothMsPerLogicTick = 0.0f;
++
++static Int64 smoothMotionNowTicks()
++{
++	return std::chrono::duration_cast<std::chrono::microseconds>(
++		std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
++Real GameEngine_tickFraction( Int64 now, Int64 due, Real msPerTick, Int64 ticksPerSecond )
++{
++	if (msPerTick <= 0.0f || ticksPerSecond <= 0)
++		return 1.0f;
++	const Real fraction = (Real)((double)(now - due) * 1000.0 / (double)ticksPerSecond) / msPerTick;
++	return fraction < 0.0f ? 0.0f : (fraction > 1.0f ? 1.0f : fraction);
++}
++
++Real GameEngine_logicTickFraction( void )
++{
++	return GameEngine_tickFraction( smoothMotionNowTicks(), s_smoothLastTickDueTicks, s_smoothMsPerLogicTick, 1000000 );
++}
++
++/* Stamp the tick that just ran: its length from the pacing state (a network game's frame rate,
++   the logic time scale, or the render period the logic is bound to), and its due moment -- the
++   stamp is taken now, less the accumulator debt the decoupled pacer still holds, so the fraction
++   runs from when the tick was due, not from when it happened to execute.  Callers whose ticks
++   were due at once (the catch-up steps) pass no debt. */
++static void noteSmoothLogicTick( Real accumulatorDebtSeconds )
++{
++	Real msPerTick = 0.0f;
++	if (TheNetwork != nullptr)
++	{
++		// the frame that just ran may have ended the match and taken the network with it
++		const UnsignedInt rate = TheNetwork->getFrameRate();
++		msPerTick = rate > 0 ? 1000.0f / (Real)rate : 0.0f;
++	}
++	else if (TheFramePacer->isLogicTimeScaleEnabled())
++	{
++		const Int fps = TheFramePacer->getLogicTimeScaleFps();
++		msPerTick = fps > 0 ? 1000.0f / (Real)fps : 0.0f;
++	}
++	else if (TheFramePacer->isActualFramesPerSecondLimitEnabled())
++	{
++		// logic bound to the render update (the original behavior): the tick length is the render period
++		const Int limit = TheFramePacer->getActualFramesPerSecondLimit();
++		msPerTick = limit > 0 ? 1000.0f / (Real)limit : 0.0f;
++	}
++	else if (TheFramePacer->getUpdateTime() > 0.0f)
++	{
++		msPerTick = TheFramePacer->getUpdateTime() * 1000.0f;
++	}
++	s_smoothMsPerLogicTick = msPerTick;
++	s_smoothLastTickDueTicks = smoothMotionNowTicks() - (Int64)(accumulatorDebtSeconds * 1000000.0);
++}
++
+ #if defined(GENERALS_ONLINE_HIGH_FPS_RENDER)
+ extern NGMPGame* TheNGMPGame;
+ #endif
+@@ -1237,6 +1297,7 @@ static void gxCatchUpSpedUpLogic()
+ 		if (TheGameLogic->isGamePaused())
+ 			break;
+ 		TheGameLogic->UPDATE();
++		noteSmoothLogicTick(0.0f);	// smooth motion: a catch-up tick, due at once
+ 		TheGameClient->step();
+ 		s_debt -= 1.0;
+ 		++extra;
+@@ -1410,6 +1471,14 @@ void GameEngine::update()
+ 		if (canUpdateGameLogic(FramePacer::IgnoreFrozenTime))
+ 		{
+ 			TheGameLogic->UPDATE();
++			// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion: stamp the tick that
++			// just ran.  On the decoupled path the pacer's leftover accumulator is the debt to
++			// hand back, so the stamp lands on the tick's due moment.
++			{
++				const Bool smoothDecoupled = TheNetwork == nullptr && TheFramePacer->isLogicTimeScaleEnabled()
++					&& TheFramePacer->getLogicTimeScaleFps() < TheFramePacer->getActualFramesPerSecondLimit();
++				noteSmoothLogicTick(smoothDecoupled ? (Real)m_logicTimeAccumulator : 0.0f);
++			}
+ 			if (gxPerfTrace) gxT5 = std::chrono::steady_clock::now();
+ 
+ 			if (!TheFramePacer->isTimeFrozen())
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index d9eb86e..25f3125 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -655,6 +655,11 @@ GlobalData::GlobalData()
+ 	m_dumpAssetUsage = FALSE;
+ 	m_framesPerSecondLimit = 0;
+ 	m_chipSetType = 0;
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion is on by default: it blends
++	// only when the display refreshes faster than the logic ticks (W3DDisplay's display check),
++	// and -nosmoothmotion turns it off for a run.
++	m_smoothMotion = TRUE;
++	m_smoothMotionAnyDisplay = FALSE;
+ 	m_headless = FALSE;
+ 	m_checkForUpdates = TRUE;
+ 	m_windowed = 0;
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/Drawable.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/Drawable.cpp
+index e0e0df7..1e68fc6 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/Drawable.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/Drawable.cpp
+@@ -371,6 +371,13 @@ Drawable::Drawable( const ThingTemplate *thingTemplate, DrawableStatusBits statu
+ 	m_nextDrawable = nullptr;
+ 	m_prevDrawable = nullptr;
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion track starts empty.
++	m_smoothPrevPos.zero();
++	m_smoothCurPos.zero();
++	m_smoothFrame = 0xFFFFFFFFu;	// never captured
++	m_smoothHavePrev = FALSE;
++	m_motionDiscontinuity = FALSE;
++
+   m_customSoundAmbientInfo = nullptr;
+ 
+ 	// register drawable with the GameClient ... do this first before we start doing anything
+@@ -4333,12 +4340,46 @@ void Drawable::setInstanceMatrix( const Matrix3D *instance )
+ }
+ 
+ 
++//-------------------------------------------------------------------------------------------------
++/** Smooth motion (ported from the Reforged engine): at the start of a render pass, after a new
++	logic tick, move the last position into m_smoothPrevPos and take the current one.  The blend is
++	allowed only across one tick, with no marked discontinuity and no step longer than a unit
++	could travel (the same 60 world units as the models' rule, W3DSmoothMotion.h's
++	SMOOTH_SNAP_DISTANCE_UNITS). */
++void Drawable::smoothMotionCapturePosition( UnsignedInt clientFrame )
++{
++	if (clientFrame == m_smoothFrame)
++		return;
++	const Bool nextTick = m_smoothFrame != 0xFFFFFFFFu && clientFrame == m_smoothFrame + 1;
++	m_smoothPrevPos = m_smoothCurPos;
++	m_smoothCurPos = *getPosition();
++	const Real dx = m_smoothCurPos.x - m_smoothPrevPos.x;
++	const Real dy = m_smoothCurPos.y - m_smoothPrevPos.y;
++	const Real dz = m_smoothCurPos.z - m_smoothPrevPos.z;
++	const Real SNAP_DISTANCE = 60.0f;
++	m_smoothHavePrev = nextTick && !m_motionDiscontinuity && (dx * dx + dy * dy + dz * dz) <= SNAP_DISTANCE * SNAP_DISTANCE;
++	m_smoothFrame = clientFrame;
++}
++
++//-------------------------------------------------------------------------------------------------
++/** Smooth motion: where the picture shows this drawable, `alpha` of the way from its previous
++	logic position to its current one.  The logic position, and FALSE, when there is no blend. */
++Bool Drawable::getSmoothMotionPosition( Real alpha, Coord3D *pos ) const
++{
++	*pos = *getPosition();
++	if (!m_smoothHavePrev)
++		return FALSE;
++	pos->x = m_smoothPrevPos.x + (m_smoothCurPos.x - m_smoothPrevPos.x) * alpha;
++	pos->y = m_smoothPrevPos.y + (m_smoothCurPos.y - m_smoothPrevPos.y) * alpha;
++	pos->z = m_smoothPrevPos.z + (m_smoothCurPos.z - m_smoothPrevPos.z) * alpha;
++	return TRUE;
++}
++
+ //-------------------------------------------------------------------------------------------------
+ /**
+  * Return the Drawable's world transform.
+  * If this Drawable is attached to an Object, return the Object's transform instead.
+  */
+-//-------------------------------------------------------------------------------------------------
+ const Matrix3D *Drawable::getTransformMatrix() const
+ {
+ 	const Object *obj = getObject();
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
+index 8a8ba12..1e880b5 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
+@@ -624,6 +624,11 @@ Object *AIPlayer::buildStructureWithDozer(const ThingTemplate *bldgPlan, BuildLi
+ 		bldgName.concat(" - Dozer unable to reach building.  Teleporting.");
+ 		TheScriptEngine->AppendDebugMessage(bldgName, false);
+ 		dozer->setPosition(&pos);
++		// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion, ported from the
++		// Reforged engine: a teleport, not travel - the picture shows the new place at once.
++		// A flag on the client's drawable, which nothing in the logic reads.
++		if (dozer->getDrawable() != nullptr)
++			dozer->getDrawable()->markMotionDiscontinuity();
+ 	}
+ 
+ 	Object *bldg = TheBuildAssistant->buildObjectNow( dozer,
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
+index ca59c6c..7fb25f0 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
+@@ -63,6 +63,7 @@ static void drawFramerateBar();
+ #include "Common/ThingTemplate.h"
+ #include "Common/GameLOD.h"
+ #include "Common/DrawModule.h"
++#include "Common/GameEngine.h"
+ #include "GameLogic/AIPathfind.h"
+ #include "GameLogic/Module/PhysicsUpdate.h"
+ 
+@@ -82,6 +83,7 @@ static void drawFramerateBar();
+ #include "Lib/BaseType.h"
+ #include "W3DDevice/Common/W3DConvert.h"
+ #include "W3DDevice/GameClient/W3DAssetManager.h"
++#include "W3DDevice/GameClient/W3DSmoothMotion.h"
+ #include "W3DDevice/GameClient/W3DGameClient.h"
+ #include "W3DDevice/GameClient/W3DFileSystem.h"
+ #include "W3DDevice/GameClient/W3DDynamicLight.h"
+@@ -2074,6 +2076,112 @@ static void gxTraceDisplayDrawPhase(double preRTTUs, double waterShadowRTTUs,
+ 	}
+ }
+ 
++//=============================================================================
++// Smooth motion (W3DSmoothMotion.h), ported from the Reforged engine.  Three steps around the
++// scene's render, and only the picture:
++//   smoothMotionBegin    before updateViews: the blend's alpha, and on a new tick each drawable's
++//                        position (the camera's lock follows the blended one)
++//   smoothMotionApply    after the particle update, before anything renders: on a new tick each
++//                        model's transform is captured, then every model is shown blended
++//   smoothMotionRestore  after the render loop: the logic transforms go back before picking and
++//                        the logic
++// A logic tick reads live bones (ParticleUplinkCannonUpdate), and ticks run outside draw() in
++// this engine, so a tick never runs beside a blend: restore at the end of draw() has always put
++// the logic transforms back before the next tick can run.
++//=============================================================================
++bool TheSmoothMotionActive = false;
++float TheSmoothMotionAlpha = 1.0f;
++static UnsignedInt s_smoothPositionFrame = 0xFFFFFFFFu;
++static UnsignedInt s_smoothModelFrame = 0xFFFFFFFFu;
++static Bool s_smoothApplied = FALSE;
++static Bool s_smoothBehind = FALSE;		// this picture is a whole tick or more behind: nothing captured or blended
++
++/* Smooth motion's default: a blend only when the display refreshes faster than the logic ticks.
++   At the logic's own rate every refresh shows a new tick already, and the blend would only draw
++   each one a tick late.  The host has no adapter display-mode query on this path, so the check
++   reads the pacing state instead: a network game's frame rate, or the logic time scale, against
++   the render limit (or the measured update rate when rendering is uncapped).  Logic bound to the
++   render update (no time scale, no network) ticks once per picture by construction, so it never
++   outpaces.  Asked every picture, so a frame-rate change at runtime takes effect at once. */
++static Bool displayOutpacesLogic()
++{
++	Int logicFps;
++	if (TheNetwork != NULL)
++		logicFps = TheNetwork->getFrameRate();
++	else if (TheFramePacer->isLogicTimeScaleEnabled())
++		logicFps = TheFramePacer->getLogicTimeScaleFps();
++	else
++		return FALSE;
++	if (logicFps <= 0)
++		return FALSE;
++	if (TheFramePacer->isActualFramesPerSecondLimitEnabled())
++		return TheFramePacer->getActualFramesPerSecondLimit() > logicFps;
++	return TheFramePacer->getUpdateFps() > (Real)logicFps;
++}
++
++static void smoothMotionBegin()
++{
++	// on a display faster than the logic, unless -nosmoothmotion says no
++	TheSmoothMotionActive = !TheGlobalData->m_headless
++		&& TheGlobalData->m_smoothMotion && (TheGlobalData->m_smoothMotionAnyDisplay || displayOutpacesLogic());
++	TheSmoothMotionAlpha = TheSmoothMotionActive ? GameEngine_logicTickFraction() : 1.0f;
++	// A picture a whole tick or more behind the battle shows every model at its logic transform, so it
++	// captures and blends nothing, and a game that has fallen behind pays nothing for the blend.  The next
++	// picture under a tick captures, late in its tick if need be (the transforms are still that tick's),
++	// and a capture after a tick it missed snaps.
++	s_smoothBehind = TheSmoothMotionAlpha >= 1.0f;
++	if (!TheSmoothMotionActive || s_smoothBehind)
++		return;
++	const UnsignedInt frame = TheGameClient->getFrame();
++	if (frame == s_smoothPositionFrame)
++		return;
++	s_smoothPositionFrame = frame;
++	for (Drawable *draw = TheGameClient->firstDrawable(); draw != NULL; draw = draw->getNextDrawable())
++		draw->smoothMotionCapturePosition(frame);
++}
++
++static void smoothMotionApply()
++{
++	if (!TheSmoothMotionActive)
++		return;
++	if (s_smoothBehind)
++		return;
++	const UnsignedInt frame = TheGameClient->getFrame();
++	const Bool newTick = frame != s_smoothModelFrame;
++	s_smoothModelFrame = frame;
++	for (Drawable *draw = TheGameClient->firstDrawable(); draw != NULL; draw = draw->getNextDrawable())
++	{
++		DrawModule **modules = draw->getDrawModules();
++		if (modules == NULL)
++			continue;
++		if (newTick)
++		{
++			const Bool marked = draw->isMotionDiscontinuous();
++			for (DrawModule **dm = modules; *dm; ++dm)
++				(*dm)->smoothMotionCapture(frame, marked);
++			draw->clearMotionDiscontinuity();
++		}
++		for (DrawModule **dm = modules; *dm; ++dm)
++			(*dm)->smoothMotionApply(TheSmoothMotionAlpha);
++	}
++	s_smoothApplied = TRUE;
++}
++
++static void smoothMotionRestore()
++{
++	if (!s_smoothApplied)
++		return;
++	s_smoothApplied = FALSE;
++	for (Drawable *draw = TheGameClient->firstDrawable(); draw != NULL; draw = draw->getNextDrawable())
++	{
++		DrawModule **modules = draw->getDrawModules();
++		if (modules == NULL)
++			continue;
++		for (DrawModule **dm = modules; *dm; ++dm)
++			(*dm)->smoothMotionRestore();
++	}
++}
++
+ // W3DDisplay::draw ===========================================================
+ /** Draw the entire W3D Display */
+ //=============================================================================
+@@ -2233,6 +2341,7 @@ AGAIN:
+ 		{	//Checking if we have the device before updating views because the heightmap crashes otherwise while
+ 			//trying to refresh the visible terrain geometry.
+ //			if(TheGlobalData->m_loadScreenRender != TRUE)
++				smoothMotionBegin();	// smooth motion: this picture's blend, before the views update
+ 				updateViews();
+      		TheParticleSystemManager->update();//LORENZEN AND WILCZYNSKI MOVED THIS FROM ITS NATIVE POSITION, ABOVE
+                                            //FOR THE PURPOSE OF LETTING THE PARTICLE SYSTEM LOOK UP THE RENDER OBJECT"S
+@@ -2243,6 +2352,8 @@ AGAIN:
+                                            //REVOLUTIONARY!
+                                            //-LORENZEN
+ 
++			smoothMotionApply();	// smooth motion: capture this tick's transforms, then show every model blended
++
+ 			if (gxPerfTrace) gxdT1 = std::chrono::steady_clock::now();
+ 
+ 			if (TheWaterRenderObj && TheGlobalData->m_waterType == 2)
+@@ -2503,6 +2614,8 @@ AGAIN:
+ 
+ 	} while (freezeTime && !TheTacticalView->isCameraMovementFinished());
+ 
++	smoothMotionRestore();	// smooth motion: the logic transforms go back before picking and the logic
++
+ #ifdef EXTENDED_STATS
+ 	if (DX8Wrapper::stats.m_disableOverhead) {
+ 		goto AGAIN;
