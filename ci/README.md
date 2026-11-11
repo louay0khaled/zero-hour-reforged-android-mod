@@ -28,11 +28,24 @@ every run and applies this repo's small overlay on top:
      uniform caching in the GLES translator (uniform state is no longer
      re-uploaded on every program switch). Presentation-only throughout:
      replay checksums are byte-identical to v1.2.
+   - `patches/hitch-removal.patch` — the M2 wave-3 hitch bundle (v1.4),
+     applied after perf-graphics: the audio cache floor rises 4 MB → 64 MB
+     in both audio managers (upstream measured 3,508 disk re-reads per match
+     against the retail floor, ~35 with the new one), and spent dynamic
+     lights (muzzle flashes) are pooled and stepped on the logic clock
+     instead of being allocated per shot and faded per render frame.
+     Playback/presentation only; replay checksums byte-identical to v1.3.
+   - `patches/60foundations.patch` — the M2 wave-6 foundations (v1.4),
+     applied after hitch-removal: the Reforged 60-steps conversion call
+     sites (slices 6a–6e) in the 30-steps engine with the flip define OFF —
+     every conversion is an algebraic identity at the retail rate, so logic
+     is bit-identical to v1.3; the flipped `libmainrf60.so` library and its
+     launcher switch ship in a later release (6f).
    - `patches/package-android-zh-gradle-task.patch` — lets the upstream
      packaging script run `assembleRelease` (via `GX_GRADLE_TASK`) and
      checks the release output path.
    - `apply-surgery.py` — new applicationId `com.louay.zerohour.reforged`,
-     version 4 / "1.3", the native hardcoded data paths repointed to the
+     version 5 / "1.4", the native hardcoded data paths repointed to the
      new id, the "Zero Hour Reforged" label in all locales, and the OTA
      update channel pointed at this repo (so upstream engine updates can
      never overwrite the patched build).
