@@ -7,6 +7,12 @@ name: Build Zero Hour Reforged APK
 # the multi-GB engine tree lives in this repo -- it is checked out fresh
 # from upstream on every run and the overlay is applied on top.
 #
+# v1.5 adds the second Zero Hour engine: the tree is built twice -- once
+# standard (libmain.so, the shipped experience) and once with
+# REFORGED_60_STEPS=ON (packaged as libmainrf60.so, the faithful Reforged
+# 60-steps engine behind the launcher's opt-in switch). The base game is
+# built once, standard only.
+#
 # Signing stays LOCAL (project decision): this workflow's artifact is the
 # AGP release output, debug-signed by the project's own config -- exactly
 # the pre-signing state of the local v1 build. The owner re-signs the
@@ -20,11 +26,11 @@ on:
     inputs:
       version_name:
         type: string
-        description: "Override versionName (blank = build.gradle default, currently '1.4'). Bump together with version_code for a new release."
+        description: "Override versionName (blank = build.gradle default, currently '1.5'). Bump together with version_code for a new release."
         default: ""
       version_code:
         type: string
-        description: "Override versionCode (blank = build.gradle default, currently 5). Must increase between published releases."
+        description: "Override versionCode (blank = build.gradle default, currently 6). Must increase between published releases."
         default: ""
 
 env:
@@ -79,6 +85,7 @@ jobs:
           git apply --verbose reforged-overlay/ci/patches/perf-graphics.patch
           git apply --verbose reforged-overlay/ci/patches/hitch-removal.patch
           git apply --verbose reforged-overlay/ci/patches/60foundations.patch
+          git apply --verbose reforged-overlay/ci/patches/60flip.patch
           git apply --verbose reforged-overlay/ci/patches/package-android-zh-gradle-task.patch
           # Package-id surgery + bundled-data phase (both scripts resolve
           # the MYSOREZ tree as the parent of the overlay checkout).
@@ -99,6 +106,12 @@ jobs:
           grep -q "ConvertRetailFrames" Core/GameEngine/Include/Common/GameCommon.h
           grep -q "retailFrictionToFrame" GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/PhysicsUpdate.cpp
           grep -q "parseRetailPerFrameReal" Core/GameEngine/Include/Common/INI.h
+          grep -q "REFORGED_60_STEPS" cmake/config-build.cmake
+          grep -q "REFORGED_60_STEPS" CMakeLists.txt
+          grep -q "holdToRetailFireCycle" GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
+          grep -q "reforged_60_steps" android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java
+          grep -q "mainrf60" android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java
+          grep -q "GX_REFORGED60_LIB" scripts/build/android/package-android-zh.sh
           grep -q "ensureBundledReforgedData" android/app/src/main/java/com/generalsx/zerohour/ModManager.java
           test -f 'android/app/src/main/assets/reforged/!ReforgedFixes-v3.big'
           test -f 'android/app/src/main/assets/reforged/!ReforgedBalance-v2.big'
@@ -225,9 +238,14 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DANDROID_CI_BUILD_NUMBER=${{ github.run_number }} \
+            -DREFORGED_60_STEPS=OFF \
             -DALSOFT_BACKEND_PIPEWIRE=OFF -DALSOFT_BACKEND_PULSEAUDIO=OFF -DALSOFT_BACKEND_ALSA=OFF \
             -DALSOFT_BACKEND_OSS=OFF -DALSOFT_BACKEND_SNDIO=OFF -DALSOFT_BACKEND_PORTAUDIO=OFF -DALSOFT_BACKEND_JACK=OFF \
             2>&1 | tee logs/configure_android.log
+          # Tree A is the standard engine: the flip must be OFF here, and the
+          # host's own 60 Hz switch must never be ON in either tree.
+          grep -q "^REFORGED_60_STEPS:BOOL=OFF" build/${{ env.PRESET }}/CMakeCache.txt
+          ! grep -q "^SAGE_HIGH_FPS_SIM:BOOL=ON" build/${{ env.PRESET }}/CMakeCache.txt
 
       # Target list is the v1 local build's (build-apk.sh): upstream's CI
       # builds only z_generals, but the shipped APK also carries the base
@@ -238,6 +256,44 @@ jobs:
           mkdir -p logs
           cmake --build build/${{ env.PRESET }} --target z_generals g_generals dxvk_d3d8_install \
             main_hook file_redirect_hook gsl_alloc_hook hook_impl -- -k 0 2>&1 | tee logs/build_android.log
+          ccache --show-stats
+
+      # Tree B: the SAME tree reconfigured with the flip ON, z_generals only.
+      # Sequential in the same build dir on purpose: the packaging script
+      # finds libmain.so by searching the build dir, so a second build dir
+      # (or leaving Tree B's output in place) would stage the wrong library
+      # as libmain.so. Tree A's libmain.so is stashed first and restored
+      # before packaging; Tree B's output leaves the build dir immediately,
+      # under its packaged name, at the workspace root.
+      - name: Build Reforged 60-steps engine (libmainrf60.so)
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          MAIN_SO="build/${{ env.PRESET }}/GeneralsMD/Code/Main/libmain.so"
+          cp "$MAIN_SO" "${RUNNER_TEMP}/libmain-treeA.so"
+          cmake --preset ${{ env.PRESET }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DANDROID_CI_BUILD_NUMBER=${{ github.run_number }} \
+            -DREFORGED_60_STEPS=ON \
+            -DALSOFT_BACKEND_PIPEWIRE=OFF -DALSOFT_BACKEND_PULSEAUDIO=OFF -DALSOFT_BACKEND_ALSA=OFF \
+            -DALSOFT_BACKEND_OSS=OFF -DALSOFT_BACKEND_SNDIO=OFF -DALSOFT_BACKEND_PORTAUDIO=OFF -DALSOFT_BACKEND_JACK=OFF \
+            2>&1 | tee logs/configure_android_rf60.log
+          grep -q "^REFORGED_60_STEPS:BOOL=ON" build/${{ env.PRESET }}/CMakeCache.txt
+          ! grep -q "^SAGE_HIGH_FPS_SIM:BOOL=ON" build/${{ env.PRESET }}/CMakeCache.txt
+          cmake --build build/${{ env.PRESET }} --target z_generals -- -k 0 2>&1 | tee logs/build_android_rf60.log
+          READELF="$(ls "${ANDROID_NDK_HOME}"/toolchains/llvm/prebuilt/*/bin/llvm-readelf | head -1)"
+          "$READELF" -h "$MAIN_SO" | grep -q AArch64 || { echo "::error::libmainrf60 build is not AArch64"; exit 1; }
+          # The RF60 version stamp must be compiled in (the cross-rate
+          # save/replay refusal depends on it), and the standard engine must
+          # NOT carry it.
+          strings "$MAIN_SO" | grep -q " RF60" || { echo "::error::RF60 stamp missing from the 60-steps build"; exit 1; }
+          if strings "${RUNNER_TEMP}/libmain-treeA.so" | grep -q " RF60"; then
+            echo "::error::RF60 stamp leaked into the standard libmain.so"; exit 1
+          fi
+          cp "$MAIN_SO" "${GITHUB_WORKSPACE}/libmainrf60.so"
+          cp "${RUNNER_TEMP}/libmain-treeA.so" "$MAIN_SO"
+          ls -la "${GITHUB_WORKSPACE}/libmainrf60.so"
           ccache --show-stats
 
       - name: Verify artifacts
@@ -285,6 +341,19 @@ jobs:
             echo "::warning::libmain.so yielded only ${SYMS} symbols -- crash logs from this build will not symbolize."
           fi
           gzip -9 "$OUT"
+          # Same for the 60-steps engine (its unstripped copy sits at the
+          # workspace root, staged by the Tree B step).
+          LIB60="${GITHUB_WORKSPACE}/libmainrf60.so"
+          OUT60="symbols/libmainrf60-run${{ github.run_number }}.symbols.txt"
+          BUILD_ID60="$(readelf -n "$LIB60" 2>/dev/null | sed -n 's/.*Build ID: \([0-9a-f]*\).*/\1/p' | head -1)"
+          {
+            echo "# libmainrf60.so symbols -- run ${{ github.run_number }}, commit ${{ github.sha }}"
+            echo "# BuildID: ${BUILD_ID60:-UNKNOWN}"
+            "$TOOLS/llvm-readelf" --notes --program-headers "$LIB60"
+            echo "# --- defined symbols: address size type name ---"
+            "$TOOLS/llvm-nm" --defined-only --numeric-sort --print-size --demangle "$LIB60"
+          } > "$OUT60"
+          gzip -9 "$OUT60"
           ls -la symbols/
 
       # Strip list is the v1 local build's (build-apk.sh): upstream's list
@@ -306,6 +375,9 @@ jobs:
                      "build/${{ env.PRESET }}/_deps/adrenotools-build/src/hook/libfile_redirect_hook.so"; do
             [ -f "$lib" ] && "$STRIP" --strip-unneeded "$lib"
           done
+          # The 60-steps engine's packaged copy (workspace root) strips too;
+          # the packaging script copies exactly this file.
+          "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainrf60.so"
 
       # GX_GRADLE_TASK is the overlay patch's knob: the packaging script
       # stages jniLibs/assets, then runs assembleRelease instead of its
@@ -317,6 +389,7 @@ jobs:
         env:
           GX_ANDROID_STAGING: ${{ github.workspace }}/android-staging
           GX_GRADLE_TASK: assembleRelease
+          GX_REFORGED60_LIB: ${{ github.workspace }}/libmainrf60.so
           GX_ANDROID_VERSION_CODE: ${{ inputs.version_code }}
           GX_ANDROID_VERSION_NAME: ${{ inputs.version_name }}
         run: |
@@ -343,28 +416,42 @@ jobs:
           unzip -q "${APK}" 'lib/arm64-v8a/*' -d "${WORKDIR}"
           echo "Packaged libraries:"
           ls "${WORKDIR}/lib/arm64-v8a/"
-          if [ -f "${WORKDIR}/lib/arm64-v8a/libmain60.so" ] || [ -f "${WORKDIR}/lib/arm64-v8a/libgenerals60.so" ]; then
-            echo "::error::60 Hz engine variant leaked into the APK (owner rule: standard engine only)"
+          # Engine set, exactly (v1.5): the standard Zero Hour engine, the
+          # Reforged 60-steps engine under its own name, and the standard
+          # base-game engine are all REQUIRED. The GeneralsOnline 60 Hz
+          # names stay hard-banned: the only *60.so allowed in the APK is
+          # libmainrf60.so.
+          for required in libmain.so libmainrf60.so libgenerals.so; do
+            if [ ! -f "${WORKDIR}/lib/arm64-v8a/${required}" ]; then
+              echo "::error::required engine library ${required} is missing from the APK"
+              exit 1
+            fi
+          done
+          SIXTY="$(ls "${WORKDIR}/lib/arm64-v8a/" | grep -E '^lib.*60\.so$' || true)"
+          if [ "${SIXTY}" != "libmainrf60.so" ]; then
+            echo "::error::unexpected *60.so set in the APK: '${SIXTY}' (only libmainrf60.so is allowed)"
             exit 1
           fi
-          NEEDED="$("${READELF}" -d "${WORKDIR}/lib/arm64-v8a/libmain.so" | grep NEEDED | sed -E 's/.*\[(.*)\]/\1/')"
           missing=0
-          for lib in ${NEEDED}; do
-            case "${lib}" in
-              libc.so|libm.so|libdl.so|liblog.so|libandroid.so|libGLESv*|libEGL.so|libvulkan.so|libOpenSLES.so|libaaudio.so|libmediandk.so|libcamera2ndk.so|libjnigraphics.so|libnativewindow.so|libsync.so|libz.so)
-                continue ;;
-            esac
-            if [ ! -f "${WORKDIR}/lib/arm64-v8a/${lib}" ]; then
-              echo "::error::libmain.so needs '${lib}' at runtime but it is not packaged in the APK"
-              missing=1
-            fi
+          for engine in libmain.so libmainrf60.so; do
+            NEEDED="$("${READELF}" -d "${WORKDIR}/lib/arm64-v8a/${engine}" | grep NEEDED | sed -E 's/.*\[(.*)\]/\1/')"
+            for lib in ${NEEDED}; do
+              case "${lib}" in
+                libc.so|libm.so|libdl.so|liblog.so|libandroid.so|libGLESv*|libEGL.so|libvulkan.so|libOpenSLES.so|libaaudio.so|libmediandk.so|libcamera2ndk.so|libjnigraphics.so|libnativewindow.so|libsync.so|libz.so)
+                  continue ;;
+              esac
+              if [ ! -f "${WORKDIR}/lib/arm64-v8a/${lib}" ]; then
+                echo "::error::${engine} needs '${lib}' at runtime but it is not packaged in the APK"
+                missing=1
+              fi
+            done
           done
           rm -rf "${WORKDIR}"
           if [ "${missing}" -ne 0 ]; then
             echo "::error::APK is missing required native libraries."
             exit 1
           fi
-          echo "OK: every DT_NEEDED of libmain.so is present in the APK."
+          echo "OK: engine set exact (libmain.so + libmainrf60.so + libgenerals.so), and every DT_NEEDED of both Zero Hour engines is present in the APK."
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
