@@ -39,16 +39,29 @@ every run and applies this repo's small overlay on top:
      applied after hitch-removal: the Reforged 60-steps conversion call
      sites (slices 6a–6e) in the 30-steps engine with the flip define OFF —
      every conversion is an algebraic identity at the retail rate, so logic
-     is bit-identical to v1.3; the flipped `libmainrf60.so` library and its
-     launcher switch ship in a later release (6f).
+     is bit-identical to v1.3.
+   - `patches/60flip.patch` — the M2 wave-6 flip (v1.5, slice 6f), applied
+     after 60foundations: the `REFORGED_60_STEPS` CMake option and the
+     GameCommon.h rate branch it drives (LOGICFRAMES_PER_SECOND 60 in the
+     flipped build only; WWSyncPerSecond untouched), the remaining deferred
+     conversion items (the fire-cycle hold, the FireWeaponCollide
+     once-a-retail-frame gate, the parseFrictionPerSec divisor switch —
+     all inert or identical at the retail rate), the RF60 version stamp,
+     and the GameState save rate stamp that makes each engine refuse the
+     other's saves cleanly. The workflow builds the tree twice: standard
+     (libmain.so) and flipped (libmainrf60.so).
    - `patches/package-android-zh-gradle-task.patch` — lets the upstream
-     packaging script run `assembleRelease` (via `GX_GRADLE_TASK`) and
-     checks the release output path.
+     packaging script run `assembleRelease` (via `GX_GRADLE_TASK`), checks
+     the release output path, and adds the `GX_REFORGED60_LIB` knob that
+     stages the flipped engine as `libmainrf60.so` (never `libmain60.so`).
    - `apply-surgery.py` — new applicationId `com.louay.zerohour.reforged`,
-     version 5 / "1.4", the native hardcoded data paths repointed to the
-     new id, the "Zero Hour Reforged" label in all locales, and the OTA
+     version 6 / "1.5", the native hardcoded data paths repointed to the
+     new id, the "Zero Hour Reforged" label in all locales, the OTA
      update channel pointed at this repo (so upstream engine updates can
-     never overwrite the patched build).
+     never overwrite the patched build), and (phase 1e) the Reforged
+     60-steps launcher switch: pref `reforged_60_steps` (default OFF)
+     replacing the dead Simulation Rate card on the Graphics tab, shown
+     only when Zero Hour is selected and `libmainrf60.so` is in the APK.
    - `apply-phase2.py` — bundles the two Reforged data packages as APK
      assets and adds the launcher code that installs + enables them as
      mods on first run (fixes first, balance last = highest priority).
@@ -67,9 +80,15 @@ every run and applies this repo's small overlay on top:
 3. **Build** exactly like upstream's own `build-android.yml` (same pinned
    NDK/Gradle/vcpkg/CMake preset `android-vulkan`, arm64), with the v1
    build's target list (both `libmain.so` and `libgenerals.so`) and strip
-   list, then package a release APK.
+   list, then package a release APK. Since v1.5 the Zero Hour engine is
+   built a second time with `REFORGED_60_STEPS=ON` (same build dir,
+   sequential; the standard `libmain.so` is stashed and restored around
+   the pass) and packaged as `libmainrf60.so`; the APK guard requires
+   exactly `libmain.so` + `libmainrf60.so` + `libgenerals.so` and bans
+   every other `*60.so` name.
 4. **Upload** the APK as the workflow artifact **`ZeroHourReforged-apk`**
-   (plus a libmain symbol table for crash symbolization, and build logs).
+   (plus symbol tables for both Zero Hour engines for crash
+   symbolization, and build logs).
 
 ## Signing
 
