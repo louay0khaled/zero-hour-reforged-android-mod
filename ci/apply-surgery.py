@@ -36,8 +36,8 @@ print('surgery target tree:', SRC)
 # ---------------- Phase 1a: applicationId + version ----------------
 edit('android/app/build.gradle', [
     ("applicationId 'com.generalsx.zerohour'", f"applicationId '{NEW_ID}'"),
-    ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 2)'),
-    ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.1')"),
+    ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 3)'),
+    ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.2')"),
 ])
 
 # ---------------- Phase 1b: native hardcoded data paths ----------------

@@ -9,15 +9,20 @@ every run and applies this repo's small overlay on top:
    `a520ed1` (plus its DXVK submodule), and check out this repo into
    `reforged-overlay/`.
 2. **Apply the overlay** (this folder):
-   - `patches/engine-carryover.patch` — the one engine change: the
-     locomotor carry-over in `ThingTemplate.cpp` (a replaced AI module no
-     longer loses the object's Locomotor sets), ported from the Reforged
-     engine.
+   - `patches/engine-carryover.patch` — the locomotor carry-over in
+     `ThingTemplate.cpp` (a replaced AI module no longer loses the object's
+     Locomotor sets), ported from the Reforged engine.
+   - `patches/smooth-motion.patch` — smooth motion (render interpolation),
+     ported from the Reforged engine and applied after the carry-over
+     patch: on a display faster than the 30 Hz logic, models are drawn
+     between their last two logic transforms and restored right after the
+     render, so gameplay and replay checksums are untouched. On by
+     default; `-nosmoothmotion` opts out for a run.
    - `patches/package-android-zh-gradle-task.patch` — lets the upstream
      packaging script run `assembleRelease` (via `GX_GRADLE_TASK`) and
      checks the release output path.
    - `apply-surgery.py` — new applicationId `com.louay.zerohour.reforged`,
-     version 2 / "1.1", the native hardcoded data paths repointed to the
+     version 3 / "1.2", the native hardcoded data paths repointed to the
      new id, the "Zero Hour Reforged" label in all locales, and the OTA
      update channel pointed at this repo (so upstream engine updates can
      never overwrite the patched build).
