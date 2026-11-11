@@ -405,6 +405,145 @@ index ce63731..226bb10 100644
  				Coord3D curpos = getPosition();
  				// don't "snap" directly to the pos, but move there smoothly.
  				Real snapThreshSqr = sqr(TheGlobalData->m_partitionCellSize);
+diff --git a/Generals/Code/GameEngine/Include/Common/DrawModule.h b/Generals/Code/GameEngine/Include/Common/DrawModule.h
+index 1867db6..ccc0458 100644
+--- a/Generals/Code/GameEngine/Include/Common/DrawModule.h
++++ b/Generals/Code/GameEngine/Include/Common/DrawModule.h
+@@ -90,6 +90,13 @@ public:
+ 	virtual void reactToTransformChange(const Matrix3D* oldMtx, const Coord3D* oldPos, Real oldAngle) = 0;
+ 	virtual void reactToGeometryChange() = 0;
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion, ported from the Reforged
++	// engine (W3DSmoothMotion.h): W3DDisplay::draw's capture, blend and restore.  Only
++	// W3DModelDraw overrides them; every other draw module keeps these empty defaults.
++	virtual void smoothMotionCapture(UnsignedInt /*clientFrame*/, Bool /*marked*/) { }
++	virtual void smoothMotionApply(Real /*alpha*/) { }
++	virtual void smoothMotionRestore() { }
++
+ 	virtual Bool isLaser() const { return false; }
+ 
+ 	// interface acquisition
+diff --git a/Generals/Code/GameEngine/Include/GameClient/Drawable.h b/Generals/Code/GameEngine/Include/GameClient/Drawable.h
+index 356ec40..897f473 100644
+--- a/Generals/Code/GameEngine/Include/GameClient/Drawable.h
++++ b/Generals/Code/GameEngine/Include/GameClient/Drawable.h
+@@ -458,6 +458,18 @@ public:
+ 	// this method must ONLY be called from the client, NEVER From the logic, not even indirectly.
+ 	Bool clientOnly_getFirstRenderObjInfo(Coord3D* pos, Real* boundingSphereRadius, Matrix3D* transform);
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion, ported from the Reforged
++	// engine: the logic names a move that is not travel (a teleport), and the picture must not
++	// blend across it.  A client-only flag; nothing in the logic reads it.
++	void markMotionDiscontinuity() { m_motionDiscontinuity = TRUE; }
++	Bool isMotionDiscontinuous() const { return m_motionDiscontinuity; }
++	void clearMotionDiscontinuity() { m_motionDiscontinuity = FALSE; }
++
++	// this method must ONLY be called from the client, NEVER From the logic, not even indirectly.
++	void smoothMotionCapturePosition(UnsignedInt clientFrame);
++	// this method must ONLY be called from the client, NEVER From the logic, not even indirectly.
++	Bool getSmoothMotionPosition(Real alpha, Coord3D *pos) const;
++
+ 	/**
+ 		Find the bone(s) with the given name and return their positions and/or transforms in the given arrays.
+ 		We look for a bone named "boneNamePrefixQQ", where QQ is 01, 02, 03, etc, starting at the
+@@ -642,6 +654,14 @@ private:
+ 	Drawable *m_nextDrawable;
+ 	Drawable *m_prevDrawable;		///< list links
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion position track (the camera
++	// lock follows the blended position) and the discontinuity flag, all client-only.
++	Coord3D m_smoothPrevPos;			///< the position at the previous logic tick
++	Coord3D m_smoothCurPos;				///< the position at the current logic tick
++	UnsignedInt m_smoothFrame;			///< the client frame m_smoothCurPos was taken on
++	Bool m_smoothHavePrev;				///< the two positions are one tick apart and may be blended
++	Bool m_motionDiscontinuity;			///< markMotionDiscontinuity: this tick's move was not travel
++
+ 	DrawableStatusBits m_status;		///< status bits (see DrawableStatus enum)
+ 	UnsignedInt m_tintStatus;				///< tint color status bits (see TintStatus enum)
+ 	UnsignedInt m_prevTintStatus;///< for edge testing with m_tintStatus
+diff --git a/Generals/Code/GameEngine/Source/GameClient/Drawable.cpp b/Generals/Code/GameEngine/Source/GameClient/Drawable.cpp
+index 4aac123..f061d7e 100644
+--- a/Generals/Code/GameEngine/Source/GameClient/Drawable.cpp
++++ b/Generals/Code/GameEngine/Source/GameClient/Drawable.cpp
+@@ -320,6 +320,13 @@ Drawable::Drawable( const ThingTemplate *thingTemplate, DrawableStatusBits statu
+ 	m_nextDrawable = nullptr;
+ 	m_prevDrawable = nullptr;
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion track starts empty.
++	m_smoothPrevPos.zero();
++	m_smoothCurPos.zero();
++	m_smoothFrame = 0xFFFFFFFFu;	// never captured
++	m_smoothHavePrev = FALSE;
++	m_motionDiscontinuity = FALSE;
++
+ 	// register drawable with the GameClient ... do this first before we start doing anything
+ 	// complex that uses any of the drawable data so that we have and ID!!  It's ok to initialize
+ 	// members of the drawable before this registration happens
+@@ -3752,11 +3759,45 @@ void Drawable::setInstanceMatrix( const Matrix3D *instance )
+ 
+ 
+ //-------------------------------------------------------------------------------------------------
++//-------------------------------------------------------------------------------------------------
++/** Smooth motion (ported from the Reforged engine): at the start of a render pass, after a new
++	logic tick, move the last position into m_smoothPrevPos and take the current one.  The blend is
++	allowed only across one tick, with no marked discontinuity and no step longer than a unit
++	could travel (the same 60 world units as the models' rule, W3DSmoothMotion.h's
++	SMOOTH_SNAP_DISTANCE_UNITS). */
++void Drawable::smoothMotionCapturePosition( UnsignedInt clientFrame )
++{
++	if (clientFrame == m_smoothFrame)
++		return;
++	const Bool nextTick = m_smoothFrame != 0xFFFFFFFFu && clientFrame == m_smoothFrame + 1;
++	m_smoothPrevPos = m_smoothCurPos;
++	m_smoothCurPos = *getPosition();
++	const Real dx = m_smoothCurPos.x - m_smoothPrevPos.x;
++	const Real dy = m_smoothCurPos.y - m_smoothPrevPos.y;
++	const Real dz = m_smoothCurPos.z - m_smoothPrevPos.z;
++	const Real SNAP_DISTANCE = 60.0f;
++	m_smoothHavePrev = nextTick && !m_motionDiscontinuity && (dx * dx + dy * dy + dz * dz) <= SNAP_DISTANCE * SNAP_DISTANCE;
++	m_smoothFrame = clientFrame;
++}
++
++//-------------------------------------------------------------------------------------------------
++/** Smooth motion: where the picture shows this drawable, `alpha` of the way from its previous
++	logic position to its current one.  The logic position, and FALSE, when there is no blend. */
++Bool Drawable::getSmoothMotionPosition( Real alpha, Coord3D *pos ) const
++{
++	*pos = *getPosition();
++	if (!m_smoothHavePrev)
++		return FALSE;
++	pos->x = m_smoothPrevPos.x + (m_smoothCurPos.x - m_smoothPrevPos.x) * alpha;
++	pos->y = m_smoothPrevPos.y + (m_smoothCurPos.y - m_smoothPrevPos.y) * alpha;
++	pos->z = m_smoothPrevPos.z + (m_smoothCurPos.z - m_smoothPrevPos.z) * alpha;
++	return TRUE;
++}
++
+ /**
+  * Return the Drawable's world transform.
+  * If this Drawable is attached to an Object, return the Object's transform instead.
+  */
+-//-------------------------------------------------------------------------------------------------
+ const Matrix3D *Drawable::getTransformMatrix() const
+ {
+ 	const Object *obj = getObject();
+diff --git a/Generals/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp b/Generals/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
+index a65e757..0e0a55a 100644
+--- a/Generals/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
++++ b/Generals/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
+@@ -137,6 +137,13 @@ static Real theLightYOffset = 0.07f;
+ static Int theFlashCount = 0;
+ #endif
+ 
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion state, shared with W3DView's
++// camera lock (declared in W3DDevice/GameClient/W3DSmoothMotion.h). The base game has no
++// smooth-motion phase calls in its W3DDisplay::draw, so these stay at their defaults here and
++// the camera lock reads the logic position, exactly as before.
++bool TheSmoothMotionActive = false;
++float TheSmoothMotionAlpha = 1.0f;
++
+ //*****************************************************************************************
+ //*****************************************************************************************
+ //**** Start Statistical Dump *************************************************************
 diff --git a/GeneralsMD/Code/GameEngine/Include/Common/DrawModule.h b/GeneralsMD/Code/GameEngine/Include/Common/DrawModule.h
 index d2595fc..120de8f 100644
 --- a/GeneralsMD/Code/GameEngine/Include/Common/DrawModule.h
