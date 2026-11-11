@@ -1,0 +1,299 @@
+diff --git a/Core/GameEngine/Include/GameClient/Display.h b/Core/GameEngine/Include/GameClient/Display.h
+index 1a740e1..030db7f 100644
+--- a/Core/GameEngine/Include/GameClient/Display.h
++++ b/Core/GameEngine/Include/GameClient/Display.h
+@@ -121,6 +121,7 @@ public:
+ 	virtual Bool isBatching() const { return m_isBatching; }	///< returns true if currently batching 2D draw operations.
+ 
+ 	virtual void step() {}; ///< Do one fixed time step
++	virtual void stepDynamicLights( void ) { }	///< a pass that skips the draw: fade the light pulses and park the spent ones, as the draw does (Reforged, M2 wave 3)
+ 	virtual void draw() override;																		///< Redraw the entire display
+ 	virtual void setTimeOfDay( TimeOfDay tod ) = 0;								///< Set the time of day for this display
+ 	virtual void createLightPulse( const Coord3D *pos, const RGBColor *color, Real innerRadius,Real attenuationWidth,
+diff --git a/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp b/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp
+index 87eae2c..c4cc29a 100644
+--- a/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp
++++ b/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp
+@@ -85,6 +85,11 @@ static void AILCALLBACK streamingFileClose(void *fileHandle);
+ static S32 AILCALLBACK streamingFileSeek(void *fileHandle, S32 offset, U32 type);
+ static U32 AILCALLBACK streamingFileRead(void *fileHandle, void *buffer, U32 bytes);
+ 
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 (M2 wave 3) -- same audio cache floor as the
++// OpenAL manager (see OpenALAudioManager.cpp): Reforged floors the sound cache at 64 MB because
++// the retail 4 MB footprint makes busy matches re-read sounds from storage thousands of times.
++static const UnsignedInt MIN_AUDIO_CACHE_BYTES = 64 * 1024 * 1024;
++
+ //-------------------------------------------------------------------------------------------------
+ MilesAudioManager::MilesAudioManager() :
+ 	m_providerCount(0),
+@@ -427,7 +432,7 @@ void MilesAudioManager::init()
+ 
+ 	// We should now know how many samples we want to load
+ 	openDevice();
+-	m_audioCache->setMaxSize(getAudioSettings()->m_maxCacheSize);
++	m_audioCache->setMaxSize(max(getAudioSettings()->m_maxCacheSize, MIN_AUDIO_CACHE_BYTES));
+ 
+ 	// Now, set the file callbacks to load the streams from Biggie files
+ 	AIL_set_file_callbacks(streamingFileOpen, streamingFileClose, streamingFileSeek, streamingFileRead);
+diff --git a/Core/GameEngineDevice/Source/OpenALAudioDevice/OpenALAudioManager.cpp b/Core/GameEngineDevice/Source/OpenALAudioDevice/OpenALAudioManager.cpp
+index 104bbbb..062607d 100644
+--- a/Core/GameEngineDevice/Source/OpenALAudioDevice/OpenALAudioManager.cpp
++++ b/Core/GameEngineDevice/Source/OpenALAudioDevice/OpenALAudioManager.cpp
+@@ -84,6 +84,13 @@ static Int s_disallowSpeechSetFrame = 0;
+ // 30 logic frames/sec; 15s comfortably exceeds the longest taunt/EVA line.
+ static const Int DISALLOW_SPEECH_MAX_FRAMES = 30 * 15;
+ 
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 (M2 wave 3) -- Reforged's audio cache floor,
++// ported from its MilesAudioManager: the retail AudioSettings footprint is the 2003 figure of
++// 4 MB, so in a busy match sounds evicted each other and were re-read from storage thousands of
++// times (upstream measured 3,508 re-reads in two minutes, ~35 with the floor). The cache is
++// playback-only state; nothing in the simulation reads it, so the floor cannot move a checksum.
++static const UnsignedInt MIN_AUDIO_CACHE_BYTES = 64 * 1024 * 1024;
++
+ extern "C" {
+ #include <libavcodec/avcodec.h>
+ #include <libavutil/avutil.h>
+@@ -524,7 +531,7 @@ void OpenALAudioManager::init()
+ 
+ 	// We should now know how many samples we want to load
+ 	openDevice();
+-	m_audioCache->setMaxSize(getAudioSettings()->m_maxCacheSize);
++	m_audioCache->setMaxSize(max(getAudioSettings()->m_maxCacheSize, MIN_AUDIO_CACHE_BYTES));
+ 	alDistanceModel(AL_INVERSE_DISTANCE_CLAMPED);
+ }
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GameClient.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GameClient.cpp
+index e3d2d52..15a5c21 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GameClient.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GameClient.cpp
+@@ -995,6 +995,11 @@ void GameClient::updateHeadless()
+ 	// during GameLogic and only cleaned up during rendering. update() lets particles finish
+ 	// their lifecycle naturally instead of abruptly removing them with reset().
+ 	TheParticleSystemManager->update();
++
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 (M2 wave 3): the light pulses are the
++	// same story -- only the render faded and parked them, so a headless match kept every
++	// muzzle flash of the match switched on, and each new one walked them all (Reforged).
++	TheDisplay->stepDynamicLights();
+ }
+ 
+ Bool GameClient::isMovieAbortRequested()
+diff --git a/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DDisplay.h b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DDisplay.h
+index 9838430..3399c46 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DDisplay.h
++++ b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DDisplay.h
+@@ -71,6 +71,7 @@ public:
+ 	virtual void getDisplayModeDescription(Int modeIndex, Int *xres, Int *yres, Int *bitDepth) override;	///<return description of mode
+  	virtual void setGamma(Real gamma, Real bright, Real contrast, Bool calibrate) override;
+ 	virtual void doSmartAssetPurgeAndPreload(const char* usageFileName) override;
++	virtual void stepDynamicLights( void ) override;	///< (Reforged, M2 wave 3)
+ #if defined(RTS_DEBUG)
+ 	virtual void dumpAssetUsage(const char* mapname) override;
+ #endif
+diff --git a/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DDynamicLight.h b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DDynamicLight.h
+index b74446f..85fda24 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DDynamicLight.h
++++ b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DDynamicLight.h
+@@ -57,6 +57,10 @@ protected:
+ 	UnsignedInt m_decayFrameCount;
+ 	UnsignedInt m_increaseFrameCount;
+ 	Real		m_targetRange;
++
++	/// last client frame we stepped the fade counters on; these count LOGIC frames, and
++	/// On_Frame_Update is driven once per RENDER frame. (Reforged, M2 wave 3)
++	UnsignedInt m_lastFadeFrame;
+ 	Vector3 m_targetAmbient;
+ 	Vector3 m_targetDiffuse;
+ 
+@@ -70,6 +74,8 @@ public:
+ 
+ 	void setEnabled(Bool enabled) { m_enabled = enabled; m_decayRange = false; m_decayFrameCount = 0; m_decayColor = false; m_increaseFrameCount = 0;};
+ 	Bool isEnabled() {return m_enabled;};
++	/// off, and the terrain has taken it back out of its tiles, so nothing reads it until it is handed out again (Reforged, M2 wave 3)
++	Bool isSpent(void) const {return !m_enabled && !m_priorEnable;};
+ 
+ 
+ 	/// 0 frameIncreaseTime means it starts out full size/intensity, 0 decay time means it lasts forever.
+diff --git a/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DScene.h b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DScene.h
+index c84be2c..5c63edb 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DScene.h
++++ b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DScene.h
+@@ -40,6 +40,7 @@
+ #include "WW3D2/rinfo.h"
+ #include "WW3D2/coltest.h"
+ #include "WW3D2/lightenvironment.h"
++#include <vector>
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ // PROTOTYPES /////////////////////////////////////////////////////////////////
+@@ -89,6 +90,7 @@ public:
+ 	void destroyLightsIterator(RefRenderObjListIterator * it);
+ 	RefRenderObjListClass *getDynamicLights() {return &m_dynamicLightList;};
+ 	W3DDynamicLight *getADynamicLight();
++	void				stepDynamicLights(void);	///< what Customized_Render does to the lights, for a pass that does not render (Reforged, M2 wave 3)
+ 	void setGlobalLight(LightClass *pLight,Int lightIndex=0);
+ 	LightEnvironmentClass &getDefaultLightEnv() {return m_defaultLightEnv;}
+ 
+@@ -107,8 +109,11 @@ protected:
+ 	void flushOccludedObjectsIntoStencil(RenderInfoClass & rinfo);
+ 	void updatePlayerColorPasses();
+ 
++	void				parkSpentDynamicLights(void);	///< (Reforged, M2 wave 3)
++
+ protected:
+ 	RefRenderObjListClass	m_dynamicLightList;
++	std::vector<W3DDynamicLight *>	m_spentDynamicLights;	///< out of both lists, one reference each, for getADynamicLight to hand out again (Reforged, M2 wave 3)
+ 	Bool									m_drawTerrainOnly;
+ 	LightClass						*m_globalLight[LightEnvironmentClass::MAX_LIGHTS];				///< The global directional light (sun, moon) Applies to objects.
+ 	LightClass						*m_scratchLight; ///< a workspace for copying global lights and modifying // MLorenzen
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
+index 7fb25f0..37b3b7f 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
+@@ -2722,6 +2722,15 @@ void W3DDisplay::createLightPulse( const Coord3D *pos, const RGBColor *color,
+ 	theDynamicLight->Set_Flag(LightClass::FAR_ATTENUATION,true);
+ }
+ 
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 (M2 wave 3): forward the non-drawing
++// pass's light step to the scene (upstream calls m_3DScene unguarded; the guard here covers
++// the load-screen window before the scene exists, where there are no lights to step anyway).
++void W3DDisplay::stepDynamicLights( void )
++{
++	if (m_3DScene)
++		m_3DScene->stepDynamicLights();
++}
++
+ void W3DDisplay::toggleLetterBox()
+ {
+ 	m_letterBoxEnabled = !m_letterBoxEnabled;
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDynamicLight.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDynamicLight.cpp
+index e7b7ce9..3fe3fa8 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDynamicLight.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDynamicLight.cpp
+@@ -28,12 +28,14 @@
+ #include <stdlib.h>
+ 
+ #include "W3DDevice/GameClient/W3DDynamicLight.h"
++#include "GameClient/GameClient.h"		// for the logic-frame gate in On_Frame_Update (Reforged, M2 wave 3)
+ 
+ W3DDynamicLight::W3DDynamicLight():
+ LightClass(LightClass::POINT)
+ {
+ 
+ 	m_priorEnable = false;
++	m_lastFadeFrame = 0xffffffff;	// so the first On_Frame_Update always steps (Reforged, M2 wave 3)
+ 	m_enabled = true;
+ 
+ }
+@@ -47,6 +49,21 @@ void W3DDynamicLight::On_Frame_Update()
+ 	if (!m_enabled) {
+ 		return;
+ 	}
++
++	//
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 (M2 wave 3): m_curIncreaseFrameCount/
++	// m_curDecayFrameCount are LOGIC frame counts, but this is called once per RENDER frame
++	// from RTS3DScene::Customized_Render. With rendering uncapped (a 120 Hz panel) that made
++	// muzzle flashes and explosion lights fade at (fps/30)x speed. Step once per logic frame,
++	// as Reforged does; the gate is also what lets a non-drawing pass step the fades (via
++	// RTS3DScene::stepDynamicLights) without ever stepping one twice.
++	//
++	UnsignedInt now = TheGameClient ? TheGameClient->getFrame() : 0;
++	if (now == m_lastFadeFrame) {
++		return;
++	}
++	m_lastFadeFrame = now;
++
+ 	Real factor = 1.0f;
+ 	if (m_curIncreaseFrameCount>0 && m_increaseFrameCount>0) {
+ 		// increasing
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DScene.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DScene.cpp
+index 3e46398..777efd6 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DScene.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DScene.cpp
+@@ -333,6 +333,9 @@ RTS3DScene::~RTS3DScene()
+ 	{
+ 		REF_PTR_RELEASE(m_occludedMaterialPass[i]);
+ 	}
++
++	for (size_t spent = 0; spent < m_spentDynamicLights.size(); ++spent)
++		m_spentDynamicLights[spent]->Release_Ref();
+ }
+ 
+ 
+@@ -1246,6 +1249,9 @@ void RTS3DScene::Customized_Render( RenderInfoClass &rinfo )
+ 	visTimer.stop();
+ 	ScenePhaseTimer updateTimer(SP_UPDATE);
+ 
++	if (m_customPassMode == SCENE_PASS_DEFAULT && !ShaderClass::Is_Backface_Culling_Inverted())
++		parkSpentDynamicLights();
++
+ 
+ 	RefRenderObjListIterator it(&UpdateList);
+ 	// allow all objects in the update list to do their "every frame" processing
+@@ -1848,13 +1854,64 @@ W3DDynamicLight * RTS3DScene::getADynamicLight()
+ 			return(pLight);
+ 		}
+ 	}
+-	pLight = NEW_REF(W3DDynamicLight, ());
++	if (m_spentDynamicLights.empty())
++		pLight = NEW_REF(W3DDynamicLight, ());
++	else
++	{
++		pLight = m_spentDynamicLights.back();
++		m_spentDynamicLights.pop_back();
++	}
+ 	addDynamicLight( pLight );
+ 	pLight->Release_Ref();
+ 	pLight->setEnabled(true);
+ 	return(pLight);
+ }
+ 
++//=============================================================================
++// RTS3DScene::parkSpentDynamicLights
++//=============================================================================
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 (M2 wave 3), ported from Reforged:
++/** Takes the lights that are off and out of the terrain's tiles out of both lists.  The pool used
++	* to keep every light the busiest moment of the match had needed, mostly off, and the five walks
++	* over it a frame (the fade, the terrain, the blast lights, the smoke's pulses, a model's own
++	* lights) read each one: a late match had thousands to step over.  The lights themselves, their
++	* intensities and their lifetimes are untouched -- only which list a spent light waits on. */
++//=============================================================================
++void RTS3DScene::parkSpentDynamicLights(void)
++{
++	RefRenderObjListIterator dynaLightIt(&m_dynamicLightList);
++	for (dynaLightIt.First(); !dynaLightIt.Is_Done(); )
++	{
++		W3DDynamicLight *pLight = (W3DDynamicLight*)dynaLightIt.Peek_Obj();
++		dynaLightIt.Next();
++		if (!pLight->isSpent())
++			continue;
++		pLight->Add_Ref();
++		m_spentDynamicLights.push_back(pLight);
++		UpdateList.Remove(pLight);
++		m_dynamicLightList.Remove(pLight);
++	}
++}
++
++//=============================================================================
++// RTS3DScene::stepDynamicLights
++//=============================================================================
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 (M2 wave 3), ported from Reforged:
++/** The lights' half of Customized_Render, in its order, for a pass whose draw is skipped:
++	* -headless, a replay's fast forward and seek.  Only the render stepped a light's fade and
++	* parked it, so those runs kept every light pulse of the match switched on and
++	* getADynamicLight walked all of them for each new one.  The fade counts logic frames and
++	* is gated on the client frame, so a later render steps nothing twice, and a light the
++	* terrain still holds is not spent and waits for it. */
++//=============================================================================
++void RTS3DScene::stepDynamicLights(void)
++{
++	parkSpentDynamicLights();
++	RefRenderObjListIterator dynaLightIt(&m_dynamicLightList);
++	for (dynaLightIt.First(); !dynaLightIt.Is_Done(); dynaLightIt.Next())
++		dynaLightIt.Peek_Obj()->On_Frame_Update();
++}
++
+ //=============================================================================
+ // RTS3DScene::removeDynamicLight
+ //=============================================================================
