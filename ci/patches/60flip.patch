@@ -137,7 +137,12 @@
  };
 --- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/FireWeaponCollide.cpp
 +++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/FireWeaponCollide.cpp
-@@ -60,6 +60,7 @@
+@@ -34,3 +34,4 @@
+ #include "Common/Xfer.h"
+ #include "GameLogic/Object.h"
+ #include "GameLogic/Module/FireWeaponCollide.h"
++#include "GameLogic/GameLogic.h" // TheGameLogic->getFrame() for the wave 6 fire gate
+@@ -60,6 +61,7 @@
  {
  	m_collideWeapon = TheWeaponStore->allocateNewWeapon(getFireWeaponCollideModuleData()->m_collideWeaponTemplate, PRIMARY_WEAPON);
  	m_everFired = FALSE;
@@ -145,7 +150,7 @@
  }
  
  //-------------------------------------------------------------------------------------------------
-@@ -83,10 +84,20 @@
+@@ -83,10 +85,20 @@
  	// to hurt them all.  Another solution would be to keep a Map of other->objetIDs and
  	// delays for each individually.  However, this solution here is so quick and simple that it
  	// warrants the "do it eventually if we need it" clause.
@@ -166,7 +171,7 @@
  	}
  }
  
-@@ -125,13 +136,14 @@
+@@ -125,13 +137,14 @@
  // ------------------------------------------------------------------------------------------------
  /** Xfer method
  	* Version Info:
@@ -183,7 +188,7 @@
  	XferVersion version = currentVersion;
  	xfer->xferVersion( &version, currentVersion );
  
-@@ -160,6 +172,10 @@
+@@ -160,6 +173,10 @@
  	// ever fired
  	xfer->xferBool( &m_everFired );
  
