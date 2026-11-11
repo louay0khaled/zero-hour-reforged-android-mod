@@ -2,7 +2,7 @@ name: Build Zero Hour Reforged APK
 
 # Zero Hour Reforged CI: builds the Reforged APK from the PUBLIC upstream
 # MYSOREZ/GeneralsZH-Android-Port tree (pinned commit) plus this repo's
-# overlay (ci/): the locomotor carry-over and smooth-motion engine patches,
+# overlay (ci/): the locomotor carry-over, smooth-motion and perf-graphics engine patches,
 # the package-id surgery scripts, and the two bundled Reforged data packages. Nothing of
 # the multi-GB engine tree lives in this repo -- it is checked out fresh
 # from upstream on every run and the overlay is applied on top.
@@ -20,11 +20,11 @@ on:
     inputs:
       version_name:
         type: string
-        description: "Override versionName (blank = build.gradle default, currently '1.2'). Bump together with version_code for a new release."
+        description: "Override versionName (blank = build.gradle default, currently '1.3'). Bump together with version_code for a new release."
         default: ""
       version_code:
         type: string
-        description: "Override versionCode (blank = build.gradle default, currently 3). Must increase between published releases."
+        description: "Override versionCode (blank = build.gradle default, currently 4). Must increase between published releases."
         default: ""
 
 env:
@@ -71,11 +71,12 @@ jobs:
       - name: Apply Reforged overlay
         run: |
           set -euo pipefail
-          # Engine patches (locomotor carry-over, then smooth motion) +
+          # Engine patches (locomotor carry-over, smooth motion, perf-graphics) +
           # packaging-script patch (GX_GRADLE_TASK knob with a task-aware
           # final APK check).
           git apply --verbose reforged-overlay/ci/patches/engine-carryover.patch
           git apply --verbose reforged-overlay/ci/patches/smooth-motion.patch
+          git apply --verbose reforged-overlay/ci/patches/perf-graphics.patch
           git apply --verbose reforged-overlay/ci/patches/package-android-zh-gradle-task.patch
           # Package-id surgery + bundled-data phase (both scripts resolve
           # the MYSOREZ tree as the parent of the overlay checkout).
@@ -87,6 +88,10 @@ jobs:
           grep -q "W3DSmoothMotion" GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
           grep -q "smoothMotionCapture" Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.cpp
           test -f Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DSmoothMotion.h
+          grep -q "reforgeLighting" Core/GameEngineDevice/Source/W3DDevice/GameClient/WorldHeightMap.cpp
+          grep -q "MAX_BUFFERS = 8" Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DTreeBuffer.h
+          grep -q "MAX_BRIDGE_VERTEX=32000" GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DBridgeBuffer.h
+          grep -q "haveLightingKey" Core/Libraries/Source/d3d8gles/src/gles_pipeline.cpp
           grep -q "ensureBundledReforgedData" android/app/src/main/java/com/generalsx/zerohour/ModManager.java
           test -f 'android/app/src/main/assets/reforged/!ReforgedFixes-v3.big'
           test -f 'android/app/src/main/assets/reforged/!ReforgedBalance-v2.big'
