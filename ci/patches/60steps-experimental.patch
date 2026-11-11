@@ -1,0 +1,127 @@
+diff --git a/Core/GameEngine/Include/Common/GameCommon.h b/Core/GameEngine/Include/Common/GameCommon.h
+index be1a941..0f39781 100644
+--- a/Core/GameEngine/Include/Common/GameCommon.h
++++ b/Core/GameEngine/Include/Common/GameCommon.h
+@@ -77,6 +77,50 @@ const Real SECONDS_PER_LOGICFRAME_REAL = 1.0f / LOGICFRAMES_PER_SECONDS_REAL;
+ // on 30 Hz velocities (tread dust, wheel dust) multiplies by this to keep the retail look.
+ const Real LOGICFRAMES_PER_BASEFRAME_REAL = LOGICFRAMES_PER_SECONDS_REAL / (Real)BaseFps;
+ 
++// ----------------------------------------------------------------------------------------------
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 EXPERIMENTAL (M2 wave 6, slice 6a) -- the
++// conversion algebra of Reforged's faithful 60-steps conversion, ported from the Reforged
++// engine (its GameCommon.h), infrastructure only: nothing calls these helpers yet. A frame
++// count written for the retail rate is scaled by the rate ratio, an amount added every frame
++// by its inverse, an acceleration by its inverse squared, and a factor multiplied in every
++// frame by its ratio-th root. Upstream pins the ratio at exactly 2 with a static_assert and
++// hardcodes the factors; here they are derived from the ratio instead, with an exact identity
++// branch at ratio 1, so a converted call site is correct at the shipped 30 steps/s (every
++// helper returns its input bit-for-bit) and at 60 when the experimental variant flips the
++// rate. This is NOT the host's SAGE_HIGH_FPS_SIM switch, which flips WWSyncPerSecond with
++// spot compensation at a few AI sites and stays off and unused.
++// ----------------------------------------------------------------------------------------------
++enum
++{
++	RETAIL_LOGICFRAMES_PER_SECOND = BaseFps,	///< the rate every hard-coded frame count and per-frame amount in EA's code and data was written for
++	LOGICFRAMES_PER_RETAIL_FRAME = LOGICFRAMES_PER_SECOND / RETAIL_LOGICFRAMES_PER_SECOND
++};
++static_assert( LOGICFRAMES_PER_RETAIL_FRAME == 1 || LOGICFRAMES_PER_RETAIL_FRAME == 2, "the Retail conversions are exact only at the retail rate or twice it" );
++
++// a frame count past half the type's range is a sentinel (a "never" or "forever"), and stays one
++constexpr Int ConvertRetailFrames( Int frames )
++{
++	if( LOGICFRAMES_PER_RETAIL_FRAME == 1 ) return frames;
++	if( frames > INT_MAX / LOGICFRAMES_PER_RETAIL_FRAME ) return INT_MAX;
++	if( frames < INT_MIN / LOGICFRAMES_PER_RETAIL_FRAME ) return INT_MIN;
++	return frames * LOGICFRAMES_PER_RETAIL_FRAME;
++}
++constexpr UnsignedInt ConvertRetailFrames( UnsignedInt frames )
++{
++	if( LOGICFRAMES_PER_RETAIL_FRAME == 1 ) return frames;
++	if( frames > UINT_MAX / LOGICFRAMES_PER_RETAIL_FRAME ) return UINT_MAX;
++	return frames * LOGICFRAMES_PER_RETAIL_FRAME;
++}
++constexpr Real ConvertRetailFrames( Real frames ) { return frames * (Real)LOGICFRAMES_PER_RETAIL_FRAME; }
++
++constexpr Real ConvertRetailPerFrameRate( Real perFrame ) { return perFrame * ((Real)RETAIL_LOGICFRAMES_PER_SECOND / (Real)LOGICFRAMES_PER_SECOND); }
++constexpr Real ConvertRetailPerFrameSquared( Real perFrameSqr ) { return perFrameSqr * ((Real)RETAIL_LOGICFRAMES_PER_SECOND / (Real)LOGICFRAMES_PER_SECOND) * ((Real)RETAIL_LOGICFRAMES_PER_SECOND / (Real)LOGICFRAMES_PER_SECOND); }
++inline Real ConvertRetailPerFrameFactor( Real factor )
++{
++	if( LOGICFRAMES_PER_RETAIL_FRAME == 1 ) return factor;
++	return sqrtf( factor > 0.0f ? factor : 0.0f );
++}
++
+ // ----------------------------------------------------------------------------------------------
+ // note that this returns a REAL value, not an int... most callers will want to
+ // call ceil() on the result, so that partial frames get converted to full frames!
+diff --git a/Core/GameEngine/Include/Common/INI.h b/Core/GameEngine/Include/Common/INI.h
+index 746a2e6..c8fe773 100644
+--- a/Core/GameEngine/Include/Common/INI.h
++++ b/Core/GameEngine/Include/Common/INI.h
+@@ -267,6 +267,14 @@ public:
+ 	static void parseUnsignedInt( INI *ini, void *instance, void *store, const void* userData );
+ 	static void parseReal( INI *ini, void *instance, void *store, const void* userData );
+ 	static void parsePositiveNonZeroReal( INI *ini, void *instance, void *store, const void* userData );
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 EXPERIMENTAL (M2 wave 6, slice 6a): the
++	// retail-frame INI hooks of Reforged's 60-steps conversion -- parse exactly like the plain
++	// parsers, then convert (GameCommon.h). Unused by any field table yet.
++	static void parseRetailFramesUnsignedInt( INI *ini, void *instance, void *store, const void* userData );
++	static void parseRetailFramesInt( INI *ini, void *instance, void *store, const void* userData );
++	static void parseRetailFramesReal( INI *ini, void *instance, void *store, const void* userData );
++	static void parseRetailPerFrameReal( INI *ini, void *instance, void *store, const void* userData );
++	static void parseRetailPerFrameFactorReal( INI *ini, void *instance, void *store, const void* userData );
+ 	static void parseBool( INI *ini, void *instance, void *store, const void* userData );
+ 	static void parseBitInInt32( INI *ini, void *instance, void *store, const void* userData );
+ 	static void parseAsciiString( INI *ini, void *instance, void *store, const void* userData );
+diff --git a/Core/GameEngine/Source/Common/INI/INI.cpp b/Core/GameEngine/Source/Common/INI/INI.cpp
+index 54bf97f..068c226 100644
+--- a/Core/GameEngine/Source/Common/INI/INI.cpp
++++ b/Core/GameEngine/Source/Common/INI/INI.cpp
+@@ -770,6 +770,48 @@ void INI::parseReal( INI* ini, void * /*instance*/, void *store, const void* /*u
+ 
+ }
+ 
++//-------------------------------------------------------------------------------------------------
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 EXPERIMENTAL (M2 wave 6, slice 6a): the
++// retail-frame INI hooks of Reforged's 60-steps conversion, ported from the Reforged engine.
++// Each parses exactly like its plain counterpart, then converts the value from the retail
++// 30 steps/s the data was written for (GameCommon.h); at the shipped rate the conversion is
++// the identity. No field table uses these yet.
++//-------------------------------------------------------------------------------------------------
++void INI::parseRetailFramesInt( INI* ini, void * /*instance*/, void *store, const void* /*userData*/ )
++{
++	const char *token = ini->getNextToken();
++	*(Int *)store = ConvertRetailFrames(scanInt(token));
++
++}
++
++void INI::parseRetailFramesUnsignedInt( INI* ini, void * /*instance*/, void *store, const void* /*userData*/ )
++{
++	const char *token = ini->getNextToken();
++	*(UnsignedInt *)store = ConvertRetailFrames(scanUnsignedInt(token));
++
++}
++
++void INI::parseRetailFramesReal( INI* ini, void * /*instance*/, void *store, const void* /*userData*/ )
++{
++	const char *token = ini->getNextToken();
++	*(Real *)store = ConvertRetailFrames(scanReal(token));
++
++}
++
++void INI::parseRetailPerFrameReal( INI* ini, void * /*instance*/, void *store, const void* /*userData*/ )
++{
++	const char *token = ini->getNextToken();
++	*(Real *)store = ConvertRetailPerFrameRate(scanReal(token));
++
++}
++
++void INI::parseRetailPerFrameFactorReal( INI* ini, void * /*instance*/, void *store, const void* /*userData*/ )
++{
++	const char *token = ini->getNextToken();
++	*(Real *)store = ConvertRetailPerFrameFactor(scanReal(token));
++
++}
++
+ //-------------------------------------------------------------------------------------------------
+ /** Parse real from buffer and assign at location 'store' */
+ //-------------------------------------------------------------------------------------------------

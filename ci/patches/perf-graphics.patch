@@ -1,0 +1,618 @@
+diff --git a/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DTreeBuffer.h b/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DTreeBuffer.h
+index db2abe5..8737f4b 100644
+--- a/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DTreeBuffer.h
++++ b/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DTreeBuffer.h
+@@ -217,7 +217,12 @@ private:
+ 				MAX_TILES = 512,
+ 				NUM_SWAY_ENTRIES = 100,
+ 				MAX_SWAY_TYPES = 10,
+-				MAX_BUFFERS = 1,
++				// GeneralsX @feature Zero Hour Reforged 11/11/2026 Was 1 in EA's build: every tree on
++				// screen went into a single buffer holding about 730 of them and the rest were
++				// simply not drawn, so dense woodland blinked out at wide views. Reforged ships 8;
++				// the fill, update and draw loops here are already written generically over
++				// MAX_BUFFERS (a full buffer spills into the next), so the count is the whole port.
++				MAX_BUFFERS = 8,
+ 				SORT_ITERATIONS_PER_FRAME=10};
+ 	enum {PARTITION_WIDTH_HEIGHT = 100};
+ 	DX8VertexBufferClass	*m_vertexTree[MAX_BUFFERS];	///<Tree vertex buffer.
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/WorldHeightMap.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/WorldHeightMap.cpp
+index cff40a8..ab30ce3 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/WorldHeightMap.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/WorldHeightMap.cpp
+@@ -816,6 +816,17 @@ Bool WorldHeightMap::ParseLightingDataChunk(DataChunkInput &file, DataChunkInfo
+ 				TheW3DShadowManager->setShadowColor(shadowColor);
+ 			}
+ 		}
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 The tables were filled from the file
++	// just now, so this is always the map's own numbers being rebalanced, however many maps
++	// came before (ported from the Reforged engine's call site in this same function). The
++	// D3D11-only film grade that rides with it upstream has no host counterpart; the old
++	// renderer there likewise gets the deeper light without the curve.
++	if (TheGlobalData->m_lightingStyle == LIGHTING_STYLE_REFORGED) {
++		for (i=TIME_OF_DAY_FIRST; i<TIME_OF_DAY_COUNT; i++) {
++			reforgeLighting(TheWritableGlobalData->m_terrainLighting[i]);
++			reforgeLighting(TheWritableGlobalData->m_terrainObjectsLighting[i]);
++		}
++	}
+ 	DEBUG_ASSERTCRASH(file.atEndOfChunk(), ("Unexpected data left over."));
+ 	return true;
+ }
+diff --git a/Core/Libraries/Source/d3d8gles/src/gles_pipeline.cpp b/Core/Libraries/Source/d3d8gles/src/gles_pipeline.cpp
+index ba31796..6e32c2c 100644
+--- a/Core/Libraries/Source/d3d8gles/src/gles_pipeline.cpp
++++ b/Core/Libraries/Source/d3d8gles/src/gles_pipeline.cpp
+@@ -349,6 +349,19 @@ struct WebGLPipeline::ProgramInfo {
+ 	// that repeats it (particles, a mesh's further passes) needs no upload.
+ 	float lastWorld[16] = {};
+ 	bool haveWorld = false;
++	// GeneralsX @performance Zero Hour Reforged 11/11/2026 The same per-program treatment for the
++	// other applyUniforms() sub-blocks (they were one pipeline-global slot each, reset on every
++	// program switch -- see the note at the key structs in gles_pipeline.h). Same completeness
++	// argument as lastWorld: each key captures every device-state input its upload is built
++	// from, so a hit means this program's uniforms already hold exactly these values.
++	WebGLPipeline::TexMatKey lastTexMatKey{};
++	bool haveTexMatKey = false;
++	WebGLPipeline::MiscUniformKey lastMiscKey{};
++	bool haveMiscKey = false;
++	WebGLPipeline::MaterialKey lastMaterialKey{};
++	bool haveMaterialKey = false;
++	WebGLPipeline::LightingKey lastLightingKey{};
++	bool haveLightingKey = false;
+ 	// key fields needed at bind time
+ 	int stageTci[2] = {0, 0};
+ 	bool stageXform[2] = {false, false};
+@@ -2226,21 +2239,13 @@ void WebGLPipeline::applyUniforms(WebGLDevice *dev, ProgramInfo *prog, unsigned
+ 	if (prog->prog != m_lastProgram) {
+ 		glUseProgram(prog->prog);
+ 		m_lastProgram = prog->prog;
+-		// Uniform locations are per-program: a cache hit against a key
+-		// computed for the PREVIOUS program would wrongly skip uploading to
+-		// this one, leaving its uniforms unset. Force every sub-block below
+-		// to treat this draw as a first upload for the newly bound program.
+-		// GeneralsX @build Android port GLES experiment 08/30/2026
+-		// m_haveViewProjKey is deliberately NOT reset here anymore -- the
+-		// camera now lives in a UBO (kViewProjUBOBinding), whose DATA is
+-		// independent of which program is bound, so a program switch alone
+-		// no longer means the GPU forgot the camera. This was the single
+-		// biggest source of uniform-cache misses on a real device (a
+-		// per-block breakdown showed the combined rate collapsing to ~50%
+-		// mid-battle purely from program switches between terrain/unit/
+-		// particle/decal draws, even though the camera itself hadn't
+-		// changed at all).
+-		m_haveTexMatKey = m_haveMiscKey = m_haveMaterialKey = m_haveLightingKey = false;
++		// GeneralsX @performance Zero Hour Reforged 11/11/2026 No sub-block invalidation here
++		// anymore: the tex-mat/misc/material/lighting keys live in ProgramInfo (uniform values
++		// are program state), so switching programs no longer throws away a still-valid cache
++		// entry -- the same reasoning the 08/30/2026 note below applied to the camera UBO,
++		// whose key (m_haveViewProjKey) is likewise not reset here: its data is independent of
++		// which program is bound. Program switches between terrain/unit/particle/decal draws
++		// were the single biggest source of uniform-cache misses on a real device.
+ 	}
+ 
+ 	// D3D row-major memory uploaded untransposed IS the transpose GL wants
+@@ -2292,7 +2297,7 @@ void WebGLPipeline::applyUniforms(WebGLDevice *dev, ProgramInfo *prog, unsigned
+ 		TexMatKey key{};
+ 		memcpy(key.texMat0, &dev->getTransform(D3DTS_TEXTURE0), sizeof(key.texMat0));
+ 		memcpy(key.texMat1, &dev->getTransform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + 1)), sizeof(key.texMat1));
+-		if (m_haveTexMatKey && key == m_lastTexMatKey) {
++		if (prog->haveTexMatKey && key == prog->lastTexMatKey) {
+ 			m_perfUniformCacheHits++;
+ 			m_perfUniformTexMatHits++;
+ 		} else {
+@@ -2300,8 +2305,8 @@ void WebGLPipeline::applyUniforms(WebGLDevice *dev, ProgramInfo *prog, unsigned
+ 			m_perfUniformTexMatMisses++;
+ 			if (prog->uTexMat0 >= 0) glUniformMatrix4fv(prog->uTexMat0, 1, GL_FALSE, key.texMat0);
+ 			if (prog->uTexMat1 >= 0) glUniformMatrix4fv(prog->uTexMat1, 1, GL_FALSE, key.texMat1);
+-			m_lastTexMatKey = key;
+-			m_haveTexMatKey = true;
++			prog->lastTexMatKey = key;
++			prog->haveTexMatKey = true;
+ 		}
+ 	}
+ 
+@@ -2317,7 +2322,7 @@ void WebGLPipeline::applyUniforms(WebGLDevice *dev, ProgramInfo *prog, unsigned
+ 		key.fogStart = dwordToFloat(dev->getRenderState(D3DRS_FOGSTART));
+ 		key.fogEnd = dwordToFloat(dev->getRenderState(D3DRS_FOGEND));
+ 
+-		if (m_haveMiscKey && key == m_lastMiscKey) {
++		if (prog->haveMiscKey && key == prog->lastMiscKey) {
+ 			m_perfUniformCacheHits++;
+ 			m_perfUniformMiscHits++;
+ 		} else {
+@@ -2331,8 +2336,8 @@ void WebGLPipeline::applyUniforms(WebGLDevice *dev, ProgramInfo *prog, unsigned
+ 				glUniform4fv(prog->uFogColor, 1, key.fogColor);
+ 				glUniform2f(prog->uFogParams, key.fogStart, key.fogEnd);
+ 			}
+-			m_lastMiscKey = key;
+-			m_haveMiscKey = true;
++			prog->lastMiscKey = key;
++			prog->haveMiscKey = true;
+ 		}
+ 	}
+ 
+@@ -2345,7 +2350,7 @@ void WebGLPipeline::applyUniforms(WebGLDevice *dev, ProgramInfo *prog, unsigned
+ 		memcpy(key.diffuse, &m.Diffuse, sizeof(key.diffuse));
+ 		memcpy(key.ambient, &m.Ambient, sizeof(key.ambient));
+ 		memcpy(key.emissive, &m.Emissive, sizeof(key.emissive));
+-		if (m_haveMaterialKey && key == m_lastMaterialKey) {
++		if (prog->haveMaterialKey && key == prog->lastMaterialKey) {
+ 			m_perfUniformCacheHits++;
+ 			m_perfUniformMaterialHits++;
+ 		} else {
+@@ -2356,8 +2361,8 @@ void WebGLPipeline::applyUniforms(WebGLDevice *dev, ProgramInfo *prog, unsigned
+ 			memcpy(packed + 4, key.ambient, 16);
+ 			memcpy(packed + 8, key.emissive, 16);
+ 			glUniform4fv(prog->uMat, 3, packed);
+-			m_lastMaterialKey = key;
+-			m_haveMaterialKey = true;
++			prog->lastMaterialKey = key;
++			prog->haveMaterialKey = true;
+ 		}
+ 	}
+ 	if (prog->uLit >= 0) {
+@@ -2384,7 +2389,7 @@ void WebGLPipeline::applyUniforms(WebGLDevice *dev, ProgramInfo *prog, unsigned
+ 		}
+ 		key.numLights = n;
+ 
+-		if (m_haveLightingKey && key == m_lastLightingKey) {
++		if (prog->haveLightingKey && key == prog->lastLightingKey) {
+ 			m_perfUniformCacheHits++;
+ 			m_perfUniformLightingHits++;
+ 		} else {
+@@ -2404,8 +2409,8 @@ void WebGLPipeline::applyUniforms(WebGLDevice *dev, ProgramInfo *prog, unsigned
+ 				memcpy(b + 16, &key.att[i * 4], 16);
+ 			}
+ 			glUniform4fv(prog->uLit, 2 + key.numLights * 5, packed);
+-			m_lastLightingKey = key;
+-			m_haveLightingKey = true;
++			prog->lastLightingKey = key;
++			prog->haveLightingKey = true;
+ 		}
+ 	}
+ }
+diff --git a/Core/Libraries/Source/d3d8gles/src/gles_pipeline.h b/Core/Libraries/Source/d3d8gles/src/gles_pipeline.h
+index 014a140..378e2ba 100644
+--- a/Core/Libraries/Source/d3d8gles/src/gles_pipeline.h
++++ b/Core/Libraries/Source/d3d8gles/src/gles_pipeline.h
+@@ -423,11 +423,13 @@ private:
+ 	// be optimized out independently. uWorld itself is deliberately NOT
+ 	// cached (see above) and is always uploaded directly.
+ 	//
+-	// Every sub-key must be invalidated when the bound program changes --
+-	// uniform locations are per-program, so a hit against a key computed for
+-	// a DIFFERENT program would wrongly skip uploading to this one. That
+-	// invalidation happens in the one place program switches are already
+-	// detected, at the top of applyUniforms() (see m_lastProgram above).
++	// GeneralsX @performance Zero Hour Reforged 11/11/2026 The four sub-keys below used to live
++	// in single pipeline-global slots here, invalidated on every program switch -- so a scene
++	// alternating programs (terrain / unit / particle passes do exactly that) re-uploaded every
++	// sub-block on every draw. GL uniform values are program state, so the keys now live in
++	// ProgramInfo, one slot per program, next to lastWorld: a switch back to a program whose
++	// uniforms still hold the same values is a hit again. ViewProjKey stays global on purpose:
++	// it keys the shared UBO's contents, which are program-independent.
+ 	// GeneralsX @build Android port GLES experiment 08/30/2026 Split from one
+ 	// combined "TransformKey" (view+proj+texMat0+texMat1 as a single cache
+ 	// slot) after a real device log's new per-block uniform-cache breakdown
+@@ -457,8 +459,7 @@ private:
+ 			return memcmp(this, &o, sizeof(TexMatKey)) == 0;
+ 		}
+ 	};
+-	bool m_haveTexMatKey = false;
+-	TexMatKey m_lastTexMatKey{};
++	// (the last-received TexMatKey lives in ProgramInfo -- see the note above)
+ 
+ 	struct MiscUniformKey { // viewport, yFlip, texture-factor, alpha ref, fog
+ 		float vpX, vpY, vpW, vpH;
+@@ -471,8 +472,7 @@ private:
+ 			return memcmp(this, &o, sizeof(MiscUniformKey)) == 0;
+ 		}
+ 	};
+-	bool m_haveMiscKey = false;
+-	MiscUniformKey m_lastMiscKey{};
++	// (the last-received MiscUniformKey lives in ProgramInfo)
+ 
+ 	struct MaterialKey { // VertexMaterialClass diffuse/ambient/emissive
+ 		float diffuse[4], ambient[4], emissive[4];
+@@ -480,8 +480,7 @@ private:
+ 			return memcmp(this, &o, sizeof(MaterialKey)) == 0;
+ 		}
+ 	};
+-	bool m_haveMaterialKey = false;
+-	MaterialKey m_lastMaterialKey{};
++	// (the last-received MaterialKey lives in ProgramInfo)
+ 
+ 	struct LightingKey { // global ambient + up to 4 active lights
+ 		float globalAmbient[4];
+@@ -492,8 +491,7 @@ private:
+ 			return memcmp(this, &o, sizeof(LightingKey)) == 0;
+ 		}
+ 	};
+-	bool m_haveLightingKey = false;
+-	LightingKey m_lastLightingKey{};
++	// (the last-received LightingKey lives in ProgramInfo)
+ 	// One combined hit/miss counter across all four sub-blocks above, logged
+ 	// by present() the same way m_perfStateCacheHits/Misses is -- a per-block
+ 	// breakdown would be more precise but four more numbers in an
+diff --git a/Generals/Code/GameEngine/Include/Common/GlobalData.h b/Generals/Code/GameEngine/Include/Common/GlobalData.h
+index 3583467..f51951b 100644
+--- a/Generals/Code/GameEngine/Include/Common/GlobalData.h
++++ b/Generals/Code/GameEngine/Include/Common/GlobalData.h
+@@ -116,6 +116,16 @@ public:
+ 	Int m_framesPerSecondLimit;
+ 	Int	m_chipSetType;	///<See W3DShaderManager::ChipsetType for options
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 The Reforged lighting style ("the light has
++	// weight"), ported from the Reforged engine: as each map loads, its own lights are rebalanced
++	// in place -- weight moves from the flat ambient and the two fill lights to the sun, the sun
++	// warms and the shade cools (reforgeLighting, GlobalData.cpp). Client only: nothing in
++	// GameLogic reads a light, so replays and checksums are untouched. "LightingStyle" in the
++	// game data INI or -lighting classic restores the map's 2003 light; the Android build has no
++	// options-menu surface for it, so Reforged is the built-in default (upstream opens in Classic
++	// behind its own options page).
++	Int m_lightingStyle;				///< "LightingStyle": LightingStyleType
++
+ 	// TheSuperHackers @feature helmutbuhler 11/04/2025
+ 	// Run game without graphics, input or audio.
+ 	Bool m_headless;
+@@ -603,9 +613,28 @@ private:
+ 
+ };
+ 
++
++/** The LightingStyle option, ported from the Reforged engine.  Classic draws a map's lights as
++	* the map gives them; Reforged takes the same lights and moves weight from the flat ambient
++	* and the fill lights to the sun, warms the sun and cools the ambient (reforgeLighting).
++	* Client only: nothing in GameLogic reads a light. */
++enum LightingStyleType
++{
++	LIGHTING_STYLE_CLASSIC	= 0,
++	LIGHTING_STYLE_REFORGED	= 1,
++
++	LIGHTING_STYLE_COUNT		= 2,
++};
++
+ // singleton
+ extern GlobalData* TheWritableGlobalData;
+ 
++/** The Reforged lighting style applied to one time of day's lights, in place: the first light is
++	* the sun, the other two the map's fills.  Derived from the values the map gave, so a dusk map
++	* stays a dusk map; WorldHeightMap calls it on the tables it has just read, which is why it can
++	* never be applied twice to the same numbers. */
++extern void reforgeLighting( GlobalData::TerrainLighting lights[MAX_GLOBAL_LIGHTS] );
++
+ // use TheGlobalData for all read-only accesses
+ #if __cplusplus >= 201703L
+ inline const GlobalData* const& TheGlobalData = TheWritableGlobalData;
+diff --git a/Generals/Code/GameEngine/Source/Common/GlobalData.cpp b/Generals/Code/GameEngine/Source/Common/GlobalData.cpp
+index 56bae9f..8c83850 100644
+--- a/Generals/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/Generals/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -87,6 +87,7 @@ GlobalData* GlobalData::m_theOriginal = nullptr;
+ 	{ "UseFPSLimit",							INI::parseBool,				nullptr,			offsetof( GlobalData, m_useFpsLimit ) },
+ 	{ "DumpAssetUsage",						INI::parseBool,				nullptr,			offsetof( GlobalData, m_dumpAssetUsage ) },
+ 	{ "FramesPerSecondLimit",			INI::parseInt,				nullptr,			offsetof( GlobalData, m_framesPerSecondLimit ) },
++	{ "LightingStyle",						INI::parseInt,				nullptr,			offsetof( GlobalData, m_lightingStyle ) },
+ 	{ "ChipsetType",							INI::parseInt,				nullptr,			offsetof( GlobalData, m_chipSetType ) },
+ 	{ "MaxShellScreens",					INI::parseInt,				nullptr,			offsetof( GlobalData, m_maxShellScreens ) },
+ 	{ "UseCloudMap",							INI::parseBool,				nullptr,			offsetof( GlobalData, m_useCloudMap ) },
+@@ -638,6 +639,9 @@ GlobalData::GlobalData()
+ 	m_dumpAssetUsage = FALSE;
+ 	m_framesPerSecondLimit = 0;
+ 	m_chipSetType = 0;
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Reforged light by default (see the
++	// m_lightingStyle note in GlobalData.h); GameData INI or -lighting classic restores 2003's.
++	m_lightingStyle = LIGHTING_STYLE_REFORGED;
+ 	m_headless = FALSE;
+ 	// GeneralsX @feature BenderAI 21/04/2026 Default to TRUE; user can override via Options.ini
+ 	m_checkForUpdates = TRUE;
+@@ -1129,6 +1133,90 @@ Bool GlobalData::setTimeOfDay( TimeOfDay tod )
+ 
+ }
+ 
++//-------------------------------------------------------------------------------------------------
++static Real lightLuminance( const RGBColor &c )
++{
++	return 0.299f * c.red + 0.587f * c.green + 0.114f * c.blue;
++}
++
++/** Multiply a colour by a tint and bring it back to the luminance it had, so the tint moves the hue
++	* and never the brightness. */
++static void tintLight( RGBColor &c, Real r, Real g, Real b )
++{
++	const Real before = lightLuminance( c );
++	c.red *= r;
++	c.green *= g;
++	c.blue *= b;
++	const Real after = lightLuminance( c );
++	if( after > 0.0001f )
++	{
++		const Real keep = before / after;
++		c.red *= keep;
++		c.green *= keep;
++		c.blue *= keep;
++	}
++}
++
++static void scaleLight( RGBColor &c, Real s )
++{
++	c.red *= s;
++	c.green *= s;
++	c.blue *= s;
++}
++
++/* GeneralsX @feature Zero Hour Reforged 11/11/2026 Ported verbatim from the Reforged engine.
++	What makes the shipped maps read washed out is the share of their light that has no direction.
++	A typical afternoon gives the ground an ambient of about half the sun and two fill lights from
++	the other sides, so the shadow side of a tank is two thirds as bright as its lit side and
++	nothing has a form.  The style moves weight from the ambient and the fills to the sun and
++	leaves the sum a sunlit surface receives where it was, so the picture keeps its exposure and
++	gains its contrast.  The ambient goes a little toward the sky's blue and the sun a little
++	toward late light's yellow, by how much of a sun there is: a moonlit night keeps its own cast. */
++static const Real REFORGED_AMBIENT_SHARE = 0.72f;	// what is left of the flat ambient under a full sun
++static const Real REFORGED_NIGHT_AMBIENT_KEPT = 0.16f;	// how much more of it a sunless map keeps
++static const Real REFORGED_FILL_SHARE = 0.6f;			// what is left of the two fill lights
++static const Real REFORGED_SUN_PUNCH = 1.04f;			// the lit side ends a touch brighter than it was
++static const Real REFORGED_SUN_MOST = 1.35f;			// never more than this much more sun
++
++void reforgeLighting( GlobalData::TerrainLighting lights[MAX_GLOBAL_LIGHTS] )
++{
++	GlobalData::TerrainLighting &sun = lights[0];
++	const Real ambient = lightLuminance( sun.ambient );
++	const Real diffuse = lightLuminance( sun.diffuse );
++
++	// How square the sun stands to flat ground; a map whose sun skims the horizon keeps a floor.
++	const Real length = (Real)sqrt( sun.lightPos.x * sun.lightPos.x + sun.lightPos.y * sun.lightPos.y
++		+ sun.lightPos.z * sun.lightPos.z );
++	Real incidence = (length > 0.0001f) ? -sun.lightPos.z / length : 1.0f;
++	if( incidence < 0.3f )
++		incidence = 0.3f;
++
++	const Real daylight = (diffuse - 0.25f) / 0.5f;
++	const Real warmth = (daylight < 0.0f) ? 0.0f : (daylight > 1.0f) ? 1.0f : daylight;
++
++	// A night map's light is mostly ambient already and its moon cannot make up a cut, so the less
++	// sun there is the less of the ambient goes.
++	const Real ambientShare = REFORGED_AMBIENT_SHARE + (1.0f - warmth) * REFORGED_NIGHT_AMBIENT_KEPT;
++	scaleLight( sun.ambient, ambientShare );
++	tintLight( sun.ambient, 1.0f - 0.06f * warmth, 1.0f, 1.0f + 0.10f * warmth );
++
++	const Real sunlit = diffuse * incidence;
++	if( sunlit > 0.001f )
++	{
++		Real gain = (sunlit + ambient * (1.0f - ambientShare)) / sunlit * REFORGED_SUN_PUNCH;
++		if( gain > REFORGED_SUN_MOST )
++			gain = REFORGED_SUN_MOST;
++		scaleLight( sun.diffuse, gain );
++	}
++	tintLight( sun.diffuse, 1.0f + 0.06f * warmth, 1.0f, 1.0f - 0.10f * warmth );
++
++	for( Int i = 1; i < MAX_GLOBAL_LIGHTS; ++i )
++	{
++		scaleLight( lights[i].ambient, REFORGED_AMBIENT_SHARE );
++		scaleLight( lights[i].diffuse, REFORGED_FILL_SHARE );
++	}
++}
++
+ //-------------------------------------------------------------------------------------------------
+ /** Create a new global data instance to override the existing data set.  The
+ 	* initial values of the newly created instance will be a copy of the current
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h b/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h
+index 0432f43..6659392 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h
+@@ -121,6 +121,16 @@ public:
+ 	Bool m_smoothMotion;				///< On a display faster than the logic, models drawn between their last two logic states (W3DSmoothMotion.h); -nosmoothmotion turns it off
+ 	Bool m_smoothMotionAnyDisplay;		///< -smoothmotion: the same whatever the display's refresh rate
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 The Reforged lighting style ("the light has
++	// weight"), ported from the Reforged engine: as each map loads, its own lights are rebalanced
++	// in place -- weight moves from the flat ambient and the two fill lights to the sun, the sun
++	// warms and the shade cools (reforgeLighting, GlobalData.cpp). Client only: nothing in
++	// GameLogic reads a light, so replays and checksums are untouched. "LightingStyle" in the
++	// game data INI or -lighting classic restores the map's 2003 light; the Android build has no
++	// options-menu surface for it, so Reforged is the built-in default (upstream opens in Classic
++	// behind its own options page).
++	Int m_lightingStyle;				///< "LightingStyle": LightingStyleType
++
+ 	// TheSuperHackers @feature helmutbuhler 11/04/2025
+ 	// Run game without graphics, input or audio.
+ 	Bool m_headless;
+@@ -612,9 +622,28 @@ private:
+ 
+ };
+ 
++
++/** The LightingStyle option, ported from the Reforged engine.  Classic draws a map's lights as
++	* the map gives them; Reforged takes the same lights and moves weight from the flat ambient
++	* and the fill lights to the sun, warms the sun and cools the ambient (reforgeLighting).
++	* Client only: nothing in GameLogic reads a light. */
++enum LightingStyleType
++{
++	LIGHTING_STYLE_CLASSIC	= 0,
++	LIGHTING_STYLE_REFORGED	= 1,
++
++	LIGHTING_STYLE_COUNT		= 2,
++};
++
+ // singleton
+ extern GlobalData* TheWritableGlobalData;
+ 
++/** The Reforged lighting style applied to one time of day's lights, in place: the first light is
++	* the sun, the other two the map's fills.  Derived from the values the map gave, so a dusk map
++	* stays a dusk map; WorldHeightMap calls it on the tables it has just read, which is why it can
++	* never be applied twice to the same numbers. */
++extern void reforgeLighting( GlobalData::TerrainLighting lights[MAX_GLOBAL_LIGHTS] );
++
+ // use TheGlobalData for all read-only accesses
+ #if __cplusplus >= 201703L
+ inline const GlobalData* const& TheGlobalData = TheWritableGlobalData;
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
+index d6c8c00..f5966f4 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
+@@ -383,6 +383,25 @@ Int parseSmoothMotion(char *args[], int)
+ 	return 1;
+ }
+ 
++//=============================================================================
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 -lighting <classic|reforged>: the
++// LightingStyle option for one run, ported from the Reforged engine -- the before and after
++// of any picture of it.
++Int parseLightingStyle(char *args[], int num)
++{
++	if (TheWritableGlobalData && num > 1)
++	{
++		if (strcasecmp(args[1], "classic") == 0)
++			TheWritableGlobalData->m_lightingStyle = LIGHTING_STYLE_CLASSIC;
++		else if (strcasecmp(args[1], "reforged") == 0)
++			TheWritableGlobalData->m_lightingStyle = LIGHTING_STYLE_REFORGED;
++		else
++			DEBUG_LOG(("-lighting: '%s' is neither classic nor reforged, keeping the current style\n", args[1]));
++		return 2;
++	}
++	return 1;
++}
++
+ #if defined(RTS_DEBUG)
+ 
+ //=============================================================================
+@@ -1248,6 +1267,7 @@ static CommandLineParam paramsForStartup[] =
+ 	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Smooth motion (W3DSmoothMotion.h).
+ 	{ "-nosmoothmotion", parseNoSmoothMotion },
+ 	{ "-smoothmotion", parseSmoothMotion },
++	{ "-lighting", parseLightingStyle },
+ };
+ 
+ // These Params are parsed during Engine Init before INI data is loaded
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index 25f3125..57659b1 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -101,6 +101,7 @@ GlobalData* GlobalData::m_theOriginal = nullptr;
+ 	{ "UseFPSLimit",							INI::parseBool,				nullptr,			offsetof( GlobalData, m_useFpsLimit ) },
+ 	{ "DumpAssetUsage",						INI::parseBool,				nullptr,			offsetof( GlobalData, m_dumpAssetUsage ) },
+ 	{ "FramesPerSecondLimit",			INI::parseInt,				nullptr,			offsetof( GlobalData, m_framesPerSecondLimit ) },
++	{ "LightingStyle",						INI::parseInt,				nullptr,			offsetof( GlobalData, m_lightingStyle ) },
+ 	{ "ChipsetType",							INI::parseInt,				nullptr,			offsetof( GlobalData, m_chipSetType ) },
+ 	{ "MaxShellScreens",					INI::parseInt,				nullptr,			offsetof( GlobalData, m_maxShellScreens ) },
+ 	{ "UseCloudMap",							INI::parseBool,				nullptr,			offsetof( GlobalData, m_useCloudMap ) },
+@@ -660,6 +661,9 @@ GlobalData::GlobalData()
+ 	// and -nosmoothmotion turns it off for a run.
+ 	m_smoothMotion = TRUE;
+ 	m_smoothMotionAnyDisplay = FALSE;
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Reforged light by default (see the
++	// m_lightingStyle note in GlobalData.h); GameData INI or -lighting classic restores 2003's.
++	m_lightingStyle = LIGHTING_STYLE_REFORGED;
+ 	m_headless = FALSE;
+ 	m_checkForUpdates = TRUE;
+ 	m_windowed = 0;
+@@ -1158,6 +1162,90 @@ Bool GlobalData::setTimeOfDay( TimeOfDay tod )
+ 
+ }
+ 
++//-------------------------------------------------------------------------------------------------
++static Real lightLuminance( const RGBColor &c )
++{
++	return 0.299f * c.red + 0.587f * c.green + 0.114f * c.blue;
++}
++
++/** Multiply a colour by a tint and bring it back to the luminance it had, so the tint moves the hue
++	* and never the brightness. */
++static void tintLight( RGBColor &c, Real r, Real g, Real b )
++{
++	const Real before = lightLuminance( c );
++	c.red *= r;
++	c.green *= g;
++	c.blue *= b;
++	const Real after = lightLuminance( c );
++	if( after > 0.0001f )
++	{
++		const Real keep = before / after;
++		c.red *= keep;
++		c.green *= keep;
++		c.blue *= keep;
++	}
++}
++
++static void scaleLight( RGBColor &c, Real s )
++{
++	c.red *= s;
++	c.green *= s;
++	c.blue *= s;
++}
++
++/* GeneralsX @feature Zero Hour Reforged 11/11/2026 Ported verbatim from the Reforged engine.
++	What makes the shipped maps read washed out is the share of their light that has no direction.
++	A typical afternoon gives the ground an ambient of about half the sun and two fill lights from
++	the other sides, so the shadow side of a tank is two thirds as bright as its lit side and
++	nothing has a form.  The style moves weight from the ambient and the fills to the sun and
++	leaves the sum a sunlit surface receives where it was, so the picture keeps its exposure and
++	gains its contrast.  The ambient goes a little toward the sky's blue and the sun a little
++	toward late light's yellow, by how much of a sun there is: a moonlit night keeps its own cast. */
++static const Real REFORGED_AMBIENT_SHARE = 0.72f;	// what is left of the flat ambient under a full sun
++static const Real REFORGED_NIGHT_AMBIENT_KEPT = 0.16f;	// how much more of it a sunless map keeps
++static const Real REFORGED_FILL_SHARE = 0.6f;			// what is left of the two fill lights
++static const Real REFORGED_SUN_PUNCH = 1.04f;			// the lit side ends a touch brighter than it was
++static const Real REFORGED_SUN_MOST = 1.35f;			// never more than this much more sun
++
++void reforgeLighting( GlobalData::TerrainLighting lights[MAX_GLOBAL_LIGHTS] )
++{
++	GlobalData::TerrainLighting &sun = lights[0];
++	const Real ambient = lightLuminance( sun.ambient );
++	const Real diffuse = lightLuminance( sun.diffuse );
++
++	// How square the sun stands to flat ground; a map whose sun skims the horizon keeps a floor.
++	const Real length = (Real)sqrt( sun.lightPos.x * sun.lightPos.x + sun.lightPos.y * sun.lightPos.y
++		+ sun.lightPos.z * sun.lightPos.z );
++	Real incidence = (length > 0.0001f) ? -sun.lightPos.z / length : 1.0f;
++	if( incidence < 0.3f )
++		incidence = 0.3f;
++
++	const Real daylight = (diffuse - 0.25f) / 0.5f;
++	const Real warmth = (daylight < 0.0f) ? 0.0f : (daylight > 1.0f) ? 1.0f : daylight;
++
++	// A night map's light is mostly ambient already and its moon cannot make up a cut, so the less
++	// sun there is the less of the ambient goes.
++	const Real ambientShare = REFORGED_AMBIENT_SHARE + (1.0f - warmth) * REFORGED_NIGHT_AMBIENT_KEPT;
++	scaleLight( sun.ambient, ambientShare );
++	tintLight( sun.ambient, 1.0f - 0.06f * warmth, 1.0f, 1.0f + 0.10f * warmth );
++
++	const Real sunlit = diffuse * incidence;
++	if( sunlit > 0.001f )
++	{
++		Real gain = (sunlit + ambient * (1.0f - ambientShare)) / sunlit * REFORGED_SUN_PUNCH;
++		if( gain > REFORGED_SUN_MOST )
++			gain = REFORGED_SUN_MOST;
++		scaleLight( sun.diffuse, gain );
++	}
++	tintLight( sun.diffuse, 1.0f + 0.06f * warmth, 1.0f, 1.0f - 0.10f * warmth );
++
++	for( Int i = 1; i < MAX_GLOBAL_LIGHTS; ++i )
++	{
++		scaleLight( lights[i].ambient, REFORGED_AMBIENT_SHARE );
++		scaleLight( lights[i].diffuse, REFORGED_FILL_SHARE );
++	}
++}
++
+ //-------------------------------------------------------------------------------------------------
+ /** Create a new global data instance to override the existing data set.  The
+ 	* initial values of the newly created instance will be a copy of the current
+diff --git a/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DBridgeBuffer.h b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DBridgeBuffer.h
+index 84f3673..68e9a14 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DBridgeBuffer.h
++++ b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DBridgeBuffer.h
+@@ -162,7 +162,12 @@ public:
+ 	void loadBridges(W3DTerrainLogic *pTerrainLogic, Bool saveGame); ///< Loads the bridges from the map objects list.
+ 	void worldBuilderUpdateBridgeTowers( W3DAssetManager *assetManager, SimpleSceneClass *scene );			///< for the editor and showing visual bridge towers
+ 	void updateCenter(CameraClass *camera, RefRenderObjListIterator *pLightsIterator);
+-	enum { MAX_BRIDGE_VERTEX=12000, //make sure it stays under 65535
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Every bridge on a map goes into this one
++	// buffer and a piece that does not fit is not drawn. EA's 12000 was already short on the
++	// America campaign's second mission (13678 points, its two intros 12432), so the last bridges
++	// were never drawn while units still drove across them. Reforged ships 32000; the index count
++	// stays under the 16-bit limit (64000 < 65535).
++	enum { MAX_BRIDGE_VERTEX=32000, //make sure it stays under 65535
+ 					MAX_BRIDGE_INDEX=2*MAX_BRIDGE_VERTEX,	//make sure it stays under 65535
+ 					MAX_BRIDGES=200};
+ protected:
