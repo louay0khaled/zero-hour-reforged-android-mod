@@ -271,6 +271,14 @@ jobs:
           mkdir -p logs
           MAIN_SO="build/${{ env.PRESET }}/GeneralsMD/Code/Main/libmain.so"
           cp "$MAIN_SO" "${RUNNER_TEMP}/libmain-treeA.so"
+          # Failure-atomicity of the stash/restore dance: whatever happens
+          # below, Tree A's libmain.so goes back to the standard path when
+          # this step's shell exits, so a failed Tree B step can never
+          # leave the 60-steps library sitting at libmain.so's path for a
+          # later step to pick up as the standard engine. (On the success
+          # path the explicit restore below has already done this; the
+          # trap's copy is then a byte-identical no-op.)
+          trap 'cp -f "${RUNNER_TEMP}/libmain-treeA.so" "$MAIN_SO" 2>/dev/null || true' EXIT
           cmake --preset ${{ env.PRESET }} \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -279,15 +287,39 @@ jobs:
             -DALSOFT_BACKEND_PIPEWIRE=OFF -DALSOFT_BACKEND_PULSEAUDIO=OFF -DALSOFT_BACKEND_ALSA=OFF \
             -DALSOFT_BACKEND_OSS=OFF -DALSOFT_BACKEND_SNDIO=OFF -DALSOFT_BACKEND_PORTAUDIO=OFF -DALSOFT_BACKEND_JACK=OFF \
             2>&1 | tee logs/configure_android_rf60.log
+          # Print the cache state before asserting on it (self-diagnosing).
+          grep "^REFORGED_60_STEPS:" build/${{ env.PRESET }}/CMakeCache.txt || echo "REFORGED_60_STEPS: (absent from CMakeCache.txt)"
+          grep "^SAGE_HIGH_FPS_SIM:" build/${{ env.PRESET }}/CMakeCache.txt || echo "SAGE_HIGH_FPS_SIM: (absent from CMakeCache.txt)"
           grep -q "^REFORGED_60_STEPS:BOOL=ON" build/${{ env.PRESET }}/CMakeCache.txt
           ! grep -q "^SAGE_HIGH_FPS_SIM:BOOL=ON" build/${{ env.PRESET }}/CMakeCache.txt
           cmake --build build/${{ env.PRESET }} --target z_generals -- -k 0 2>&1 | tee logs/build_android_rf60.log
           READELF="$(ls "${ANDROID_NDK_HOME}"/toolchains/llvm/prebuilt/*/bin/llvm-readelf | head -1)"
-          "$READELF" -h "$MAIN_SO" | grep -q AArch64 || { echo "::error::libmainrf60 build is not AArch64"; exit 1; }
+          [ -x "$READELF" ] || { echo "::error::llvm-readelf not found under ANDROID_NDK_HOME=${ANDROID_NDK_HOME}"; exit 1; }
+          # Post-build evidence (run #9 lesson): this step's original
+          # one-shot `readelf -h | grep -q AArch64` failed once against a
+          # correctly built, freshly linked AArch64 libmain.so, and the
+          # -q discarded the header, so the log could not show whether
+          # readelf errored, printed nothing, or printed an unexpected
+          # Machine value. Every check below therefore captures output
+          # first, greps the capture, and PRINTS the evidence (file
+          # listing + full ELF header) before it is allowed to fail; the
+          # architecture check also retries, like "Verify artifacts".
+          ls -la "$MAIN_SO" "${RUNNER_TEMP}/libmain-treeA.so"
+          OK=0
+          for attempt in 1 2 3 4 5; do
+            if HDR="$("$READELF" -h "$MAIN_SO" 2>&1)" && echo "$HDR" | grep -E "Machine:.*AArch64"; then OK=1; break; fi
+            echo "readelf attempt ${attempt} did not confirm AArch64; full output was:"
+            echo "$HDR"
+            sleep 1
+          done
+          [ "$OK" = "1" ] || { echo "::error::libmainrf60 build is not AArch64 (see the ELF headers printed above)"; exit 1; }
           # The RF60 version stamp must be compiled in (the cross-rate
           # save/replay refusal depends on it), and the standard engine must
-          # NOT carry it.
-          strings "$MAIN_SO" | grep -q " RF60" || { echo "::error::RF60 stamp missing from the 60-steps build"; exit 1; }
+          # NOT carry it. strings output is captured to a file first so the
+          # check greps a stable capture, not a live pipe.
+          strings "$MAIN_SO" > "${RUNNER_TEMP}/rf60-strings.txt"
+          grep " RF60" "${RUNNER_TEMP}/rf60-strings.txt" | head -3 || true
+          grep -q " RF60" "${RUNNER_TEMP}/rf60-strings.txt" || { echo "::error::RF60 stamp missing from the 60-steps build"; exit 1; }
           if strings "${RUNNER_TEMP}/libmain-treeA.so" | grep -q " RF60"; then
             echo "::error::RF60 stamp leaked into the standard libmain.so"; exit 1
           fi
@@ -300,22 +332,47 @@ jobs:
         run: |
           set -euo pipefail
           READELF="$(ls "${ANDROID_NDK_HOME}"/toolchains/llvm/prebuilt/*/bin/llvm-readelf | head -1)"
+          [ -x "$READELF" ] || { echo "::error::llvm-readelf not found under ANDROID_NDK_HOME=${ANDROID_NDK_HOME}"; exit 1; }
           for lib in "build/${{ env.PRESET }}/GeneralsMD/Code/Main/libmain.so" \
                      "build/${{ env.PRESET }}/Generals/Code/Main/libgenerals.so"; do
             [ -f "$lib" ] || { echo "::error::$lib not found"; exit 1; }
             OK=0
             for attempt in 1 2 3 4 5; do
-              if "$READELF" -h "$lib" 2>/dev/null | grep -q AArch64; then OK=1; break; fi
+              # Capture first, grep the capture (run #9 lesson): the old
+              # `readelf 2>/dev/null | grep -q` form discarded readelf's
+              # stderr and its header alike, so a failure explained
+              # nothing. A failed attempt now prints the full output.
+              if HDR="$("$READELF" -h "$lib" 2>&1)" && echo "$HDR" | grep -qE "Machine:.*AArch64"; then OK=1; break; fi
+              echo "readelf attempt ${attempt} on $lib did not confirm AArch64; full output was:"
+              echo "$HDR"
               sleep 1
             done
-            [ "$OK" = "1" ] || { echo "::error::$lib is not AArch64"; exit 1; }
+            if [ "$OK" != "1" ]; then
+              ls -la "$lib"
+              echo "::error::$lib is not AArch64 (see the ELF headers printed above)"
+              exit 1
+            fi
           done
+          # The 60-steps engine staged at the workspace root by the Tree B
+          # step: it must exist, be AArch64, and carry the RF60 stamp --
+          # while the standard libmain.so checked above must NOT carry it.
+          # Together these prove the Tree B stash/restore dance ended in
+          # the right state and that the packaged rf60 library is real.
+          LIB60="${GITHUB_WORKSPACE}/libmainrf60.so"
+          [ -f "$LIB60" ] || { echo "::error::$LIB60 not found (Tree B staging missing)"; exit 1; }
+          ls -la "$LIB60"
+          "$READELF" -h "$LIB60"
+          "$READELF" -h "$LIB60" | grep -qE "Machine:.*AArch64" || { echo "::error::$LIB60 is not AArch64 (see the ELF header printed above)"; exit 1; }
+          strings "$LIB60" | grep -q " RF60" || { echo "::error::$LIB60 lacks the RF60 version stamp"; exit 1; }
+          if strings "build/${{ env.PRESET }}/GeneralsMD/Code/Main/libmain.so" | grep -q " RF60"; then
+            echo "::error::RF60 stamp found in the standard libmain.so -- the Tree B restore did not happen"; exit 1
+          fi
           for lib in libdxvk_d3d8.so libdxvk_d3d9.so; do
             [ -f "build/${{ env.PRESET }}/$lib" ] || { echo "::error::$lib missing"; exit 1; }
           done
           strings "build/${{ env.PRESET }}/libdxvk_d3d9.so" | grep -q "SDL3 WSI:" || {
             echo "::error::libdxvk_d3d9.so built without SDL3 WSI"; exit 1; }
-          echo "Artifacts verified: AArch64 libmain.so + libgenerals.so + DXVK with SDL3 WSI"
+          echo "Artifacts verified: AArch64 libmain.so + libgenerals.so + libmainrf60.so (RF60-stamped) + DXVK with SDL3 WSI"
 
       # Symbol table of the unstripped libmain.so, kept so crash logs from
       # this build can be symbolized later (a few MB of text; the library
@@ -376,7 +433,10 @@ jobs:
             [ -f "$lib" ] && "$STRIP" --strip-unneeded "$lib"
           done
           # The 60-steps engine's packaged copy (workspace root) strips too;
-          # the packaging script copies exactly this file.
+          # the packaging script copies exactly this file. Unlike the
+          # guarded list above this one is REQUIRED, so a missing file
+          # fails loud with its own message instead of a bare strip error.
+          [ -f "${GITHUB_WORKSPACE}/libmainrf60.so" ] || { echo "::error::libmainrf60.so missing at strip time (Tree B staging lost)"; exit 1; }
           "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainrf60.so"
 
       # GX_GRADLE_TASK is the overlay patch's knob: the packaging script
@@ -411,6 +471,7 @@ jobs:
         run: |
           set -euo pipefail
           READELF="$(ls "${ANDROID_NDK_HOME}"/toolchains/llvm/prebuilt/*/bin/llvm-readelf | head -1)"
+          [ -x "$READELF" ] || { echo "::error::llvm-readelf not found under ANDROID_NDK_HOME=${ANDROID_NDK_HOME}"; exit 1; }
           APK="${{ steps.locate.outputs.path }}"
           WORKDIR="$(mktemp -d)"
           unzip -q "${APK}" 'lib/arm64-v8a/*' -d "${WORKDIR}"
