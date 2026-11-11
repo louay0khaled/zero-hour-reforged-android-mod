@@ -18,11 +18,21 @@ every run and applies this repo's small overlay on top:
      between their last two logic transforms and restored right after the
      render, so gameplay and replay checksums are untouched. On by
      default; `-nosmoothmotion` opts out for a run.
+  - `patches/perf-graphics.patch` — the M2 performance + graphics bundle
+     (v1.3), applied after smooth-motion: the Reforged lighting style
+     ("the light has weight": each map's lights rebalanced toward the sun
+     as the map loads; default on, `LightingStyle` INI field or
+     `-lighting classic` restores 2003 light), the tree buffer count
+     1 → 8 and the bridge vertex buffer 12000 → 32000 (dense woodland and
+     long bridges no longer blink out / go missing), and per-program
+     uniform caching in the GLES translator (uniform state is no longer
+     re-uploaded on every program switch). Presentation-only throughout:
+     replay checksums are byte-identical to v1.2.
    - `patches/package-android-zh-gradle-task.patch` — lets the upstream
      packaging script run `assembleRelease` (via `GX_GRADLE_TASK`) and
      checks the release output path.
    - `apply-surgery.py` — new applicationId `com.louay.zerohour.reforged`,
-     version 3 / "1.2", the native hardcoded data paths repointed to the
+     version 4 / "1.3", the native hardcoded data paths repointed to the
      new id, the "Zero Hour Reforged" label in all locales, and the OTA
      update channel pointed at this repo (so upstream engine updates can
      never overwrite the patched build).
