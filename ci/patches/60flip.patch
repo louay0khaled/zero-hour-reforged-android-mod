@@ -1,0 +1,402 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -104,6 +104,13 @@
+     add_compile_definitions(GENERALS_ONLINE_HIGH_FPS_LIMIT=30)
+     add_compile_definitions(GENERALS_ONLINE_HIGH_FPS_FRAME_MULTIPLIER=1)
+ endif()
++# GeneralsX @feature Zero Hour Reforged 11/11/2026 Reforged 60-steps variant
++# (libmainrf60.so): one compile definition flips the wave-6 conversion on.
++# Deliberately separate from the GeneralsOnline switch above -- it changes
++# LOGICFRAMES_PER_SECOND only, never WWSyncPerSecond (see GameCommon.h).
++if(REFORGED_60_STEPS)
++    add_compile_definitions(REFORGED_60_STEPS=1)
++endif()
+ # Unlocks the render framerate. Required at 60 Hz, optional but desirable at 30.
+ add_compile_definitions(GENERALS_ONLINE_HIGH_FPS_RENDER=1)
+ 
+--- a/cmake/config-build.cmake
++++ b/cmake/config-build.cmake
+@@ -30,6 +30,15 @@
+ # must agree on in every single translation unit.
+ option(SAGE_HIGH_FPS_SIM "Simulate at 60 Hz to match the GeneralsOnline PC client" OFF)
+ 
++# GeneralsX @feature Zero Hour Reforged 11/11/2026 The faithful Reforged 60-steps
++# conversion (M2 wave 6), built as a SECOND Zero Hour engine library
++# (libmainrf60.so) beside the standard one. ON only for that library's build
++# pass: it defines REFORGED_60_STEPS, which flips LOGICFRAMES_PER_SECOND to 60
++# in GameCommon.h and activates the ratio-2 branch of the wave-6 conversion
++# helpers. It never touches WWSyncPerSecond or the GeneralsOnline macros
++# above -- SAGE_HIGH_FPS_SIM stays OFF in both passes, always.
++option(REFORGED_60_STEPS "Build the Reforged 60-steps engine (Zero Hour only, libmainrf60.so)" OFF)
++
+ # macOS port option (Phase 5)
+ option(SAGE_USE_MOLTENVK "Use MoltenVK for Vulkan on macOS (Phase 5 macOS port)" OFF)
+ 
+--- a/Core/GameEngine/Include/Common/GameCommon.h
++++ b/Core/GameEngine/Include/Common/GameCommon.h
+@@ -65,7 +65,19 @@
+ enum
+ {
+ 	BaseFps = 30, // The historic base frame rate for this game. This value must never change.
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 The 60-steps flip (M2 wave 6,
++	// slice 6f): in the libmainrf60.so build (REFORGED_60_STEPS defined by the
++	// REFORGED_60_STEPS CMake option) the logic rate is 60 and every wave-6
++	// ConvertRetail* helper below takes its ratio-2 branch -- Reforged's own
++	// conversion, exactly as upstream pins it. WWSyncPerSecond is NOT touched:
++	// it stays 30 in both builds, so the GeneralsOnline identity, the WW3D
++	// animation sync and the htree static_assert all keep their shipped values,
++	// and SAGE_HIGH_FPS_SIM (the host's own, different 60 Hz switch) stays off.
++#if defined(REFORGED_60_STEPS)
++	LOGICFRAMES_PER_SECOND = 60,
++#else
+ 	LOGICFRAMES_PER_SECOND = WWSyncPerSecond,
++#endif
+ 	MSEC_PER_SECOND = 1000
+ };
+ const Real LOGICFRAMES_PER_MSEC_REAL = (((Real)LOGICFRAMES_PER_SECOND) / ((Real)MSEC_PER_SECOND));
+--- a/Core/GameEngine/Source/Common/FrameRateLimit.cpp
++++ b/Core/GameEngine/Source/Common/FrameRateLimit.cpp
+@@ -132,7 +132,15 @@
+ 	30, 50, 56, 60, 65, 70, 72, 75, 80, 85, 90, 100, 110, 120, 144, 240, 480, UncappedFpsValue };
+ #endif
+ 
++// GeneralsX @feature Zero Hour Reforged 11/11/2026 This assert guards the
++// GeneralsOnline lockstep contract: the online client's logic rate must not
++// exceed its frame limit. The Reforged 60-steps build (libmainrf60.so) is not
++// an online client -- its sync identity stays at 30 Hz (WWSyncPerSecond is
++// untouched) and it plays no network games -- so the guard does not apply to
++// it. The render preset table above is unchanged in both builds.
++#if !defined(REFORGED_60_STEPS)
+ static_assert(LOGICFRAMES_PER_SECOND <= GENERALS_ONLINE_HIGH_FPS_LIMIT, "Min FPS values need to be revisited!");
++#endif
+ 
+ UnsignedInt RenderFpsPreset::getNextFpsValue(UnsignedInt value)
+ {
+--- a/GeneralsMD/Code/GameEngine/Source/Common/version.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/version.cpp
+@@ -74,7 +74,17 @@
+ 
+ UnsignedInt Version::getVersionNumber() const
+ {
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 The 60-steps build
++	// (libmainrf60.so) stamps its version number with the RF60 marker, so a
++	// replay or save written at 60 steps never matches the 30-steps build's
++	// version check (RecorderClass::replayMatchesGameVersion, and the
++	// GameState xfer stamp) and is refused as a different version instead of
++	// desyncing or loading corrupt. The 30-steps build is unchanged.
++#if defined(REFORGED_60_STEPS)
++	return (m_major << 16 | m_minor) ^ 0x52463630;	// "RF60"
++#else
+ 	return m_major << 16 | m_minor;
++#endif
+ }
+ 
+ AsciiString Version::getAsciiVersion() const
+@@ -103,6 +113,13 @@
+ 		version.format("%d.%d", m_major, m_minor);
+ 	}
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 RF60 stamp (see
++	// getVersionNumber): the 60-steps build's version string carries the
++	// marker, so cross-rate replays/saves differ in the string check too.
++#if defined(REFORGED_60_STEPS)
++	version.concat(" RF60");
++#endif
++
+ #ifdef RTS_DEBUG
+ 	version.concat(" Debug");
+ #endif
+@@ -136,6 +153,13 @@
+ 		version.format(TheGameText->fetch("Version:Format2").str(), m_major, m_minor);
+ 	}
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 RF60 stamp (see
++	// getVersionNumber): the 60-steps build's version string carries the
++	// marker, so cross-rate replays/saves differ in the string check too.
++#if defined(REFORGED_60_STEPS)
++	version.concat(L" RF60");
++#endif
++
+ #ifdef RTS_DEBUG
+ 	version.concat(L" Debug");
+ #endif
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/FireWeaponCollide.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/FireWeaponCollide.h
+@@ -73,7 +73,12 @@
+ 	virtual Bool shouldFireWeapon();
+ 
+ private:
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Wave 6 slice 6f:
++	// "never": far enough back that the first contact, on any frame, fires
++	static const UnsignedInt NEVER_FIRED = 0u - LOGICFRAMES_PER_RETAIL_FRAME;
++
+ 	Weapon* m_collideWeapon;
+ 	Bool m_everFired;
++	UnsignedInt m_lastFireFrame;	///< logic frame of the last shot
+ 
+ };
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/FireWeaponCollide.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/FireWeaponCollide.cpp
+@@ -60,6 +60,7 @@
+ {
+ 	m_collideWeapon = TheWeaponStore->allocateNewWeapon(getFireWeaponCollideModuleData()->m_collideWeaponTemplate, PRIMARY_WEAPON);
+ 	m_everFired = FALSE;
++	m_lastFireFrame = NEVER_FIRED;
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+@@ -83,10 +84,20 @@
+ 	// to hurt them all.  Another solution would be to keep a Map of other->objetIDs and
+ 	// delays for each individually.  However, this solution here is so quick and simple that it
+ 	// warrants the "do it eventually if we need it" clause.
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Wave 6 slice 6f -- at
++	// most once a retail frame: the reload is bypassed, so at twice the rate
++	// the damage a second would double. The frame that fired keeps firing,
++	// for everyone else colliding in it. At the retail rate the gate can
++	// never block (a later frame is never inside the one-frame window), so
++	// the standard build's behavior is unchanged.
++	UnsignedInt now = TheGameLogic->getFrame();
++	if( now != m_lastFireFrame && now < m_lastFireFrame + LOGICFRAMES_PER_RETAIL_FRAME )
++		return;
+ 	if( shouldFireWeapon() )
+ 	{
+ 		m_collideWeapon->loadAmmoNow( me );
+ 		m_collideWeapon->fireWeapon( me, other );
++		m_lastFireFrame = now;
+ 	}
+ }
+ 
+@@ -125,13 +136,14 @@
+ // ------------------------------------------------------------------------------------------------
+ /** Xfer method
+ 	* Version Info:
+-	* 1: Initial version */
++	* 1: Initial version
++	* 2: m_lastFireFrame (wave 6; an older save keeps the constructor's "never") */
+ // ------------------------------------------------------------------------------------------------
+ void FireWeaponCollide::xfer( Xfer *xfer )
+ {
+ 
+ 	// version
+-	XferVersion currentVersion = 1;
++	XferVersion currentVersion = 2;
+ 	XferVersion version = currentVersion;
+ 	xfer->xferVersion( &version, currentVersion );
+ 
+@@ -160,6 +172,10 @@
+ 	// ever fired
+ 	xfer->xferBool( &m_everFired );
+ 
++	// last fire frame; an older save keeps the constructor's "never"
++	if( version >= 2 )
++		xfer->xferUnsignedInt( &m_lastFireFrame );
++
+ }
+ 
+ // ------------------------------------------------------------------------------------------------
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameState.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameState.cpp
+@@ -39,6 +39,7 @@
+ #include "Common/GameEngine.h"
+ #include "Common/GameState.h"
+ #include "Common/GameStateMap.h"
++#include "Common/version.h"
+ #include "Common/LatchRestore.h"
+ #include "Common/MapObject.h"
+ #include "Common/PlayerList.h"
+@@ -1643,16 +1644,32 @@
+ /** Xfer method for the game state itself
+ 	* Version Info:
+ 	* 1: Initial version
+-	* 2: Added save file type and mission map name (regular save vs automatic mission save) */
++	* 2: Added save file type and mission map name (regular save vs automatic mission save)
++	* 3: Added the writing build's version number -- the rate stamp (wave 6): the
++	*    60-steps build's number carries the RF60 marker, so its saves are
++	*    refused by the 30-steps engine and vice versa */
+ // ------------------------------------------------------------------------------------------------
+ void GameState::xfer( Xfer *xfer )
+ {
+ 
+ 	// version
+-	XferVersion currentVersion = 2;
++	XferVersion currentVersion = 3;
+ 	XferVersion version = currentVersion;
+ 	xfer->xferVersion( &version, currentVersion );
+ 
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Wave 6 rate stamp: a
++	// save written before the stamp existed was written by a 30-steps build.
++	// The 60-steps engine refuses it -- its frame counters and per-frame
++	// state are foreign at 60 steps -- rather than loading it corrupt. The
++	// 30-steps engine keeps loading its own older saves as it always has.
++#if defined(REFORGED_60_STEPS)
++	if( xfer->getXferMode() == XFER_LOAD && version < 3 )
++	{
++		DEBUG_CRASH(( "GameState::xfer - save has no rate stamp; it belongs to the 30-steps engine" ));
++		throw XFER_INVALID_VERSION;
++	}
++#endif
++
+ 	// get structure for our current game info
+ 	SaveGameInfo *saveGameInfo = getSaveGameInfo();
+ 
+@@ -1668,6 +1685,26 @@
+ 
+ 	}
+ 
++	// version 3: the writing build's version number. On load it must equal
++	// this engine's, or the save was written at the other logic rate and is
++	// refused (loadGame turns the throw into its "error loading game" path,
++	// and the save-list scan simply leaves the file unlisted).
++	if( version >= 3 )
++	{
++
++		UnsignedInt engineVersion = TheVersion ? TheVersion->getVersionNumber() : 0;
++		xfer->xferUnsignedInt( &engineVersion );
++		if( xfer->getXferMode() == XFER_LOAD
++			&& TheVersion
++			&& engineVersion != TheVersion->getVersionNumber() )
++		{
++			DEBUG_CRASH(( "GameState::xfer - save game engine version %8.8X does not match this engine %8.8X",
++							engineVersion, TheVersion->getVersionNumber() ));
++			throw XFER_INVALID_VERSION;
++		}
++
++	}
++
+ 	// current system time
+ 	SYSTEMTIME systemTime;
+ 	GetLocalTime( &systemTime );
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/PhysicsUpdate.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/PhysicsUpdate.cpp
+@@ -169,8 +169,20 @@
+ static void parseFrictionPerSec( INI* ini, void * /*instance*/, void *store, const void* /*userData*/ )
+ {
+ 	Real fricPerSec = INI::scanReal(ini->getNextToken());
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Wave 6 slice 6f: the
++	// getters (retailFrictionToFrame) treat the stored value as the share of
++	// speed lost per RETAIL frame, so the 60-steps build stores upstream's
++	// per-retail-frame form. The standard build keeps the shipped form: the
++	// two are the same value at 30 steps but not the same bits (measured for
++	// the shipped data values 0.1, 7 and 200), and the 30-steps stream is
++	// bit-exact by proof, not by approximation.
++#if defined(REFORGED_60_STEPS)
++	Real fricPerRetailFrame = fricPerSec / RETAIL_LOGICFRAMES_PER_SECOND;
++	*(Real *)store = fricPerRetailFrame;
++#else
+ 	Real fricPerFrame = fricPerSec * SECONDS_PER_LOGICFRAME_REAL;
+ 	*(Real *)store = fricPerFrame;
++#endif
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Locomotor.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Locomotor.cpp
+@@ -433,8 +433,19 @@
+ static void parseFrictionPerSec( INI* ini, void * /*instance*/, void *store, const void* /*userData*/ )
+ {
+ 	Real fricPerSec = INI::scanReal(ini->getNextToken());
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Wave 6 slice 6f: this
++	// value lands in PhysicsBehavior::m_extraFriction, whose getters treat it
++	// as the share of speed lost per RETAIL frame -- the 60-steps build
++	// therefore stores upstream's per-retail-frame form, while the standard
++	// build keeps the shipped form (same value at 30 steps, different bits;
++	// see PhysicsUpdate.cpp's parseFrictionPerSec).
++#if defined(REFORGED_60_STEPS)
++	Real fricPerRetailFrame = fricPerSec / RETAIL_LOGICFRAMES_PER_SECOND;
++	*(Real *)store = fricPerRetailFrame;
++#else
+ 	Real fricPerFrame = fricPerSec * SECONDS_PER_LOGICFRAME_REAL;
+ 	*(Real *)store = fricPerFrame;
++#endif
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/ObjectCreationList.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/ObjectCreationList.cpp
+@@ -720,8 +720,19 @@
+ static void parseFrictionPerSec( INI* ini, void * /*instance*/, void *store, const void* /*userData*/ )
+ {
+ 	Real fricPerSec = INI::scanReal(ini->getNextToken());
++	// GeneralsX @feature Zero Hour Reforged 11/11/2026 Wave 6 slice 6f: this
++	// value lands in PhysicsBehavior::m_extraFriction, whose getters treat it
++	// as the share of speed lost per RETAIL frame -- the 60-steps build
++	// therefore stores upstream's per-retail-frame form, while the standard
++	// build keeps the shipped form (same value at 30 steps, different bits;
++	// see PhysicsUpdate.cpp's parseFrictionPerSec).
++#if defined(REFORGED_60_STEPS)
++	Real fricPerRetailFrame = fricPerSec / RETAIL_LOGICFRAMES_PER_SECOND;
++	*(Real *)store = fricPerRetailFrame;
++#else
+ 	Real fricPerFrame = fricPerSec * SECONDS_PER_LOGICFRAME_REAL;
+ 	*(Real *)store = fricPerFrame;
++#endif
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
+@@ -5207,6 +5207,55 @@
+  * Fire the owner's weapon once and exit.
+  */
+ 
++//-------------------------------------------------------------------------------------------------
++/**
++ * GeneralsX @feature Zero Hour Reforged 11/11/2026 Wave 6 slice 6f -- upstream
++ * Reforged's retail fire-cycle hold, the state-machine half of the
++ * conversion's weapon correction (the Weapon.cpp algebra half landed in 6c).
++ *
++ * After a shot this state hands back to aiming, which hands back here a frame
++ * later, and a weapon not ready yet goes round again: a shot can only come on
++ * every second frame after the last. Retail ran that loop at 30 Hz, so its
++ * weapons fired on a grid of two retail frames, and a 100 msec Quad Cannon
++ * (3 frames) fired every 4, 0.133 s. At 60 steps the same loop is a grid of
++ * two logic frames, half as coarse, and the gun would fire every 0.100 s.
++ * Holding the next shot to the next point of the retail grid puts every
++ * weapon this state fires back on its retail frames. Weapons fired elsewhere
++ * (FireWeaponUpdate, a point defense laser) never had the loop and keep their
++ * delays as they are.
++ *
++ * At the retail rate the hold is NOT an identity (an odd wait of 3 would
++ * become 4), so the standard build returns at once -- its stream stays
++ * bit-exact, and the hold acts only where it has meaning, at ratio 2.
++ */
++static void holdToRetailFireCycle( Object *obj, const Weapon *fired )
++{
++	if( LOGICFRAMES_PER_RETAIL_FRAME == 1 )
++		return;
++
++	const UnsignedInt now = TheGameLogic->getFrame();
++	if( fired->getLastShotFrame() != now )
++		return;
++
++	// every slot that fired this frame (linked turrets fire them all), and every slot a shared reload
++	// stamped; rounding a frame already on the grid leaves it there, so a slot met twice is no matter
++	const UnsignedInt CYCLE = 2 * LOGICFRAMES_PER_RETAIL_FRAME;
++	const Bool shared = obj->isReloadTimeShared();
++	for( Int slot = PRIMARY_WEAPON; slot < WEAPONSLOT_COUNT; ++slot )
++	{
++		Weapon *each = obj->getWeaponInWeaponSlot( (WeaponSlotType)slot );
++		if( !each || ( !shared && each->getLastShotFrame() != now ) )
++			continue;
++		const UnsignedInt next = each->getPossibleNextShotFrame();
++		// empty for good: privateFireWeapon parks it at 0x7fffffff
++		if( next >= 0x7fffffff )
++			continue;
++		const UnsignedInt wait = next > now ? next - now : 0;
++		each->setPossibleNextShotFrame( now + max( CYCLE, ( wait + CYCLE - 1 ) / CYCLE * CYCLE ) );
++	}
++}
++
++//-------------------------------------------------------------------------------------------------
+ StateReturnType AIAttackFireWeaponState::update()
+ {
+ 	// contained by AIAttackState, so no separate timer
+@@ -5326,6 +5375,8 @@
+ 		obj->clearStatus( MAKE_OBJECT_STATUS_MASK( OBJECT_STATUS_IGNORING_STEALTH ) );
+ 	}
+ 
++	holdToRetailFireCycle( obj, weapon );
++
+ 	m_att->notifyFired();
+ 
+ 	return STATE_SUCCESS;

@@ -20,3 +20,31 @@ index 075ff87..e1fbfe5 100644
  if [[ ! -f "${APK}" ]]; then
      echo "ERROR: expected APK not found at ${APK}"
      exit 1
+@@ -58,11 +58,27 @@
+ if [[ -n "${GX_SECOND_GAME_LIB:-}" ]]; then
+     if [[ ! -f "${GX_SECOND_GAME_LIB}" ]]; then
+         echo "ERROR: GX_SECOND_GAME_LIB points at a file that does not exist: ${GX_SECOND_GAME_LIB}"
+         exit 1
+     fi
+     cp "${GX_SECOND_GAME_LIB}" "${JNILIBS}/libmain60.so"
+     echo "Packaging a second engine: libmain60.so ($(du -h "${GX_SECOND_GAME_LIB}" | cut -f1))"
+ fi
+ 
++
++# GeneralsX @feature Zero Hour Reforged 11/11/2026 The Reforged 60-steps
++# engine (Zero Hour only): a second build of z_generals with
++# REFORGED_60_STEPS=ON, packaged under its own name -- NOT libmain60.so,
++# which names the GeneralsOnline crossplay engine and trips its OTA and
++# clientId handling. The launcher loads it only when the player turns the
++# Reforged 60-steps switch on (SetupActivity.getReforged60()).
++if [[ -n "${GX_REFORGED60_LIB:-}" ]]; then
++    if [[ ! -f "${GX_REFORGED60_LIB}" ]]; then
++        echo "ERROR: GX_REFORGED60_LIB points at a file that does not exist: ${GX_REFORGED60_LIB}"
++        exit 1
++    fi
++    cp "${GX_REFORGED60_LIB}" "${JNILIBS}/libmainrf60.so"
++    echo "Packaging the Reforged 60-steps engine: libmainrf60.so ($(du -h "${GX_REFORGED60_LIB}" | cut -f1))"
++fi
++
+ # GeneralsX @feature Android port 04/10/2026 The base game, Command & Conquer Generals, in the
+ # same APK: libgenerals.so (30 Hz) and, from build-dual-hz.sh, libgenerals60.so. The launcher
