@@ -16,13 +16,18 @@ as two total conversions. The migration in the generated
 ensureBundledReforgedData removes the app-installed legacy folders
 (ReforgedFixes / ReforgedBalance) and their stored-order entries once the
 merged folder is in place.
-Online mode (v1.7): the injected block also carries applyOnlineMode --
-the launcher's Online Mode switch (surgery phase 1f) snapshots the merged
-mod's switch state here on entry and restores it on exit, through the
-same listMods/saveOrder mechanism the Mods screen uses; and a first
-install that happens while online mode is on installs the mod switched
-off with the snapshot pre-recorded as enabled, so leaving the mode later
-restores the default-install state.
+Separation (v1.9): the Online Mode feature of v1.7/v1.8 is deleted, and
+the injected block carries its settlement instead --
+migrateOnlineModeState runs at the head of ensureBundledReforgedData and
+lands a v1.7/v1.8 install that was left with Online Mode on (snapshot
+pref pending, bundled mod possibly switched off under it) in exactly
+the state leaving the mode would have produced: the mod returns to its
+snapshotted state through the same listMods/saveOrder mechanism the
+Mods screen uses, and both leftover prefs are removed. The block also
+carries the Reforged page's mod switch (surgery phase 1e): 
+bundledModEnabled / setBundledModEnabled read and write this same
+stored-order state, so the page and the Mods screen are two handles on
+one state, never two states.
 
 Layout: REFORGED_SRC (env) points at the MYSOREZ checkout; default is the
 parent of this repo's checkout (the CI workflow checks the overlay repo out
@@ -219,6 +224,9 @@ method = '''
         if (root == null) {
             return;
         }
+        // v1.9: settle any v1.7/v1.8 Online Mode state before anything
+        // else reads or writes the mod order (see the migration below).
+        migrateOnlineModeState(ctx, root);
         final String mergedIni =
                 "name = Reforged\\n"
                 + "kind = gameplay\\n"
@@ -276,22 +284,7 @@ method = '''
         List<Mod> ordered = new java.util.ArrayList<>(rest);
         if (mergedMod != null) {
             if (!mergedKnown) {
-                // GeneralsX @feature Zero Hour Reforged 12/11/2026 First
-                // sight while online mode is on: the mod installs in the
-                // online state instead -- switched off, with the pre-mode
-                // snapshot recorded as enabled, so leaving online mode
-                // restores the default-install state.
-                if (SetupActivity.getOnlineMode(ctx)) {
-                    mergedMod.enabled = false;
-                    android.content.SharedPreferences prefs =
-                            ctx.getSharedPreferences(SetupActivity.PREFS_NAME,
-                                    Context.MODE_PRIVATE);
-                    if (!prefs.contains(PREF_ONLINE_SNAPSHOT_MOD)) {
-                        prefs.edit().putInt(PREF_ONLINE_SNAPSHOT_MOD, 1).apply();
-                    }
-                } else {
-                    mergedMod.enabled = true;
-                }
+                mergedMod.enabled = true;
             }
             ordered.add(mergedMod);
         }
@@ -308,56 +301,98 @@ method = '''
         return false;
     }
 
-    // GeneralsX @feature Zero Hour Reforged 12/11/2026 Online mode
-    // (SetupActivity, surgery phase 1f): while it is on, the bundled
-    // Reforged mod must be switched off, so GeneralsOnline sees the stock
-    // data set. The mod's own switch state is snapshotted on entry and
-    // restored on exit -- a mod the player had switched off by hand stays
-    // off. The switch itself goes through listMods/saveOrder, the exact
-    // mechanism the Mods screen uses, so every screen keeps showing the
-    // same state. The snapshot lives in the setup prefs next to the
-    // online-mode pref itself.
+    // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.9) Migration:
+    // v1.7/v1.8 shipped an Online Mode switch (removed in v1.9 under the
+    // separation: their build and settings stand alone, ours live on the
+    // Reforged page). A player who left the mode ON when he updated has
+    // its two prefs still stored and the bundled mod possibly switched
+    // off under the pending snapshot. Nothing in v1.9 reads the mode
+    // pref, so the mod would stay off forever unless the state is
+    // settled -- this runs at the head of ensureBundledReforgedData and
+    // lands the install exactly as leaving the mode would have: the mod
+    // returns to the snapshotted state (a mod the player had off by hand
+    // stays off) through listMods/saveOrder, the Mods screen's own
+    // mechanism, and both prefs are removed. It no-ops in one contains
+    // check on every later start, and defers untouched (prefs kept) if
+    // the bundled folder itself is not found under this mods root --
+    // the state belongs to the Zero Hour install and settles the first
+    // time this runs over it.
     private static final String PREF_ONLINE_SNAPSHOT_MOD =
             "reforged_online_snapshot_mod";
+    private static final String PREF_REFORGED_ONLINE_LEGACY =
+            "reforged_online_mode";
 
-    static void applyOnlineMode(Context ctx, boolean entering) {
+    private static void migrateOnlineModeState(Context ctx, File root) {
+        android.content.SharedPreferences prefs = ctx.getSharedPreferences(
+                SetupActivity.PREFS_NAME, Context.MODE_PRIVATE);
+        boolean hasSnapshot = prefs.contains(PREF_ONLINE_SNAPSHOT_MOD);
+        if (!hasSnapshot && !prefs.contains(PREF_REFORGED_ONLINE_LEGACY)) {
+            return;
+        }
+        if (hasSnapshot) {
+            boolean restore = prefs.getInt(PREF_ONLINE_SNAPSHOT_MOD, 1) == 1;
+            File bundledDir = findBundledDir(root, "reforged-v1");
+            if (bundledDir == null) {
+                return;
+            }
+            List<Mod> mods = listMods(ctx);
+            for (Mod mod : mods) {
+                if (mod.dir.getName().equals(bundledDir.getName())
+                        && mod.enabled != restore) {
+                    mod.enabled = restore;
+                    saveOrder(ctx, mods);
+                    break;
+                }
+            }
+        }
+        prefs.edit()
+                .remove(PREF_ONLINE_SNAPSHOT_MOD)
+                .remove(PREF_REFORGED_ONLINE_LEGACY)
+                .apply();
+    }
+
+    // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.9) The Reforged
+    // page's mod switch (SetupActivity, surgery phase 1e): the stored
+    // order IS the state -- these helpers only find the bundled mod in
+    // listMods and flip it through saveOrder, the exact mechanism the
+    // Mods screen uses, so the page and the Mods screen are two handles
+    // on one state. bundledModEnabled returns null when the bundled mod
+    // is not installed (yet), which the page renders honestly instead of
+    // inventing a state.
+    static Boolean bundledModEnabled(Context ctx) {
+        File root = modsRoot(ctx);
+        if (root == null) {
+            return null;
+        }
+        File bundledDir = findBundledDir(root, "reforged-v1");
+        if (bundledDir == null) {
+            return null;
+        }
+        for (Mod mod : listMods(ctx)) {
+            if (mod.dir.getName().equals(bundledDir.getName())) {
+                return mod.enabled;
+            }
+        }
+        return null;
+    }
+
+    static void setBundledModEnabled(Context ctx, boolean on) {
         File root = modsRoot(ctx);
         if (root == null) {
             return;
         }
         File bundledDir = findBundledDir(root, "reforged-v1");
-        android.content.SharedPreferences prefs = ctx.getSharedPreferences(
-                SetupActivity.PREFS_NAME, Context.MODE_PRIVATE);
-        List<Mod> mods = listMods(ctx);
-        Mod bundled = null;
-        if (bundledDir != null) {
-            for (Mod mod : mods) {
-                if (mod.dir.getName().equals(bundledDir.getName())) {
-                    bundled = mod;
-                    break;
-                }
-            }
+        if (bundledDir == null) {
+            return;
         }
-        if (entering) {
-            if (bundled == null || prefs.contains(PREF_ONLINE_SNAPSHOT_MOD)) {
+        List<Mod> mods = listMods(ctx);
+        for (Mod mod : mods) {
+            if (mod.dir.getName().equals(bundledDir.getName())) {
+                if (mod.enabled != on) {
+                    mod.enabled = on;
+                    saveOrder(ctx, mods);
+                }
                 return;
-            }
-            prefs.edit()
-                    .putInt(PREF_ONLINE_SNAPSHOT_MOD, bundled.enabled ? 1 : 0)
-                    .apply();
-            if (bundled.enabled) {
-                bundled.enabled = false;
-                saveOrder(ctx, mods);
-            }
-        } else {
-            if (!prefs.contains(PREF_ONLINE_SNAPSHOT_MOD)) {
-                return;
-            }
-            boolean restore = prefs.getInt(PREF_ONLINE_SNAPSHOT_MOD, 1) == 1;
-            prefs.edit().remove(PREF_ONLINE_SNAPSHOT_MOD).apply();
-            if (bundled != null && bundled.enabled != restore) {
-                bundled.enabled = restore;
-                saveOrder(ctx, mods);
             }
         }
     }
