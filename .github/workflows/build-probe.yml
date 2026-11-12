@@ -7,8 +7,10 @@ name: Build Reforged GPU Probe (stage C0/C2)
 # engine's own selfchecks (sdl_gpu_frame_selfcheck +
 # sdl_gpu_depth_format_selfcheck), built from source in this workflow
 # from the same pinned tree with the formalised C1 patch set
-# (probe/patches/) and packaged as child-process payloads for the
-# harness shim. Manual dispatch only. Deliberately separate from
+# (probe/patches/): the depth selfcheck as a child-process payload for
+# the harness shim, the frame selfcheck as a shared library (route B,
+# plan section 10) that its own SDLActivity loads. Manual dispatch
+# only. Deliberately separate from
 # build-apk.yml — the game build never sees this workflow, and this
 # workflow never touches the game.
 
@@ -156,21 +158,26 @@ jobs:
           git -C "$SRC" apply --check "$PWD/probe/patches/reforged-c1-android.patch"
           git -C "$SRC" apply "$PWD/probe/patches/reforged-c1-android.patch"
           git -C "$SRC" diff --stat | tail -3
-          # Stage C2 frame-entry fix (probe/patches/, sections 8-9 of the
-          # C1 plan): without it the bare-exec'd frame payload is refused
-          # by SDL_Init (SDL_MAIN_NEEDED main-ready flag is only ever set
-          # by SDLActivity's trampoline) and the device run ends as a
-          # spurious SKIP / exit 77 before any GPU code runs. The patch
-          # also carries the section-9 crash instrumentation (stderr
-          # stage breadcrumbs + a crash handler in the launcher TU) that
-          # localises the frame payload's on-device SIGSEGV. Marker-checked.
+          # Stage C2 frame entry, route B (probe/patches/, sections 8-10
+          # of the C1 plan): the frame selfcheck builds as a SHARED
+          # LIBRARY whose SDL_main an SDLActivity subclass runs in its
+          # own process. As a bare child process it was first refused by
+          # SDL_Init (exit 77 - the main-ready flag is only ever set by
+          # SDLActivity's trampoline), then died inside SDL_Init itself
+          # on the owner's device (signal 11 at address 0x0, last stage
+          # init-begin); the section 9.8 rule moved it into the activity.
+          # The patch also carries the section-9 crash instrumentation
+          # (stage breadcrumbs + a crash handler in the entry TU),
+          # redirected into frame-result.txt. Marker-checked.
           git -C "$SRC" apply --check "$PWD/probe/patches/reforged-frame-selfcheck-entry.patch"
           git -C "$SRC" apply "$PWD/probe/patches/reforged-frame-selfcheck-entry.patch"
           test -f "$SRC/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp"
           grep -q "sdl_gpu_frame_selfcheck_body" "$SRC/GeneralsMD/Code/CMakeLists.txt"
+          grep -q "add_library(sdl_gpu_frame_selfcheck SHARED" "$SRC/GeneralsMD/Code/CMakeLists.txt"
           grep -q "ZH_FRAME_PROBE_CRUMBS" "$SRC/GeneralsMD/Code/CMakeLists.txt"
           grep -q "zh_probe_crumb" "$SRC/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp"
-          echo "frame entry patch applied; launcher TU + CMake wiring + crumb instrumentation present"
+          grep -q "frame-result.txt" "$SRC/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp"
+          echo "frame entry patch applied; SHARED library wiring + entry TU + crumb instrumentation + result-file plumbing present"
           # Vendor the pinned archives exactly as C1 did (vendor.sh
           # downloads them from their pinned URLs).
           bash "$SRC/GeneralsMD/Code/Tools/vendor.sh"
@@ -197,15 +204,38 @@ jobs:
           cmake --build "$PWD/engine-build" --target sdl_gpu_depth_format_selfcheck -j"$(nproc)"
           cmake --build "$PWD/engine-build" --target sdl_gpu_frame_selfcheck -j"$(nproc)"
           # Stage the payloads under their packaged lib*.so names (the
-          # package manager extracts them next to libmain.so as real,
-          # executable files; the shim dladdr-locates and execs them).
+          # package manager extracts them next to libmain.so as real
+          # files; the shim dladdr-locates and execs the depth payload,
+          # while the frame payload is loaded by its SDLActivity via
+          # System.loadLibrary - route B).
           mkdir -p "$PWD/payloads"
-          cp "$PWD/engine-build/sdl_gpu_frame_selfcheck" "$PWD/payloads/libsdl_gpu_frame_selfcheck.so"
+          cp "$PWD/engine-build/libsdl_gpu_frame_selfcheck.so" "$PWD/payloads/libsdl_gpu_frame_selfcheck.so"
           cp "$PWD/engine-build/sdl_gpu_depth_format_selfcheck" "$PWD/payloads/libsdl_gpu_depth_format_selfcheck.so"
-          for f in "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" "$PWD/payloads/libsdl_gpu_depth_format_selfcheck.so"; do
-            file "$f" | grep -q "ELF 64-bit LSB pie executable, ARM aarch64" \
-              || { echo "payload is not an AArch64 PIE: $f"; file "$f"; exit 1; }
-          done
+          # Capture-then-grep for every gate below: with pipefail set, a
+          # `producer | grep -q` pipeline SIGPIPEs the producer when grep
+          # exits on its match and the pipeline reports failure anyway -
+          # that trap falsely failed the SDL_main check in the local
+          # route-B rehearsal (the symbol was exported all along).
+          case "$(file "$PWD/payloads/libsdl_gpu_depth_format_selfcheck.so")" in
+            *"ELF 64-bit LSB pie executable, ARM aarch64"*) ;;
+            *) echo "depth payload is not an AArch64 PIE"; file "$PWD/payloads/libsdl_gpu_depth_format_selfcheck.so"; exit 1 ;;
+          esac
+          case "$(file "$PWD/payloads/libsdl_gpu_frame_selfcheck.so")" in
+            *"ELF 64-bit LSB shared object, ARM aarch64"*) ;;
+            *) echo "frame payload is not an AArch64 shared object"; file "$PWD/payloads/libsdl_gpu_frame_selfcheck.so"; exit 1 ;;
+          esac
+          # Route B's entry contract: the frame library must export
+          # SDL_main for SDLActivity's nativeRunMain, and must not be
+          # an executable in disguise (no INTERP segment).
+          nm -D --defined-only "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" > "$PWD/nm-frame-dynsym.txt"
+          grep -q " T SDL_main" "$PWD/nm-frame-dynsym.txt" \
+            || { echo "frame payload does not export SDL_main"; head "$PWD/nm-frame-dynsym.txt"; exit 1; }
+          readelf -l "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" > "$PWD/readelf-frame.txt"
+          if grep -q INTERP "$PWD/readelf-frame.txt"; then
+            echo "frame payload carries an INTERP segment - it is an executable, not a library"; exit 1
+          fi
+          grep -a -q "frame-result.txt" "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" \
+            || { echo "result-file plumbing missing from the frame selfcheck"; exit 1; }
           # The C1 section-5 compat fix must be inside the frame payload:
           # the engine creates its device through
           # SDL_CreateGPUDeviceWithProperties on Android.
@@ -217,7 +247,8 @@ jobs:
             || { echo "frame entry trampoline missing from the frame selfcheck"; exit 1; }
           # The section-9 instrumentation must be inside too: the crumb
           # function and its stage strings are what name the crash site
-          # in probe-log.txt if the payload still dies on device.
+          # in frame-result.txt (merged into probe-log.txt by the
+          # launcher) if the payload still dies on device.
           grep -a -q "zh_probe_crumb" "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" \
             || { echo "crumb instrumentation missing from the frame selfcheck"; exit 1; }
           grep -a -q "frame-create: device-call" "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" \
