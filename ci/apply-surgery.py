@@ -101,8 +101,8 @@ print('surgery target tree:', SRC, '| mode:', MODE)
 if MODE == 'full':
     edit('android/app/build.gradle', [
         ("applicationId 'com.generalsx.zerohour'", f"applicationId '{NEW_ID}'"),
-        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 12)'),
-        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.11')"),
+        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 13)'),
+        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.12')"),
     ])
 
 # ---------------- Phase 1b: native hardcoded data paths ----------------
@@ -282,6 +282,7 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
         }
         buildReforgedEngineCard(page);
         buildReforgedModCard(page);
+        buildReforgedWifiCard(page);
     }
 
     // The Reforged engine card: the card that sat on the Graphics tab
@@ -359,6 +360,80 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
         sw.setOnCheckedChangeListener((button, checked) ->
             ModManager.setBundledModEnabled(this, checked));
         UiKit.helpText(content, getString(R.string.setup_reforged_mod_help));
+    }
+
+    private int tabTitle(int tab) {"""),
+    ("""        UiKit.helpText(content, getString(R.string.setup_reforged_mod_help));
+    }
+
+    private int tabTitle(int tab) {""",
+     """        UiKit.helpText(content, getString(R.string.setup_reforged_mod_help));
+    }
+
+    // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.12) The WiFi-play
+    // card. A match between two of our builds stands or falls on identity:
+    // the game compares the engine and data identities of both phones when
+    // the match starts and keeps comparing while it runs, so any difference
+    // -- the engine switch above, the mod state above -- ends the match at
+    // the start. The card does two things only: it SAYS what this phone is
+    // currently set to, in words the player can compare against the other
+    // phone's screen, and it offers the two reference profiles as one tap
+    // each, applied through the same pref setters and mod helpers the cards
+    // above use, so the prepared state is exactly the state those cards
+    // display. Nothing here touches the original pages or their games.
+    private void buildReforgedWifiCard(LinearLayout root) {
+        LinearLayout content = UiKit.card(root);
+        UiKit.sectionHeader(content, R.drawable.ic_gzh_chip,
+            getString(R.string.setup_card_reforged_wifi), true);
+        UiKit.supporting(content, getString(R.string.setup_reforged_wifi_intro));
+        String engine = getReforged60(this)
+            ? getString(R.string.setup_reforged_wifi_engine60)
+            : getReforgedEnhanced30(this)
+                ? getString(R.string.setup_reforged_wifi_engine30)
+                : getString(R.string.setup_reforged_wifi_engine_stock);
+        Boolean mod = ModManager.bundledModEnabled(this);
+        String modState = mod == null
+            ? getString(R.string.setup_reforged_mod_absent)
+            : mod ? getString(R.string.setup_reforged_wifi_mod_on)
+                  : getString(R.string.setup_reforged_wifi_mod_off);
+        // The data identity is more than the mod: the same mod over a game
+        // folder without the Community Patch reads a different INI stream
+        // than the same mod over one with it, and the identity check cannot
+        // tell the player which half differed. The card can: the patch is a
+        // file in the game folder, and the folder is the launcher's own.
+        String patchState = getString(R.string.setup_reforged_wifi_patch_off);
+        java.io.File[] folderFiles = new java.io.File(
+            getSavedGamePath(this, GAME_ZERO_HOUR)).listFiles();
+        if (folderFiles != null) {
+            for (java.io.File f : folderFiles) {
+                if (f.getName().toLowerCase(java.util.Locale.US)
+                        .contains("communitypatch")) {
+                    patchState = getString(R.string.setup_reforged_wifi_patch_on);
+                    break;
+                }
+            }
+        }
+        UiKit.supporting(content, getString(R.string.setup_reforged_wifi_state,
+            engine, modState, patchState));
+        UiKit.button(content, UiKit.BTN_TONAL, R.drawable.ic_gzh_chip,
+            getString(R.string.setup_reforged_wifi_prepare30), () -> {
+                setReforgedEnhanced30(this, true);
+                setReforged60(this, false);
+                if (ModManager.bundledModEnabled(this) != null) {
+                    ModManager.setBundledModEnabled(this, true);
+                }
+                content.post(() -> showTab(TAB_REFORGED));
+            });
+        UiKit.button(content, UiKit.BTN_TONAL, R.drawable.ic_gzh_chip,
+            getString(R.string.setup_reforged_wifi_prepare60), () -> {
+                setReforged60(this, true);
+                setReforgedEnhanced30(this, false);
+                if (ModManager.bundledModEnabled(this) != null) {
+                    ModManager.setBundledModEnabled(this, true);
+                }
+                content.post(() -> showTab(TAB_REFORGED));
+            });
+        UiKit.helpText(content, getString(R.string.setup_reforged_wifi_help));
     }
 
     private int tabTitle(int tab) {"""),
@@ -671,6 +746,57 @@ for d in os.listdir(resdir):
         lines.insert(idx + 1, block.lstrip('\n'))
     open(p, 'w', encoding='utf-8').write('\n'.join(lines))
     print('page strings', os.path.join(d, 'strings.xml'))
+
+# WiFi-play card strings in every locale (v1.12), same insertion point and
+# discipline as the page strings above. No name here exists upstream.
+_WIFI_STRINGS_EN = [
+    ('setup_card_reforged_wifi', 'WiFi Play'),
+    ('setup_reforged_wifi_intro', 'Two phones, one build: a WiFi match between our builds needs both phones set the same on this page -- the same engine, the same mod state. The game compares both identities when the match starts and keeps comparing while it runs; a difference on either phone ends the match at the start.'),
+    ('setup_reforged_wifi_state', 'This phone: engine %1$s · Reforged mod %2$s · Community Patch %3$s'),
+    ('setup_reforged_wifi_patch_on', 'installed'),
+    ('setup_reforged_wifi_patch_off', 'missing'),
+    ('setup_reforged_wifi_engine60', 'Reforged 60'),
+    ('setup_reforged_wifi_engine30', 'Reforged 30 (enhanced)'),
+    ('setup_reforged_wifi_engine_stock', 'Original'),
+    ('setup_reforged_wifi_mod_on', 'on'),
+    ('setup_reforged_wifi_mod_off', 'off'),
+    ('setup_reforged_wifi_prepare30', 'Prepare WiFi play: Reforged 30 + mod'),
+    ('setup_reforged_wifi_prepare60', 'Prepare WiFi play: Reforged 60 + mod'),
+    ('setup_reforged_wifi_help', 'Press the same Prepare button on both phones, then compare the line above on both screens -- it must read the same before you start. Games on the original engines are set up on the original pages; this card is only for matches between our builds.'),
+]
+_WIFI_STRINGS_AR = [
+    ('setup_card_reforged_wifi', 'اللعب عبر الوايفاي'),
+    ('setup_reforged_wifi_intro', 'هاتفان وبناء واحد: مباراة وايفاي بين نسخنا تحتاج أن يضبط الهاتفان الشيء نفسه من هذه الصفحة — نفس المحرك ونفس حالة المود. اللعبة تقارن هويتي الهاتفين عند بدء المباراة وتظل تقارن أثناءها؛ وأي اختلاف في أي هاتف ينهي المباراة من بدايتها.'),
+    ('setup_reforged_wifi_state', 'هذا الهاتف: المحرك %1$s · مود ريفورجيد %2$s · باتش المجتمع %3$s'),
+    ('setup_reforged_wifi_patch_on', 'موجود'),
+    ('setup_reforged_wifi_patch_off', 'غير موجود'),
+    ('setup_reforged_wifi_engine60', 'ريفورجيد 60'),
+    ('setup_reforged_wifi_engine30', 'ريفورجيد 30 (المحسّن)'),
+    ('setup_reforged_wifi_engine_stock', 'الأصلي'),
+    ('setup_reforged_wifi_mod_on', 'شغال'),
+    ('setup_reforged_wifi_mod_off', 'مطفي'),
+    ('setup_reforged_wifi_prepare30', 'جهّز للعب الوايفاي: ريفورجيد 30 + المود'),
+    ('setup_reforged_wifi_prepare60', 'جهّز للعب الوايفاي: ريفورجيد 60 + المود'),
+    ('setup_reforged_wifi_help', 'اضغط زر التجهيز نفسه على الهاتفين، ثم قارن السطر أعلاه على الشاشتين — لازم يقرأ الشيء نفسه قبل أن تبدأ. مباريات المحركات الأصلية تُجهّز من الصفحات الأصلية؛ هذه البطاقة لمباريات بين نسخنا فقط.'),
+]
+for d in os.listdir(resdir):
+    p = os.path.join(resdir, d, 'strings.xml')
+    if not (d.startswith('values') and os.path.isfile(p)):
+        continue
+    s = open(p, encoding='utf-8').read()
+    if 'name="setup_card_reforged_wifi"' in s:
+        continue
+    entries = _WIFI_STRINGS_AR if d == 'values-ar' else _WIFI_STRINGS_EN
+    block = ''.join(f'\n    <string name="{n}">{t}</string>' for n, t in entries)
+    lines = s.split('\n')
+    idx = next((i for i, ln in enumerate(lines) if 'name="nav_tab_help"' in ln), None)
+    if idx is None:
+        idx = next(i for i, ln in enumerate(lines) if '</resources>' in ln)
+        lines.insert(idx, block.lstrip('\n'))
+    else:
+        lines.insert(idx + 1, block.lstrip('\n'))
+    open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+    print('wifi strings', os.path.join(d, 'strings.xml'))
 
 # ---------------- post-check: no old-id native paths remain ----------------
 post_check()
