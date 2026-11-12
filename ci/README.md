@@ -76,19 +76,30 @@ every run and applies this repo's small overlay on top:
      the release output path, and adds the `GX_REFORGED60_LIB` knob that
      stages the flipped engine as `libmainrf60.so` (never `libmain60.so`).
    - `apply-surgery.py` — new applicationId `com.louay.zerohour.reforged`,
-     version 8 / "1.7", the native hardcoded data paths repointed to the
+     version 9 / "1.8", the native hardcoded data paths repointed to the
      new id, the "Zero Hour Reforged" label in all locales, the OTA
      update channel pointed at this repo (so upstream engine updates can
      never overwrite the patched build), (phase 1e) the Reforged
      60-steps launcher switch: pref `reforged_60_steps` (default OFF)
      replacing the dead Simulation Rate card on the Graphics tab, shown
      only when Zero Hour is selected and `libmainrf60.so` is in the APK,
-     and (phase 1f, v1.7) the Online Mode switch under it: pref
+     (phase 1f, v1.7) the Online Mode switch under it: pref
      `reforged_online_mode` (default OFF) -- while it is on,
      GeneralsZHActivity never loads `libmainrf60.so` and phase 2 keeps
      the bundled mod switched off, so GeneralsOnline lobbies see this
      build exactly as a stock one; the player's 60-steps pref is never
-     overwritten, and the card's strings ship in all locales.
+     overwritten, and the card's strings ship in all locales; and
+     (phase 1g, v1.8) Online Mode's engine: while the mode is on,
+     GeneralsZHActivity loads the host's own 60 Hz engine
+     (`libmain60.so`, see the build step below) so the session joins the
+     60 Hz GeneralsOnline population as one of its own;
+     `GeneralsOnlineSession.clientId` mirrors that branch (the pristine
+     sim_hz condition could announce an engine this build will not run),
+     and the upstream UpdateManager engine-override load path is removed
+     from `GeneralsZHActivity` -- the APK's engines are the only engines,
+     which from v1.8 also protects `libmain60.so`'s exact provenance at
+     runtime. The Online Mode card text now says the mode runs the
+     original 60 Hz engine.
    - `apply-phase2.py` — bundles the Reforged data as ONE merged package
      (`ci/assets/!Reforged-v1.big`, sha256-verified by the script before
      use) and adds the launcher code that installs + enables it as a single
@@ -113,11 +124,21 @@ every run and applies this repo's small overlay on top:
    list, then package a release APK. Since v1.5 the Zero Hour engine is
    built a second time with `REFORGED_60_STEPS=ON` (same build dir,
    sequential; the standard `libmain.so` is stashed and restored around
-   the pass) and packaged as `libmainrf60.so`; the APK guard requires
-   exactly `libmain.so` + `libmainrf60.so` + `libgenerals.so` and bans
-   every other `*60.so` name.
+   the pass) and packaged as `libmainrf60.so`. Since v1.8 there is a
+   third Zero Hour engine: the host's own 60 Hz build, compiled from a
+   second, pristine checkout of the pinned tree (`host60-src`) with
+   `SAGE_HIGH_FPS_SIM=ON` and **no overlay at all** -- the host's own
+   `build-dual-hz.sh` pass 1, mirrored (the step proves the checkout is
+   the pinned commit with a clean git status before building, and checks
+   the artifact's compiled-in client id is `gen_online_60hz`) -- staged
+   into the APK as `libmain60.so` through the packaging script's own
+   pristine `GX_SECOND_GAME_LIB` knob. The APK guard requires exactly
+   `libmain.so` + `libmainrf60.so` + `libmain60.so` + `libgenerals.so`;
+   the `*60.so` set must be exactly `{libmain60.so, libmainrf60.so}`
+   (`libgenerals60.so` stays banned: the base game ships no 60 Hz engine
+   here -- Online Mode is a Zero Hour feature).
 4. **Upload** the APK as the workflow artifact **`ZeroHourReforged-apk`**
-   (plus symbol tables for both Zero Hour engines for crash
+   (plus symbol tables for all three Zero Hour engines for crash
    symbolization, and build logs).
 
 ## Signing
