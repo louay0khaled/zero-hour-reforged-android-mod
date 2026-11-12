@@ -11,8 +11,13 @@ phases are:
      both modes below (base tree and Reforged-engine tree alike)
   1c app_name label in every locale's strings.xml
   1d UpdateManager update channel repointed at this repo (no OTA overwrite)
-  1e the Reforged page (v1.9): a sixth bottom-navigation tab that is
-     ours alone, carrying the Reforged 60-steps engine switch (pref
+  1e the Reforged page (v1.9; entry moved in v1.11): our own launcher
+     page, entered from a row on the Home page -- Material's
+     BottomNavigationView accepts at most five items, and the sixth
+     bottom-navigation item v1.9/v1.10 added threw at inflation and
+     took the whole settings interface down with it (v1.10 device
+     verdict). Their five nav items are untouched. The page carries
+     the Reforged 60-steps engine switch (pref
      reforged_60_steps, default OFF -- the card that sat on the Graphics
      tab in v1.5-v1.8, moved here unchanged in substance) and the bundled
      Reforged mod switch (phase 2 supplies the state). Since v1.10 the
@@ -96,8 +101,8 @@ print('surgery target tree:', SRC, '| mode:', MODE)
 if MODE == 'full':
     edit('android/app/build.gradle', [
         ("applicationId 'com.generalsx.zerohour'", f"applicationId '{NEW_ID}'"),
-        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 11)'),
-        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.10')"),
+        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 12)'),
+        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.11')"),
     ])
 
 # ---------------- Phase 1b: native hardcoded data paths ----------------
@@ -135,12 +140,17 @@ edit('android/app/src/main/java/com/generalsx/zerohour/UpdateManager.java', [
      '"https://raw.githubusercontent.com/louay0khaled/zero-hour-reforged-android-mod/main/"'),
 ])
 
-# ---------------- Phase 1e: the Reforged page (v1.9) ----------------
-# Everything of ours lives on ONE new bottom-navigation tab, built exactly
-# the way the shell builds its own five: a TAB_* constant, a menu entry in
-# buildBottomNav(), a tabTitle() case, a showTab() case. Their pages are
-# not edited at all -- in particular the Simulation Rate card keeps its
-# pristine body and works again, because libmain60.so really ships now.
+# ---------------- Phase 1e: the Reforged page (v1.9; entry fixed v1.11) --
+# Everything of ours lives on ONE page of its own, rendered by showTab()
+# like any of the shell's pages: a TAB_* constant, a tabTitle() case, a
+# showTab() case -- and, since v1.11, an entry row on the Home page
+# instead of a bottom-navigation item. v1.9/v1.10 added a sixth menu item
+# to buildBottomNav(); Material's BottomNavigationView hard-caps at five
+# items, so the nav threw at inflation and the whole settings interface
+# fell back to the plain-widget UI (v1.10 device verdict, 2026-11-12).
+# Their pages are not edited at all -- in particular the Simulation Rate
+# card keeps its pristine body and works again, because libmain60.so
+# really ships now.
 # The page carries the engine switches and the mod switch, all Zero
 # Hour only:
 #  * the Reforged 60-steps engine (libmainrf60.so, from the patched tree):
@@ -217,12 +227,30 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
     }"""),
     ('    private static final int TAB_HELP = 5;',
      """    private static final int TAB_HELP = 5;
-    // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.9) Our own page:
-    // the one bottom-navigation destination this build adds.
+    // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.9) Our own page.
+    // Not a bottom-navigation item: the bar is full at five (see the Home
+    // entry row below); this is the page id showTab() renders.
     private static final int TAB_REFORGED = 6;"""),
-    ('        menu.add(Menu.NONE, TAB_HELP, 4, R.string.nav_tab_help).setIcon(R.drawable.ic_gzh_info);',
-     """        menu.add(Menu.NONE, TAB_HELP, 4, R.string.nav_tab_help).setIcon(R.drawable.ic_gzh_info);
-        menu.add(Menu.NONE, TAB_REFORGED, 5, R.string.nav_tab_reforged).setIcon(R.drawable.ic_gzh_chip);"""),
+    ("""        // The one thing this app exists to do, as the first thing on it.
+        UiKit.button(page, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_play,
+            getString(R.string.setup_button_launch_game), this::onLaunchGame);""",
+     """        // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.11) The entry
+        // to our own page, on the Home page -- the way the Mods screen is
+        // entered from its row in the card above. There is deliberately no
+        // bottom-navigation item for it: Material's BottomNavigationView
+        // accepts at most five items, and the sixth added in v1.9/v1.10
+        // threw at inflation and took the whole settings interface down
+        // with it (device verdict on v1.10). Their five items stay
+        // untouched; showTab() renders our page like any other.
+        LinearLayout reforgedEntry = UiKit.card(page);
+        UiKit.listRow(reforgedEntry, R.drawable.ic_gzh_chip,
+            getString(R.string.nav_tab_reforged),
+            getString(R.string.setup_reforged_home_row_desc),
+            () -> showTab(TAB_REFORGED));
+
+        // The one thing this app exists to do, as the first thing on it.
+        UiKit.button(page, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_play,
+            getString(R.string.setup_button_launch_game), this::onLaunchGame);"""),
     ('            case TAB_HELP:      return R.string.nav_tab_help;',
      """            case TAB_HELP:      return R.string.nav_tab_help;
             case TAB_REFORGED:  return R.string.nav_tab_reforged;"""),
@@ -606,6 +634,7 @@ for d in os.listdir(resdir):
 _PAGE_STRINGS_EN = [
     ('nav_tab_reforged', 'Reforged'),
     ('setup_card_reforged_page', 'Reforged'),
+    ('setup_reforged_home_row_desc', 'Our engines and the Reforged mod, on their own page'),
     ('setup_reforged_page_intro', 'Everything on this page is what this build adds, and nothing of it lives anywhere else. Every other page of this launcher is the original app, untouched. The original online games belong to the original engines, with the Reforged mod below switched off; both switches are here, in the open, and the choice stays yours.'),
     ('setup_card_reforged_mod', 'Reforged Mod'),
     ('setup_reforged_mod_title', 'Reforged data mod'),
@@ -616,6 +645,7 @@ _PAGE_STRINGS_EN = [
 _PAGE_STRINGS_AR = [
     ('nav_tab_reforged', 'ريفورجيد'),
     ('setup_card_reforged_page', 'ريفورجيد'),
+    ('setup_reforged_home_row_desc', 'محركاتنا ومود ريفورجيد، بصفحة لحالها'),
     ('setup_reforged_page_intro', 'كل ما في هذه الصفحة يخص هذه النسخة وحدها، ولا يوجد منه شيء في أي مكان آخر. بقية صفحات هذا المشغّل هي التطبيق الأصلي دون أي مساس. مباريات الأونلاين الأصلية تخص المحركات الأصلية، مع إيقاف مود ريفورجيد التالي؛ والمفتاحان هنا، في العلن، والاختيار يبقى لك.'),
     ('setup_card_reforged_mod', 'مود ريفورجيد'),
     ('setup_reforged_mod_title', 'مود بيانات ريفورجيد'),
