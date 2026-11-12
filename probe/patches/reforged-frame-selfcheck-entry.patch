@@ -1,0 +1,71 @@
+diff --git a/GeneralsMD/Code/CMakeLists.txt b/GeneralsMD/Code/CMakeLists.txt
+index 7dbbfb16..74f64669 100644
+--- a/GeneralsMD/Code/CMakeLists.txt
++++ b/GeneralsMD/Code/CMakeLists.txt
+@@ -1487,6 +1487,17 @@ if(ZH_PLATFORM_POSIX)
+     ${CMAKE_CURRENT_SOURCE_DIR}/GameEngineDevice/Source/PosixDevice/Render)
+   target_link_libraries(sdl_gpu_frame_selfcheck PRIVATE posixd3d9 SDL3::SDL3-static)
+   add_test(NAME sdl_gpu_frame_selfcheck COMMAND sdl_gpu_frame_selfcheck)
++  if(ZH_PLATFORM_ANDROID)
++    # Stage C2 (Android probe harness): the selfcheck runs there as a bare child process, with no
++    # SDLActivity/JNI trampoline to mark SDL main-ready, so a plain main() is refused by SDL_Init
++    # and the run ends as a spurious SKIP (exit 77) before any GPU code runs. The test TU is
++    # renamed to a body function (the SDL_main.h trick, this one TU only) and
++    # Tests/frame_selfcheck_main.cpp provides the entry, calling SDL_SetMainReady() first —
++    # the one act of SDL's Android trampoline an offscreen test needs.
++    target_sources(sdl_gpu_frame_selfcheck PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Tests/frame_selfcheck_main.cpp)
++    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/Tests/test_sdl_gpu_frame.cpp
++      PROPERTIES COMPILE_DEFINITIONS "main=sdl_gpu_frame_selfcheck_body")
++  endif()
+ 
+   # A3c's resolve: the device's state into the generators' descriptions and the constants their
+   # programs read, on a headless device.  No GPU.
+diff --git a/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp b/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp
+new file mode 100644
+index 00000000..f8ff3392
+--- /dev/null
++++ b/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp
+@@ -0,0 +1,43 @@
++/*
++**	Entry point for sdl_gpu_frame_selfcheck on Android — added by the
++**	Android probe harness patch (Stage C, slice C2; this file is not
++**	part of upstream). Same licence as the tree: GNU GPL v3 or later.
++**
++**	Why this file exists: on Android SDL3 is built with
++**	SDL_MAIN_NEEDED, so SDL_Init refuses to run until SDL's own entry
++**	trampoline has marked the process main-ready — in SDL's Android
++**	model that happens inside SDLActivity's JNI initialisation
++**	(SDL_android.c, checkJNIReady -> SDL_SetMainReady), before
++**	nativeRunMain calls the application's SDL_main. The selfcheck is
++**	an offscreen test that the probe harness runs as a bare child
++**	process: no activity, no JNI, no trampoline, so its plain main()
++**	reached SDL_Init with the flag clear and the run ended as a
++**	"SKIP" (exit 77) before any GPU code ran — an entry-model
++**	verdict masquerading as a device verdict.
++**
++**	The fix keeps the process model and gives the payload the one
++**	act of the trampoline it actually needs: the test TU is compiled
++**	with its main renamed to sdl_gpu_frame_selfcheck_body() (the
++**	SDL_main.h trick, scoped to that one TU by the CMake wiring in
++**	this patch), and this TU provides the process entry: mark SDL
++**	ready in this binary's own statically linked SDL instance, then
++**	run the body. The offscreen video driver and the GPU device
++**	need no JNI, no window and no surface.
++*/
++
++/* SDL_MAIN_HANDLED: this TU provides its own main() and calls
++** SDL_SetMainReady() itself — the arrangement SDL_main.h's own
++** documentation prescribes for exactly this case. (SDL_SetMainReady
++** is declared by SDL_main.h; SDL.h does not declare it.) */
++#define SDL_MAIN_HANDLED
++#include <SDL3/SDL_main.h>
++
++int sdl_gpu_frame_selfcheck_body();
++
++int main(int argc, char *argv[])
++{
++	(void)argc;
++	(void)argv;
++	SDL_SetMainReady();
++	return sdl_gpu_frame_selfcheck_body();
++}
