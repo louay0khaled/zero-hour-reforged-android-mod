@@ -66,6 +66,13 @@ public class ProbeMainActivity extends Activity {
     private static final int MODE_LOG = 1;
     private static final int MODE_RESULT = 2;
 
+    // Route B: how long after the renderer tap the launcher may still
+    // chain into the frame activity on the depth half's evidence. The
+    // depth half takes seconds; the window exists so an abandoned run
+    // (launcher recreated hours later with phase 1 still set) never
+    // launches the frame activity unasked.
+    private static final long CHAIN_WINDOW_MS = 10 * 60 * 1000L;
+
     private TextView mResultView;
     private Button mLogToggle;
     private int mMode = MODE_AUTO;
@@ -169,7 +176,6 @@ public class ProbeMainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        boolean returnedFromChild = mLaunchedChild;
         if (mLaunchedChild) {
             mLaunchedChild = false;
             File result = resultFile();
@@ -181,28 +187,64 @@ public class ProbeMainActivity extends Activity {
                 appendLog("resumed WITHOUT a fresh " + harness + " result - the last run left no output file");
             }
         }
-        // Route B renderer chain. Phase 1 -> 2 fires only on the resume
-        // that follows the harness activity, so a cold start with a
-        // stale phase 1 never launches anything unasked. Phase 2 merges
-        // on any resume that finds it set: normally the return from
-        // FrameCheckActivity, but if this process died while the frame
-        // activity ran, the merge still happens here on relaunch.
+        // Route B renderer chain, driven ENTIRELY by persisted state
+        // (prefs + the shim's renderer-depth.txt), never by instance
+        // fields: the first route B device run (2026-11-12) showed
+        // Android recreating this activity during the harness run, so
+        // an instance-field chain (mLaunchedChild) came back false and
+        // the frame activity never launched - three runs each executed
+        // only the depth half. Phase 1 -> 2 fires when the depth half's
+        // record is fresh for this run and the run is still inside the
+        // chain window. Phase 2 merges on any resume that finds it
+        // set: normally the return from FrameCheckActivity, but if
+        // this process died while the frame activity ran, the merge
+        // still happens here on relaunch.
         String chainHarness = prefs().getString("last_harness", "gpu-probe");
         int phase = prefs().getInt("renderer_phase", 0);
-        if ("renderer".equals(chainHarness) && phase == 1 && returnedFromChild) {
-            prefs().edit().putInt("renderer_phase", 2).apply();
-            appendLog("depth half finished; starting frame selfcheck activity (route B)");
-            mLaunchedChild = true;
-            mMode = MODE_AUTO;
-            mResultView.setText("Depth selfcheck done. Running the frame selfcheck in its own screen...");
-            startActivity(new Intent(this, FrameCheckActivity.class));
-            return;
+        if ("renderer".equals(chainHarness) && phase == 1) {
+            if (depthHalfLooksComplete()) {
+                prefs().edit().putInt("renderer_phase", 2).apply();
+                appendLog("depth half finished; starting frame selfcheck activity (route B)");
+                mLaunchedChild = true;
+                mMode = MODE_AUTO;
+                mResultView.setText("Depth selfcheck done. Running the frame selfcheck in its own screen...");
+                startActivity(new Intent(this, FrameCheckActivity.class));
+                return;
+            }
+            long chainStartedAt = prefs().getLong("run_started_at", 0);
+            if (chainStartedAt > 0
+                    && System.currentTimeMillis() - chainStartedAt > CHAIN_WINDOW_MS) {
+                prefs().edit().putInt("renderer_phase", 0).apply();
+                appendLog("renderer chain abandoned - no fresh depth record inside the chain window; phase reset");
+            }
         }
         if ("renderer".equals(chainHarness) && phase == 2) {
             prefs().edit().putInt("renderer_phase", 0).apply();
             mergeRendererResults();
         }
         showContent();
+    }
+
+    // Route B chain evidence: the depth half counts as complete when
+    // the shim's renderer-depth.txt is at least as new as this run's
+    // tap (same 2s tolerance as isFreshResult) and the tap is still
+    // inside the chain window. Files and prefs are the chain of
+    // custody - they survive activity recreation and process death,
+    // which instance fields do not.
+    private boolean depthHalfLooksComplete() {
+        File dir = getExternalFilesDir(null);
+        if (dir == null) {
+            return false;
+        }
+        long startedAt = prefs().getLong("run_started_at", 0);
+        if (startedAt == 0) {
+            return false;
+        }
+        if (System.currentTimeMillis() - startedAt > CHAIN_WINDOW_MS) {
+            return false;
+        }
+        File depth = new File(dir, "renderer-depth.txt");
+        return depth.isFile() && depth.lastModified() >= startedAt - 2000;
     }
 
     // Route B merge: the frame activity's process has exited (or died).
