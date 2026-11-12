@@ -1,0 +1,799 @@
+diff --git a/Core/GameEngine/Source/Common/System/XferCRC.cpp b/Core/GameEngine/Source/Common/System/XferCRC.cpp
+index 614a4a5..00fd37d 100644
+--- a/Core/GameEngine/Source/Common/System/XferCRC.cpp
++++ b/Core/GameEngine/Source/Common/System/XferCRC.cpp
+@@ -132,9 +132,21 @@ void XferCRC::xferImplementation( void *data, Int dataSize )
+ 
+ 	int dataBytes = (dataSize / 4);
+ 
++	// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- fold the words into a
++	// local accumulator instead of storing m_crc back after every word (Reforged's XferCRC:
++	// a whole-game CRC late in a four-player match took 1.26 ms that way and takes 0.87 ms
++	// with the local). The arithmetic per word is addCRC's own -- (crc << 1) + htobe(word) +
++	// ((crc >> 31) & 0x01) -- the tail word goes in unswapped exactly as before, and the
++	// capture stream still receives every (word, crc) pair in order, so the computed CRC
++	// and the recorded stream are bit-identical.
++	UnsignedInt crc = m_crc;
++
+ 	for (Int i=0 ; i<dataBytes; ++i)
+ 	{
+-		addCRC (*uintPtr++);
++		const UnsignedInt word = htobe(*uintPtr++);
++		crc = (crc << 1) + word + ((crc >> 31) & 0x01);
++		if (m_gxCapture)
++			GXCrcStream::push(word, crc);
+ 	}
+ 
+ 	UnsignedInt val = 0;
+@@ -150,14 +162,16 @@ void XferCRC::xferImplementation( void *data, Int dataSize )
+ 		FALLTHROUGH;
+ 	case 1:
+ 		val += c[0];
+-		m_crc = (m_crc << 1) + val + ((m_crc >> 31) & 0x01);
++		crc = (crc << 1) + val + ((crc >> 31) & 0x01);
+ 		if (m_gxCapture)
+-			GXCrcStream::push(val, m_crc);
++			GXCrcStream::push(val, crc);
+ 		FALLTHROUGH;
+ 	default:
+ 		break;
+ 	}
+ 
++	m_crc = crc;
++
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+diff --git a/Core/GameEngineDevice/Include/W3DDevice/GameClient/Module/W3DModelDraw.h b/Core/GameEngineDevice/Include/W3DDevice/GameClient/Module/W3DModelDraw.h
+index 2532842..4070653 100644
+--- a/Core/GameEngineDevice/Include/W3DDevice/GameClient/Module/W3DModelDraw.h
++++ b/Core/GameEngineDevice/Include/W3DDevice/GameClient/Module/W3DModelDraw.h
+@@ -453,6 +453,8 @@ protected:
+ 	void recalcBonesForClientParticleSystems();
+ 	void stopClientParticleSystems();
+ 	void doHideShowSubObjs(const std::vector<ModelConditionInfo::HideShowSubObjInfo>* vec);
++	void applyHideShowSubObjs(const std::vector<ModelConditionInfo::HideShowSubObjInfo>* vec);
++	void forgetProjectileShown();
+ 	virtual void adjustTransformMtx(Matrix3D& mtx) const;
+ 
+ 	Real getCurAnimDistanceCovered() const;
+@@ -516,6 +518,15 @@ private:
+ 	TerrainTracksRenderObjClass*	m_trackRenderObject;							///< This is rendered under object
+ 	ParticleSystemIDVec						m_particleSystemIDs;							///< The ID numbers of the particle systems currently running.
+ 	std::vector<ModelConditionInfo::HideShowSubObjInfo>		m_subObjectVec;
++	struct ProjectileShown
++	{
++		const ModelConditionInfo*		state;					///< nullptr: nothing applied since the last hide/show from elsewhere
++		const RenderObjClass*				robj;
++		UnsignedInt									showCount;
++		UnsignedInt									maxCount;
++		UnsignedInt									askedFrame;			///< the logic frame of this slot's last ask
++	};
++	ProjectileShown								m_projectileShown[WEAPONSLOT_COUNT];	///< what doHideShowProjectileObjects last applied to each slot (Reforged, M2 WS1)
+ 	Bool													m_hideHeadlights;
+ 	Bool													m_pauseAnimation;
+ 	Int														m_animationMode;
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.cpp
+index 256ef8a..819221b 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.cpp
+@@ -1328,6 +1328,10 @@ void W3DModelDraw::showSubObject( const AsciiString& name, Bool show )
+ 			info.hide = !show;
+ 			m_subObjectVec.push_back( info );
+ 		}
++
++		// a caller that never calls updateSubObjects (a payload carrier's shown parts) had the next
++		// projectile apply put this order on the model, and still does (Reforged, M2 WS1)
++		forgetProjectileShown();
+ 	}
+ }
+ 
+@@ -1729,6 +1733,7 @@ W3DModelDraw::W3DModelDraw(Thing *thing, const ModuleData* moduleData) : DrawMod
+ 	m_hideHeadlights = true;
+ 	m_pauseAnimation = false;
+ 	m_curState = nullptr;
++	forgetProjectileShown();
+ 	m_hexColor = 0;
+ 	m_renderObject = nullptr;
+ 	m_shadow = nullptr;
+@@ -2347,6 +2352,21 @@ void ModelConditionInfo::WeaponBarrelInfo::setMuzzleFlashHidden(RenderObjClass *
+ 
+ //-------------------------------------------------------------------------------------------------
+ void W3DModelDraw::doHideShowSubObjs(const std::vector<ModelConditionInfo::HideShowSubObjInfo>* vec)
++{
++	// a state's own hide/show can take in the projectile parts, so they are shown again after it
++	forgetProjectileShown();
++	applyHideShowSubObjs(vec);
++}
++
++//-------------------------------------------------------------------------------------------------
++void W3DModelDraw::forgetProjectileShown()
++{
++	for (Int slot = 0; slot < WEAPONSLOT_COUNT; ++slot)
++		m_projectileShown[slot].state = nullptr;
++}
++
++//-------------------------------------------------------------------------------------------------
++void W3DModelDraw::applyHideShowSubObjs(const std::vector<ModelConditionInfo::HideShowSubObjInfo>* vec)
+ {
+ 	if (!m_renderObject)
+ 		return;
+@@ -3996,6 +4016,32 @@ void W3DModelDraw::doHideShowProjectileObjects( UnsignedInt showCount, UnsignedI
+ 	}
+ 	Int hideCount = maxCount - showCount;
+ 
++	/* GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- every armed drawable with
++	 * projectile bones asks every step, and the answer is nearly always the one it already shows.
++	 * Each name is a search of every part by name and then a walk of every part's bones below each
++	 * copy of it, which on a model with four levels of detail of about fifty parts was a tenth of
++	 * the drawn frame in an eight-AI battle. So the same count on the same state and render
++	 * object is not applied again. Every other hide/show of this module's parts forgets it: a
++	 * model state, which is also every new render object (doHideShowSubObjs), and another
++	 * module's sub-object orders or a load (updateSubObjects). The hide/show is idempotent, so
++	 * a skipped re-apply leaves the render object exactly as the apply would have. */
++	ProjectileShown &shown = m_projectileShown[slot];
++	// a later slot that stopped asking (its weapon gone from the set) no longer has the last word on
++	// a part it shares with this one, so this one applies again, as it did when every ask applied
++	const UnsignedInt now = TheGameLogic->getFrame();
++	for (Int later = slot + 1; later < WEAPONSLOT_COUNT; ++later)
++	{
++		if (m_projectileShown[later].state != nullptr && m_projectileShown[later].askedFrame + 1 < now)
++		{
++			m_projectileShown[later].state = nullptr;
++			shown.state = nullptr;
++		}
++	}
++	shown.askedFrame = now;
++	if (shown.state != nullptr && shown.state == m_curState && shown.robj == m_renderObject
++			&& shown.showCount == showCount && shown.maxCount == maxCount)
++		return;
++
+ 	std::vector<ModelConditionInfo::HideShowSubObjInfo> showHideVector;
+ 	ModelConditionInfo::HideShowSubObjInfo oneEntry;
+ 	if (m_curState->m_weaponProjectileHideShowName[slot].isEmpty())
+@@ -4015,12 +4061,24 @@ void W3DModelDraw::doHideShowProjectileObjects( UnsignedInt showCount, UnsignedI
+ 	}
+ 
+ 	// Rather than duplicate recursive utility stuff, I will build a vector like those used by the main ShowHide setting
+-	doHideShowSubObjs(&showHideVector);
++	applyHideShowSubObjs(&showHideVector);
++	shown.state = m_curState;
++	shown.robj = m_renderObject;
++	shown.showCount = showCount;
++	shown.maxCount = maxCount;
++	// the slots after this one ask after it each tick and used to have the last word on a part they
++	// share with it (the Scud Launcher's one missile on both slots), so they apply again
++	for (Int later = slot + 1; later < WEAPONSLOT_COUNT; ++later)
++		m_projectileShown[later].state = nullptr;
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+ void W3DModelDraw::updateSubObjects()
+ {
++	// another module's hide/show (an upgrade's pods, a horde's flags, a payload, a load) can take in
++	// the projectile parts or the bones under them, so they are applied again after it (Reforged, M2 WS1)
++	forgetProjectileShown();
++
+ 	if (!m_renderObject)
+ 		return;
+ 
+diff --git a/Generals/Code/GameEngine/Include/Common/Player.h b/Generals/Code/GameEngine/Include/Common/Player.h
+index 6df5ceb..8176cce 100644
+--- a/Generals/Code/GameEngine/Include/Common/Player.h
++++ b/Generals/Code/GameEngine/Include/Common/Player.h
+@@ -471,6 +471,17 @@ public:
+ 	*/
+ 	void countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* const * things, Bool ignoreDead, Int *counts, Bool ignoreUnderConstruction = TRUE ) const;
+ 
++	/**
++		the per-template member lists below follow the team member lists: an object is in them
++		exactly while it sits on a team whose prototype this player controls. becomingTeamMember
++		and TeamPrototype::setControllingPlayer are the only callers. (Reforged, M2 WS1)
++	*/
++	void addTemplateCountMember(Object *obj);
++	void removeTemplateCountMember(Object *obj);
++
++	/// whether any member of our teams, dead or alive, has a template equivalent to tmpl (Reforged, M2 WS1)
++	Bool hasTemplateMember(const ThingTemplate *tmpl) const;
++
+ 	/**
+ 		simply returns the number of buildings owned by this player
+ 	*/
+@@ -537,6 +548,7 @@ public:
+ 
+ 	/// get the relationship between this->that.
+ 	Relationship getRelationship(const Team *that) const;
++	Bool hasTeamRelationships() const;		///< does any single team get a relationship of its own? (Reforged, M2 WS1)
+ 
+ 	/// set the relationship between this->that. (note that this doesn't affect the that->this relationship.)
+ 	void setPlayerRelationship(const Player *that, Relationship r);
+@@ -775,6 +787,13 @@ private:
+ 	UnicodeString				m_generalName;		///< (SAVE) This is the name of the general the player is allowed to change.
+ 
+ 	PlayerTeamList				m_playerTeamPrototypes;				///< ALL the teams we control, via prototype
++
++	struct TemplateCountMembers
++	{
++		const ThingTemplate		*m_template;				///< every object here answers getTemplate() with this
++		std::vector<Object *>	m_objects;					///< in no particular order; counts are sums
++	};
++	std::vector<TemplateCountMembers>	m_templateCountMembers;	///< (NO-SAVE) every member of our teams, grouped by template (Reforged, M2 WS1)
+ 	PlayerRelationMap			*m_playerRelations;						///< allies & enemies
+ 	TeamRelationMap				*m_teamRelations;							///< allies & enemies
+ 
+diff --git a/Generals/Code/GameEngine/Include/Common/Team.h b/Generals/Code/GameEngine/Include/Common/Team.h
+index 65c8160..703d34f 100644
+--- a/Generals/Code/GameEngine/Include/Common/Team.h
++++ b/Generals/Code/GameEngine/Include/Common/Team.h
+@@ -393,6 +393,9 @@ public:
+ 	*/
+ 	void countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* const* things, Bool ignoreDead, Int *counts, Bool ignoreUnderConstruction = TRUE ) const;
+ 
++	/// whether countObjectsByThingTemplate counts this object once its template has matched (Reforged, M2 WS1)
++	static Bool countsTowardTemplate(const Object *obj, Bool ignoreDead, Bool ignoreUnderConstruction);
++
+ 
+ 	/**
+ 		returns the number of buildings on this team, by checking each things' template kindof against KINDOF_STRUCTURE
+diff --git a/Generals/Code/GameEngine/Source/Common/RTS/Player.cpp b/Generals/Code/GameEngine/Source/Common/RTS/Player.cpp
+index 860049e..ceace51 100644
+--- a/Generals/Code/GameEngine/Source/Common/RTS/Player.cpp
++++ b/Generals/Code/GameEngine/Source/Common/RTS/Player.cpp
+@@ -526,6 +526,11 @@ Player::~Player()
+ 
+ //=============================================================================
+ //DECLARE_PERF_TIMER(Player_getRelationship)
++Bool Player::hasTeamRelationships() const
++{
++	return !m_teamRelations->m_map.empty();
++}
++
+ Relationship Player::getRelationship(const Team *that) const
+ {
+ 	//USE_PERF_TIMER(Player_getRelationship)
+@@ -982,6 +987,14 @@ void Player::becomingTeamMember(Object *obj, Bool yes)
+ 	if (!obj)
+ 		return;
+ 
++	// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- keep the per-template
++	// member lists in step with the team member lists: Object::setOrRestoreTeam calls this
++	// right after the member list changes, so the lists cannot drift apart.
++	if (yes)
++		addTemplateCountMember(obj);
++	else
++		removeTemplateCountMember(obj);
++
+ 	// energy production/consumption hooks, note we ignore things that are UNDER_CONSTRUCTION
+ 	if( !obj->getStatusBits().test( OBJECT_STATUS_UNDER_CONSTRUCTION ) )
+ 	{
+@@ -1682,18 +1695,90 @@ void Player::iterateObjects( ObjectIterateFunc func, void *userData ) const
+ }
+ 
+ //=============================================================================
+-void Player::countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* const * things, Bool ignoreDead, Int *counts, Bool ignoreUnderConstruction ) const
++// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- Reforged keeps every member
++// of a player's teams grouped by template, so counting answers from the groups instead of
++// walking every unit on every one of that player's teams for every question (its hour-long
++// eight-player match: the battle step went from 6.15 ms to 6.01 ms on average and from
++// 13.75 ms to 13.25 ms at the slowest one in a hundred, same checksum). The walk counted an
++// object once, for the first template it is equivalent to, and whether it counts at all is
++// a question about the object alone (Team::countsTowardTemplate); every object in one group
++// shares its template, so one equivalence pass per group stands for all of them and the
++// counts come out identical.
++void Player::addTemplateCountMember(Object *obj)
++{
++	// Object's constructor pins getTemplate() to the final override, and a map's INI overrides
++	// are all hung before the first object exists, so the key holds for the object's life
++	const ThingTemplate *tmpl = obj->getTemplate();
++	for (std::vector<TemplateCountMembers>::iterator it = m_templateCountMembers.begin(); it != m_templateCountMembers.end(); ++it)
++	{
++		if (it->m_template == tmpl)
++		{
++			it->m_objects.push_back(obj);
++			return;
++		}
++	}
++	m_templateCountMembers.push_back(TemplateCountMembers());
++	m_templateCountMembers.back().m_template = tmpl;
++	m_templateCountMembers.back().m_objects.push_back(obj);
++}
++
++//=============================================================================
++void Player::removeTemplateCountMember(Object *obj)
+ {
+-	Int i;
++	const ThingTemplate *tmpl = obj->getTemplate();
++	for (std::vector<TemplateCountMembers>::iterator it = m_templateCountMembers.begin(); it != m_templateCountMembers.end(); ++it)
++	{
++		if (it->m_template != tmpl)
++			continue;
+ 
+-	for (i = 0; i < numTmplates; ++i)
++		std::vector<Object *> &objects = it->m_objects;
++		for (size_t k = 0; k < objects.size(); ++k)
++		{
++			if (objects[k] == obj)
++			{
++				objects[k] = objects.back();
++				objects.pop_back();
++				return;
++			}
++		}
++		break;
++	}
++	DEBUG_CRASH(("Player %d leaves object %d '%s' it never counted", getPlayerIndex(), obj->getID(), tmpl->getName().str()));
++}
++
++//=============================================================================
++Bool Player::hasTemplateMember(const ThingTemplate *tmpl) const
++{
++	for (std::vector<TemplateCountMembers>::const_iterator it = m_templateCountMembers.begin(); it != m_templateCountMembers.end(); ++it)
++	{
++		if (!it->m_objects.empty() && it->m_template->isEquivalentTo(tmpl))
++			return TRUE;
++	}
++	return FALSE;
++}
++
++//=============================================================================
++void Player::countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* const * things, Bool ignoreDead, Int *counts, Bool ignoreUnderConstruction ) const
++{
++	for (Int i = 0; i < numTmplates; ++i)
+ 		counts[i] = 0;
+ 
+-	for (PlayerTeamList::const_iterator it = m_playerTeamPrototypes.begin();
+-			 it != m_playerTeamPrototypes.end();
+-			 ++it)
++	for (std::vector<TemplateCountMembers>::const_iterator it = m_templateCountMembers.begin(); it != m_templateCountMembers.end(); ++it)
+ 	{
+-		(*it)->countObjectsByThingTemplate(numTmplates, things, ignoreDead, counts, ignoreUnderConstruction);
++		if (it->m_objects.empty())
++			continue;
++
++		Int i = 0;
++		while (i < numTmplates && !it->m_template->isEquivalentTo(things[i]))
++			++i;
++		if (i == numTmplates)
++			continue;
++
++		for (std::vector<Object *>::const_iterator obj = it->m_objects.begin(); obj != it->m_objects.end(); ++obj)
++		{
++			if (Team::countsTowardTemplate(*obj, ignoreDead, ignoreUnderConstruction))
++				++counts[i];
++		}
+ 	}
+ }
+ 
+diff --git a/Generals/Code/GameEngine/Source/Common/RTS/Team.cpp b/Generals/Code/GameEngine/Source/Common/RTS/Team.cpp
+index 3e820cb..5f44ecf 100644
+--- a/Generals/Code/GameEngine/Source/Common/RTS/Team.cpp
++++ b/Generals/Code/GameEngine/Source/Common/RTS/Team.cpp
+@@ -889,6 +889,8 @@ void TeamPrototype::setControllingPlayer(Player *newController)
+ 		return;
+ 	}
+ 
++	Player *oldController = m_owningPlayer;
++
+ 	if (m_owningPlayer)
+ 		m_owningPlayer->removeTeamFromList(this);
+ 
+@@ -896,6 +898,22 @@ void TeamPrototype::setControllingPlayer(Player *newController)
+ 
+ 	// impossible to get here with a nullptr pointer.
+ 	m_owningPlayer->addTeamToList(this);
++
++	// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- every member changed
++	// hands without changing team, so the players' per-template member lists have to hear
++	// of it now, or their counts would keep answering for the old owner.
++	if (oldController != newController)
++	{
++		for (DLINK_ITERATOR<Team> teamIt = iterate_TeamInstanceList(); !teamIt.done(); teamIt.advance())
++		{
++			for (DLINK_ITERATOR<Object> objIt = teamIt.cur()->iterate_TeamMemberList(); !objIt.done(); objIt.advance())
++			{
++				if (oldController)
++					oldController->removeTemplateCountMember(objIt.cur());
++				newController->addTemplateCountMember(objIt.cur());
++			}
++		}
++	}
+ }
+ 
+ // ------------------------------------------------------------------------
+@@ -1609,6 +1627,21 @@ Bool Team::removeOverridePlayerRelationship( Int playerIndex )
+ 	return false;
+ }
+ 
++// ------------------------------------------------------------------------
++// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- factored out of
++// Team::countObjectsByThingTemplate, unchanged, so Player's per-template member lists
++// can ask the same question about an object whose template has already matched.
++Bool Team::countsTowardTemplate(const Object *obj, Bool ignoreDead, Bool ignoreUnderConstruction)
++{
++	if (ignoreDead && obj->isEffectivelyDead())
++		return FALSE;
++
++	if( ignoreUnderConstruction && obj->getStatusBits().test( OBJECT_STATUS_UNDER_CONSTRUCTION ) )
++		return FALSE;
++
++	return TRUE;
++}
++
+ // ------------------------------------------------------------------------
+ void Team::countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* const* things, Bool ignoreDead, Int *counts, Bool ignoreUnderConstruction) const
+ {
+@@ -1623,10 +1656,7 @@ void Team::countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* con
+ 				continue;
+ 			}
+ 
+-			if (ignoreDead && iter.cur()->isEffectivelyDead())
+-				continue;
+-
+-			if( ignoreUnderConstruction && iter.cur()->getStatusBits().test( OBJECT_STATUS_UNDER_CONSTRUCTION ) )
++			if (!countsTowardTemplate(iter.cur(), ignoreDead, ignoreUnderConstruction))
+ 				continue;
+ 
+ 			counts[i] += 1;
+diff --git a/Generals/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp b/Generals/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp
+index 9d15f2a..51c6990 100644
+--- a/Generals/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp
++++ b/Generals/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp
+@@ -5427,6 +5427,30 @@ void ScriptActions::doTeamUseCommandButtonOnNearestBuildingClass( const AsciiStr
+ 	theGroup->groupDoCommandButtonAtObject(commandButton, obj, CMD_FROM_SCRIPT);
+ }
+ 
++//-------------------------------------------------------------------------------------------------
++// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- could the affiliation filter
++// in doTeamUseCommandButtonOnNearestObjectType (enemies, neutral, or our own, from `me`)
++// accept an object of this type held by anyone? The filter accepts an object when its team's
++// relationship to `me` is ENEMIES or NEUTRAL, or when its controlling player is `me`
++// (PartitionFilterPlayerAffiliation::allow). With no team-keyed override a relationship to a
++// team depends only on the team's player, and that player's default team answers for all of
++// its teams (Player::getRelationship), so one question per player settles it; any doubt
++// answers TRUE and the search runs exactly as before.
++static Bool enemyNeutralOrSelfHolds( const Player *me, const ThingTemplate *type )
++{
++	const Bool perTeam = me->hasTeamRelationships();
++	for (Int i = 0; i < ThePlayerList->getPlayerCount(); ++i)
++	{
++		const Player *holder = ThePlayerList->getNthPlayer(i);
++		if (!holder->hasTemplateMember(type))
++			continue;
++		if (perTeam || holder == me || holder->getDefaultTeam()->getControllingPlayer() != holder
++				|| me->getRelationship(holder->getDefaultTeam()) != ALLIES)
++			return TRUE;
++	}
++	return FALSE;
++}
++
+ //-------------------------------------------------------------------------------------------------
+ /** doTeamUseCommandButtonOnNearestObjectType */
+ //-------------------------------------------------------------------------------------------------
+@@ -5465,6 +5489,11 @@ void ScriptActions::doTeamUseCommandButtonOnNearestObjectType( const AsciiString
+ 		return;
+ 	}
+ 
++	// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- a script asking for its
++	// own unit type every step, with none on the map, walked the whole map to come back empty
++	if (!enemyNeutralOrSelfHolds(team->getControllingPlayer(), thingTemplate))
++		return;
++
+ 	PartitionFilterPlayerAffiliation f1(team->getControllingPlayer(), ALLOW_ENEMIES | ALLOW_NEUTRAL, true);
+ 	PartitionFilterThing f2(thingTemplate, true);
+ 	PartitionFilterValidCommandButtonTarget f3(srcObj, commandButton, true, CMD_FROM_SCRIPT);
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/Player.h b/GeneralsMD/Code/GameEngine/Include/Common/Player.h
+index dc66f4e..b5547c7 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/Player.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/Player.h
+@@ -478,6 +478,17 @@ public:
+ 	*/
+ 	void countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* const * things, Bool ignoreDead, Int *counts, Bool ignoreUnderConstruction = TRUE ) const;
+ 
++	/**
++		the per-template member lists below follow the team member lists: an object is in them
++		exactly while it sits on a team whose prototype this player controls. becomingTeamMember
++		and TeamPrototype::setControllingPlayer are the only callers. (Reforged, M2 WS1)
++	*/
++	void addTemplateCountMember(Object *obj);
++	void removeTemplateCountMember(Object *obj);
++
++	/// whether any member of our teams, dead or alive, has a template equivalent to tmpl (Reforged, M2 WS1)
++	Bool hasTemplateMember(const ThingTemplate *tmpl) const;
++
+ 	/**
+ 		simply returns the number of buildings owned by this player
+ 	*/
+@@ -544,6 +555,7 @@ public:
+ 
+ 	/// get the relationship between this->that.
+ 	Relationship getRelationship(const Team *that) const;
++	Bool hasTeamRelationships() const;		///< does any single team get a relationship of its own? (Reforged, M2 WS1)
+ 
+ 	/// set the relationship between this->that. (note that this doesn't affect the that->this relationship.)
+ 	void setPlayerRelationship(const Player *that, Relationship r);
+@@ -786,6 +798,13 @@ private:
+ 	UnicodeString					m_generalName;		///< (SAVE) This is the name of the general the player is allowed to change.
+ 
+ 	PlayerTeamList				m_playerTeamPrototypes;				///< ALL the teams we control, via prototype
++
++	struct TemplateCountMembers
++	{
++		const ThingTemplate		*m_template;				///< every object here answers getTemplate() with this
++		std::vector<Object *>	m_objects;					///< in no particular order; counts are sums
++	};
++	std::vector<TemplateCountMembers>	m_templateCountMembers;	///< (NO-SAVE) every member of our teams, grouped by template (Reforged, M2 WS1)
+ 	PlayerRelationMap			*m_playerRelations;						///< allies & enemies
+ 	TeamRelationMap				*m_teamRelations;							///< allies & enemies
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/Team.h b/GeneralsMD/Code/GameEngine/Include/Common/Team.h
+index 64365de..760b27c 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/Team.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/Team.h
+@@ -393,6 +393,9 @@ public:
+ 	*/
+ 	void countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* const* things, Bool ignoreDead, Int *counts, Bool ignoreUnderConstruction = TRUE ) const;
+ 
++	/// whether countObjectsByThingTemplate counts this object once its template has matched (Reforged, M2 WS1)
++	static Bool countsTowardTemplate(const Object *obj, Bool ignoreDead, Bool ignoreUnderConstruction);
++
+ 
+ 	/**
+ 		returns the number of buildings on this team, by checking each things' template kindof against KINDOF_STRUCTURE
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/RTS/Player.cpp b/GeneralsMD/Code/GameEngine/Source/Common/RTS/Player.cpp
+index e56c5f4..923c28e 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/RTS/Player.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/RTS/Player.cpp
+@@ -533,6 +533,11 @@ Player::~Player()
+ 
+ //=============================================================================
+ //DECLARE_PERF_TIMER(Player_getRelationship)
++Bool Player::hasTeamRelationships() const
++{
++	return !m_teamRelations->m_map.empty();
++}
++
+ Relationship Player::getRelationship(const Team *that) const
+ {
+ 	//USE_PERF_TIMER(Player_getRelationship)
+@@ -1029,6 +1034,14 @@ void Player::becomingTeamMember(Object *obj, Bool yes)
+ 	if (!obj)
+ 		return;
+ 
++	// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- keep the per-template
++	// member lists in step with the team member lists: Object::setOrRestoreTeam calls this
++	// right after the member list changes, so the lists cannot drift apart.
++	if (yes)
++		addTemplateCountMember(obj);
++	else
++		removeTemplateCountMember(obj);
++
+ 	// energy production/consumption hooks, note we ignore things that are UNDER_CONSTRUCTION
+ 	if( !obj->getStatusBits().test( OBJECT_STATUS_UNDER_CONSTRUCTION ) )
+ 	{
+@@ -1788,18 +1801,90 @@ void Player::iterateObjects( ObjectIterateFunc func, void *userData ) const
+ }
+ 
+ //=============================================================================
+-void Player::countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* const * things, Bool ignoreDead, Int *counts, Bool ignoreUnderConstruction ) const
++// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- Reforged keeps every member
++// of a player's teams grouped by template, so counting answers from the groups instead of
++// walking every unit on every one of that player's teams for every question (its hour-long
++// eight-player match: the battle step went from 6.15 ms to 6.01 ms on average and from
++// 13.75 ms to 13.25 ms at the slowest one in a hundred, same checksum). The walk counted an
++// object once, for the first template it is equivalent to, and whether it counts at all is
++// a question about the object alone (Team::countsTowardTemplate); every object in one group
++// shares its template, so one equivalence pass per group stands for all of them and the
++// counts come out identical.
++void Player::addTemplateCountMember(Object *obj)
++{
++	// Object's constructor pins getTemplate() to the final override, and a map's INI overrides
++	// are all hung before the first object exists, so the key holds for the object's life
++	const ThingTemplate *tmpl = obj->getTemplate();
++	for (std::vector<TemplateCountMembers>::iterator it = m_templateCountMembers.begin(); it != m_templateCountMembers.end(); ++it)
++	{
++		if (it->m_template == tmpl)
++		{
++			it->m_objects.push_back(obj);
++			return;
++		}
++	}
++	m_templateCountMembers.push_back(TemplateCountMembers());
++	m_templateCountMembers.back().m_template = tmpl;
++	m_templateCountMembers.back().m_objects.push_back(obj);
++}
++
++//=============================================================================
++void Player::removeTemplateCountMember(Object *obj)
+ {
+-	Int i;
++	const ThingTemplate *tmpl = obj->getTemplate();
++	for (std::vector<TemplateCountMembers>::iterator it = m_templateCountMembers.begin(); it != m_templateCountMembers.end(); ++it)
++	{
++		if (it->m_template != tmpl)
++			continue;
+ 
+-	for (i = 0; i < numTmplates; ++i)
++		std::vector<Object *> &objects = it->m_objects;
++		for (size_t k = 0; k < objects.size(); ++k)
++		{
++			if (objects[k] == obj)
++			{
++				objects[k] = objects.back();
++				objects.pop_back();
++				return;
++			}
++		}
++		break;
++	}
++	DEBUG_CRASH(("Player %d leaves object %d '%s' it never counted", getPlayerIndex(), obj->getID(), tmpl->getName().str()));
++}
++
++//=============================================================================
++Bool Player::hasTemplateMember(const ThingTemplate *tmpl) const
++{
++	for (std::vector<TemplateCountMembers>::const_iterator it = m_templateCountMembers.begin(); it != m_templateCountMembers.end(); ++it)
++	{
++		if (!it->m_objects.empty() && it->m_template->isEquivalentTo(tmpl))
++			return TRUE;
++	}
++	return FALSE;
++}
++
++//=============================================================================
++void Player::countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* const * things, Bool ignoreDead, Int *counts, Bool ignoreUnderConstruction ) const
++{
++	for (Int i = 0; i < numTmplates; ++i)
+ 		counts[i] = 0;
+ 
+-	for (PlayerTeamList::const_iterator it = m_playerTeamPrototypes.begin();
+-			 it != m_playerTeamPrototypes.end();
+-			 ++it)
++	for (std::vector<TemplateCountMembers>::const_iterator it = m_templateCountMembers.begin(); it != m_templateCountMembers.end(); ++it)
+ 	{
+-		(*it)->countObjectsByThingTemplate(numTmplates, things, ignoreDead, counts, ignoreUnderConstruction);
++		if (it->m_objects.empty())
++			continue;
++
++		Int i = 0;
++		while (i < numTmplates && !it->m_template->isEquivalentTo(things[i]))
++			++i;
++		if (i == numTmplates)
++			continue;
++
++		for (std::vector<Object *>::const_iterator obj = it->m_objects.begin(); obj != it->m_objects.end(); ++obj)
++		{
++			if (Team::countsTowardTemplate(*obj, ignoreDead, ignoreUnderConstruction))
++				++counts[i];
++		}
+ 	}
+ }
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/RTS/Team.cpp b/GeneralsMD/Code/GameEngine/Source/Common/RTS/Team.cpp
+index 3afa070..c088e52 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/RTS/Team.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/RTS/Team.cpp
+@@ -898,6 +898,8 @@ void TeamPrototype::setControllingPlayer(Player *newController)
+ 		return;
+ 	}
+ 
++	Player *oldController = m_owningPlayer;
++
+ 	if (m_owningPlayer)
+ 		m_owningPlayer->removeTeamFromList(this);
+ 
+@@ -905,6 +907,22 @@ void TeamPrototype::setControllingPlayer(Player *newController)
+ 
+ 	// impossible to get here with a nullptr pointer.
+ 	m_owningPlayer->addTeamToList(this);
++
++	// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- every member changed
++	// hands without changing team, so the players' per-template member lists have to hear
++	// of it now, or their counts would keep answering for the old owner.
++	if (oldController != newController)
++	{
++		for (DLINK_ITERATOR<Team> teamIt = iterate_TeamInstanceList(); !teamIt.done(); teamIt.advance())
++		{
++			for (DLINK_ITERATOR<Object> objIt = teamIt.cur()->iterate_TeamMemberList(); !objIt.done(); objIt.advance())
++			{
++				if (oldController)
++					oldController->removeTemplateCountMember(objIt.cur());
++				newController->addTemplateCountMember(objIt.cur());
++			}
++		}
++	}
+ }
+ 
+ // ------------------------------------------------------------------------
+@@ -1625,6 +1643,21 @@ Bool Team::removeOverridePlayerRelationship( Int playerIndex )
+ 	return false;
+ }
+ 
++// ------------------------------------------------------------------------
++// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- factored out of
++// Team::countObjectsByThingTemplate, unchanged, so Player's per-template member lists
++// can ask the same question about an object whose template has already matched.
++Bool Team::countsTowardTemplate(const Object *obj, Bool ignoreDead, Bool ignoreUnderConstruction)
++{
++	if (ignoreDead && obj->isEffectivelyDead())
++		return FALSE;
++
++	if( ignoreUnderConstruction && obj->getStatusBits().test( OBJECT_STATUS_UNDER_CONSTRUCTION ) )
++		return FALSE;
++
++	return TRUE;
++}
++
+ // ------------------------------------------------------------------------
+ void Team::countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* const* things, Bool ignoreDead, Int *counts, Bool ignoreUnderConstruction) const
+ {
+@@ -1639,10 +1672,7 @@ void Team::countObjectsByThingTemplate(Int numTmplates, const ThingTemplate* con
+ 				continue;
+ 			}
+ 
+-			if (ignoreDead && iter.cur()->isEffectivelyDead())
+-				continue;
+-
+-			if( ignoreUnderConstruction && iter.cur()->getStatusBits().test( OBJECT_STATUS_UNDER_CONSTRUCTION ) )
++			if (!countsTowardTemplate(iter.cur(), ignoreDead, ignoreUnderConstruction))
+ 				continue;
+ 
+ 			counts[i] += 1;
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp
+index 6caae4b..8890a8b 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp
+@@ -5837,6 +5837,30 @@ void ScriptActions::doTeamUseCommandButtonOnNearestBuildingClass( const AsciiStr
+ 	theGroup->groupDoCommandButtonAtObject(commandButton, obj, CMD_FROM_SCRIPT);
+ }
+ 
++//-------------------------------------------------------------------------------------------------
++// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- could the affiliation filter
++// in doTeamUseCommandButtonOnNearestObjectType (enemies, neutral, or our own, from `me`)
++// accept an object of this type held by anyone? The filter accepts an object when its team's
++// relationship to `me` is ENEMIES or NEUTRAL, or when its controlling player is `me`
++// (PartitionFilterPlayerAffiliation::allow). With no team-keyed override a relationship to a
++// team depends only on the team's player, and that player's default team answers for all of
++// its teams (Player::getRelationship), so one question per player settles it; any doubt
++// answers TRUE and the search runs exactly as before.
++static Bool enemyNeutralOrSelfHolds( const Player *me, const ThingTemplate *type )
++{
++	const Bool perTeam = me->hasTeamRelationships();
++	for (Int i = 0; i < ThePlayerList->getPlayerCount(); ++i)
++	{
++		const Player *holder = ThePlayerList->getNthPlayer(i);
++		if (!holder->hasTemplateMember(type))
++			continue;
++		if (perTeam || holder == me || holder->getDefaultTeam()->getControllingPlayer() != holder
++				|| me->getRelationship(holder->getDefaultTeam()) != ALLIES)
++			return TRUE;
++	}
++	return FALSE;
++}
++
+ //-------------------------------------------------------------------------------------------------
+ /** doTeamUseCommandButtonOnNearestObjectType */
+ //-------------------------------------------------------------------------------------------------
+@@ -5876,6 +5900,12 @@ void ScriptActions::doTeamUseCommandButtonOnNearestObjectType( const AsciiString
+ 	const ThingTemplate *thingTemplate = TheThingFactory->findTemplate( objectType, FALSE );
+ 	if( thingTemplate )
+ 	{
++		// GeneralsX @performance Zero Hour Reforged 12/11/2026 (M2 WS1) -- the Stealth General's GPS
++		// Scrambler script asks this for its own Quad Cannon every step, and with none on the map
++		// the search walked the whole map square by square to come back empty
++		if (!enemyNeutralOrSelfHolds(team->getControllingPlayer(), thingTemplate))
++			return;
++
+ 		PartitionFilterPlayerAffiliation f1(team->getControllingPlayer(), ALLOW_ENEMIES | ALLOW_NEUTRAL, true);
+ 		PartitionFilterThing f2(thingTemplate, true);
+ 		PartitionFilterValidCommandButtonTarget f3(srcObj, commandButton, true, CMD_FROM_SCRIPT);
+@@ -5911,6 +5941,10 @@ void ScriptActions::doTeamUseCommandButtonOnNearestObjectType( const AsciiString
+ 				const ThingTemplate *thisType = TheThingFactory->findTemplate( thisTypeName );
+ 				if( thisType )
+ 				{
++					// the search walks the whole map before it gives up on a type nobody acceptable holds
++					if (!enemyNeutralOrSelfHolds(team->getControllingPlayer(), thisType))
++						continue;
++
+ 					PartitionFilterThing f2( thisType, true );
+ 					PartitionFilter *filters[] = { &f1, &f2, &f3, &f4, nullptr };
+ 
