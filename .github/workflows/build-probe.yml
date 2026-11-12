@@ -1,15 +1,27 @@
-name: Build Reforged GPU Probe (stage C0)
+name: Build Reforged GPU Probe (stage C0/C2)
 
-# Stage C, slice C0 (see probe/README.md): upstream's unmodified
+# Stage C, slices C0 + C2 (see probe/README.md): upstream's unmodified
 # sdl_gpu_probe (Reforged @ 61dbc59) packaged as a standalone, throwaway
 # Android APK (com.louay.zerohour.gpuprobe) against upstream's pinned
-# SDL 3.4.16. Manual dispatch only. Deliberately separate from
+# SDL 3.4.16. With harness=renderer the same APK additionally carries the
+# engine's own selfchecks (sdl_gpu_frame_selfcheck +
+# sdl_gpu_depth_format_selfcheck), built from source in this workflow
+# from the same pinned tree with the formalised C1 patch set
+# (probe/patches/) and packaged as child-process payloads for the
+# harness shim. Manual dispatch only. Deliberately separate from
 # build-apk.yml — the game build never sees this workflow, and this
 # workflow never touches the game.
 
 on:
   workflow_dispatch:
     inputs:
+      harness:
+        description: "Which instruments the APK carries. probe = the C0 GPU capability probe only. renderer = C0 probe + the C2 engine selfchecks (built from the pinned Reforged tree in this run; the launcher gains a 'Run renderer selfcheck' button). Renderer runs pair with sdl_java=upstream; device_mode affects only the C0 probe's own device creation, never the selfcheck payloads (they create their device inside the engine's fixed call site)."
+        type: choice
+        options:
+          - probe
+          - renderer
+        default: probe
       sdl_java:
         description: "SDL Java layer packaged into the probe APK. host = the game shell's staged SDL 3.4.2 Java driving the 3.4.16 native library (stage-C plan, C0 proof 5). upstream = SDL 3.4.16's own Java from the pinned tree."
         type: choice
@@ -39,6 +51,12 @@ env:
   HOST_SDL_TARBALL_URL: https://github.com/libsdl-org/SDL/releases/download/release-3.4.2/SDL3-3.4.2.tar.gz
   HOST_SDL_TARBALL_SHA256: ef39a2e3f9a8a78296c40da701967dd1b0d0d6e267e483863ce70f8a03b4050c
   NDK_VERSION: 26.1.10909125
+  # Stage C2: the renderer payloads are built from the pinned Reforged
+  # tree with the C1 route, which was proven against NDK r27c — not the
+  # harness's r26 — and API 28 (see the payload steps below).
+  REFORGED_REPO: olcayseygan/cncgeneralszh-reforged
+  REFORGED_PIN: 61dbc593fb4eecb7af891b80c4c491c3ad2b791d
+  ENGINE_NDK_VERSION: 27.2.12479018
   ANDROIDX_CORE_AAR_SHA256: 2c27de199535675005553066597a4b20fa1eea7c228ab4ef6b32b5fe39ca1f59
   R8_JAR_URL: https://dl.google.com/dl/android/maven2/com/android/tools/r8/8.5.35/r8-8.5.35.jar
   R8_JAR_SHA256: 4733945987ee0a840fafc34080b135259e01678412e07212b23f706334290294
@@ -109,6 +127,79 @@ jobs:
           cmake --build probe-build -j"$(nproc)"
           find probe-build -name "*.so" -type f | sort
 
+      - name: Checkout Reforged engine tree (pinned, C2 payloads)
+        if: inputs.harness == 'renderer'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REFORGED_REPO }}
+          ref: ${{ env.REFORGED_PIN }}
+          path: reforged
+
+      - name: Install Android NDK r27c (C1-proven engine toolchain)
+        if: inputs.harness == 'renderer'
+        run: |
+          set -euo pipefail
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" "ndk;${ENGINE_NDK_VERSION}"
+          echo "ENGINE_NDK_HOME=$ANDROID_HOME/ndk/${ENGINE_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build renderer selfcheck payloads from the pinned tree (C1 route)
+        if: inputs.harness == 'renderer'
+        run: |
+          set -euo pipefail
+          SRC="$PWD/reforged"
+          # The formalised C1 patch set (probe/patches/) — locally verified
+          # byte-equivalent to the C1 compile-proof diff (11 files,
+          # +99/-4); the rehearsal of this exact sequence is recorded in
+          # stage-c-c1-plan.md section 7.
+          git -C "$SRC" apply --check "$PWD/probe/patches/reforged-c1-android.patch"
+          git -C "$SRC" apply "$PWD/probe/patches/reforged-c1-android.patch"
+          git -C "$SRC" diff --stat | tail -3
+          # Vendor the pinned archives exactly as C1 did (vendor.sh
+          # downloads them from their pinned URLs).
+          bash "$SRC/GeneralsMD/Code/Tools/vendor.sh"
+          # GameSpy pthread patch (C1 blocker B5, formalised) into the
+          # vendored tree, with its marker checked — same git-apply-into-
+          # the-destination mechanics vendor.sh itself uses.
+          GS="$SRC/GeneralsMD/Code/Libraries/Source/GameSpy"
+          test -f "$GS/src/common/linux/gsthreadlinux.c"
+          GIT_CEILING_DIRECTORIES="$SRC/GeneralsMD/Code/Libraries/Source" \
+            git -C "$GS" -c core.autocrlf=false apply "$PWD/probe/patches/gamespy-android-pthread.patch"
+          grep -q "bionic has no pthread_cancel" "$GS/src/common/linux/gsthreadlinux.c"
+          echo "GameSpy pthread patch applied; marker present"
+          # Host build_fingerprint (C1 blocker B4 shim): the engine build
+          # invokes it from PATH; build it for the runner's own arch.
+          mkdir -p "$PWD/host-tools"
+          c++ -O2 -std=c++17 "$SRC/GeneralsMD/Code/Tools/fingerprint/build_fingerprint.cpp" \
+            -o "$PWD/host-tools/build_fingerprint"
+          export PATH="$PWD/host-tools:$PATH"
+          # Configure + build the two selfcheck targets (C1 line, NDK r27c).
+          cmake -S "$SRC/GeneralsMD/Code" -B "$PWD/engine-build" -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ENGINE_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$PWD/engine-build" --target sdl_gpu_depth_format_selfcheck -j"$(nproc)"
+          cmake --build "$PWD/engine-build" --target sdl_gpu_frame_selfcheck -j"$(nproc)"
+          # Stage the payloads under their packaged lib*.so names (the
+          # package manager extracts them next to libmain.so as real,
+          # executable files; the shim dladdr-locates and execs them).
+          mkdir -p "$PWD/payloads"
+          cp "$PWD/engine-build/sdl_gpu_frame_selfcheck" "$PWD/payloads/libsdl_gpu_frame_selfcheck.so"
+          cp "$PWD/engine-build/sdl_gpu_depth_format_selfcheck" "$PWD/payloads/libsdl_gpu_depth_format_selfcheck.so"
+          for f in "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" "$PWD/payloads/libsdl_gpu_depth_format_selfcheck.so"; do
+            file "$f" | grep -q "ELF 64-bit LSB pie executable, ARM aarch64" \
+              || { echo "payload is not an AArch64 PIE: $f"; file "$f"; exit 1; }
+          done
+          # The C1 section-5 compat fix must be inside the frame payload:
+          # the engine creates its device through
+          # SDL_CreateGPUDeviceWithProperties on Android.
+          grep -a -q "SDL_CreateGPUDeviceWithProperties" "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" \
+            || { echo "compat device-creation call site missing from the frame selfcheck"; exit 1; }
+          ls -la "$PWD/payloads"
+          sha256sum "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" "$PWD/payloads/libsdl_gpu_depth_format_selfcheck.so"
+          echo "PAYLOAD_DIR=$PWD/payloads" >> "$GITHUB_ENV"
+
       - name: Select SDL Java layer
         run: |
           set -euo pipefail
@@ -174,6 +265,6 @@ jobs:
       - name: Upload probe APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ReforgedGpuProbe-apk
+          name: ${{ inputs.harness == 'renderer' && 'ReforgedRendererSelfcheck-apk' || 'ReforgedGpuProbe-apk' }}
           path: ReforgedGpuProbe.apk
           if-no-files-found: error
