@@ -6,9 +6,20 @@ GB; instead, `.github/workflows/build-apk.yml` rebuilds it from upstream on
 every run and applies this repo's small overlay on top:
 
 1. **Check out** `MYSOREZ/GeneralsZH-Android-Port` at the pinned commit
-   `a520ed1` (plus its DXVK submodule), and check out this repo into
-   `reforged-overlay/`.
-2. **Apply the overlay** (this folder):
+   `a520ed1` (plus its DXVK submodule) **twice** — the base tree and
+   `reforged-src/`, our own engine tree — and check out this repo into
+   `reforged-overlay/`. Since v1.9 the build is **separated**: the base
+   tree receives identity surgery + our launcher page only and builds the
+   host's own engines their way; the engine patches go to `reforged-src/`
+   alone, which builds our 60-steps engine.
+2. **Apply the overlay** (this folder) — the ten patches to `reforged-src/`;
+   the surgery + phase 2 to the base tree (the surgery's phase 1b also
+   runs, in paths mode, on `reforged-src/`). One exception: the
+   packaging-script patch applies to **both** trees — it is build tooling
+   only (the script ships nothing, touches no engine or launcher code),
+   and the base tree cannot be packaged without it (the pristine script
+   has no `assembleRelease` knob and no staging knob for
+   `libmainrf60.so`):
    - `patches/engine-carryover.patch` — the locomotor carry-over in
      `ThingTemplate.cpp` (a replaced AI module no longer loses the object's
      Locomotor sets), ported from the Reforged engine.
@@ -48,8 +59,9 @@ every run and applies this repo's small overlay on top:
      once-a-retail-frame gate, the parseFrictionPerSec divisor switch —
      all inert or identical at the retail rate), the RF60 version stamp,
      and the GameState save rate stamp that makes each engine refuse the
-     other's saves cleanly. The workflow builds the tree twice: standard
-     (libmain.so) and flipped (libmainrf60.so).
+     other's saves cleanly. Since v1.9 the flipped build is the only
+     build this tree gets: `reforged-src/` is configured once with the
+     flip ON and its `libmain.so` output ships as `libmainrf60.so`.
    - `patches/step-perf.patch` — the M2 wave-7 per-step perf ports
      (v1.6), applied after the gradle-task patch: four upstream-measured,
      checksum-identical logic/client savings (CRC register-local fold,
@@ -75,31 +87,29 @@ every run and applies this repo's small overlay on top:
      packaging script run `assembleRelease` (via `GX_GRADLE_TASK`), checks
      the release output path, and adds the `GX_REFORGED60_LIB` knob that
      stages the flipped engine as `libmainrf60.so` (never `libmain60.so`).
-   - `apply-surgery.py` — new applicationId `com.louay.zerohour.reforged`,
-     version 9 / "1.8", the native hardcoded data paths repointed to the
-     new id, the "Zero Hour Reforged" label in all locales, the OTA
-     update channel pointed at this repo (so upstream engine updates can
-     never overwrite the patched build), (phase 1e) the Reforged
-     60-steps launcher switch: pref `reforged_60_steps` (default OFF)
-     replacing the dead Simulation Rate card on the Graphics tab, shown
-     only when Zero Hour is selected and `libmainrf60.so` is in the APK,
-     (phase 1f, v1.7) the Online Mode switch under it: pref
-     `reforged_online_mode` (default OFF) -- while it is on,
-     GeneralsZHActivity never loads `libmainrf60.so` and phase 2 keeps
-     the bundled mod switched off, so GeneralsOnline lobbies see this
-     build exactly as a stock one; the player's 60-steps pref is never
-     overwritten, and the card's strings ship in all locales; and
-     (phase 1g, v1.8) Online Mode's engine: while the mode is on,
-     GeneralsZHActivity loads the host's own 60 Hz engine
-     (`libmain60.so`, see the build step below) so the session joins the
-     60 Hz GeneralsOnline population as one of its own;
-     `GeneralsOnlineSession.clientId` mirrors that branch (the pristine
-     sim_hz condition could announce an engine this build will not run),
-     and the upstream UpdateManager engine-override load path is removed
-     from `GeneralsZHActivity` -- the APK's engines are the only engines,
-     which from v1.8 also protects `libmain60.so`'s exact provenance at
-     runtime. The Online Mode card text now says the mode runs the
-     original 60 Hz engine.
+   - `apply-surgery.py` — runs in two modes. On the **base tree**
+     (`full`, the default): new applicationId
+     `com.louay.zerohour.reforged`, version 10 / "1.9", the native
+     hardcoded data paths repointed to the new id, the "Zero Hour
+     Reforged" label in all locales, the OTA update channel pointed at
+     this repo (so upstream engine updates can never overwrite this
+     build), and (phase 1e, v1.9) the **Reforged page**: a sixth
+     bottom-navigation tab that is ours alone, carrying the 60-steps
+     engine switch (pref `reforged_60_steps`, default OFF — the card
+     that sat on the Graphics tab in v1.5–v1.8, moved here) and the
+     bundled mod switch; their pages are untouched, so the Simulation
+     Rate card works again. `GeneralsZHActivity.getLibraries()` keeps
+     the host's own sim_hz selection with the engaged 60-steps engine
+     taking precedence (it is the player's explicit choice on our
+     page); `GeneralsOnlineSession.clientId()` keeps the host's own
+     sim_hz keying with one guard in front, so the 60-steps state
+     announces the id its engine actually compiled in
+     (`gen_online_30hz`); and the upstream UpdateManager
+     engine-override load path stays removed from `GeneralsZHActivity`
+     — the APK's engines are the only engines. On the **Reforged
+     tree** (`REFORGED_SURGERY_MODE=paths`): phase 1b only, because
+     that tree's engine binary carries the same hardcoded old-id data
+     paths and must resolve this app's files directory.
    - `apply-phase2.py` — bundles the Reforged data as ONE merged package
      (`ci/assets/!Reforged-v1.big`, sha256-verified by the script before
      use) and adds the launcher code that installs + enables it as a single
@@ -111,35 +121,36 @@ every run and applies this repo's small overlay on top:
      app-installed `ReforgedFixes` / `ReforgedBalance` folders and their
      stored-order entries once the merged folder is in place. The pair was
      merged because the launcher's mod analysis warned about the two mods
-     on every visit (they share INI files by design). For Online Mode
-     (v1.7) the generated code also carries `applyOnlineMode`: entering
-     the mode snapshots the merged mod's switch state and switches it off
-     through the same stored-order mechanism the Mods screen uses, and
-     exiting restores the snapshot exactly (a hand-disabled mod stays
-     disabled); a first install made while the mode is on installs the
-     mod switched off with the snapshot pre-recorded as enabled.
+     on every visit (they share INI files by design). Since v1.9 the
+     generated code also carries the Online Mode settlement and the
+     Reforged page's mod-switch helpers: `migrateOnlineModeState` runs
+     at the head of `ensureBundledReforgedData` and lands a v1.7/v1.8
+     install that was left with Online Mode on in exactly the state
+     leaving the mode would have produced — the mod returns to its
+     snapshotted switch state through the same stored-order mechanism
+     the Mods screen uses, and both leftover prefs are removed — while
+     `bundledModEnabled` / `setBundledModEnabled` read and write that
+     same stored-order state for the page's switch, so the page and the
+     Mods screen are two handles on one state, never two states.
 3. **Build** exactly like upstream's own `build-android.yml` (same pinned
    NDK/Gradle/vcpkg/CMake preset `android-vulkan`, arm64), with the v1
    build's target list (both `libmain.so` and `libgenerals.so`) and strip
-   list, then package a release APK. Since v1.5 the Zero Hour engine is
-   built a second time with `REFORGED_60_STEPS=ON` (same build dir,
-   sequential; the standard `libmain.so` is stashed and restored around
-   the pass) and packaged as `libmainrf60.so`. Since v1.8 there is a
-   third Zero Hour engine: the host's own 60 Hz build, compiled from a
-   second, pristine checkout of the pinned tree (`host60-src`) with
-   `SAGE_HIGH_FPS_SIM=ON` and **no overlay at all** -- the host's own
-   `build-dual-hz.sh` pass 1, mirrored (the step proves the checkout is
-   the pinned commit with a clean git status before building, and checks
-   the artifact's compiled-in client id is `gen_online_60hz`) -- staged
-   into the APK as `libmain60.so` through the packaging script's own
-   pristine `GX_SECOND_GAME_LIB` knob. The APK guard requires exactly
-   `libmain.so` + `libmainrf60.so` + `libmain60.so` + `libgenerals.so`;
-   the `*60.so` set must be exactly `{libmain60.so, libmainrf60.so}`
-   (`libgenerals60.so` stays banned: the base game ships no 60 Hz engine
-   here -- Online Mode is a Zero Hour feature).
+   list, then package a release APK. Since v1.9 the base tree builds
+   **their way**: pass 1 with `SAGE_HIGH_FPS_SIM=ON` builds both game
+   targets and sets `libmain60.so` + `libgenerals60.so` aside; pass 2
+   reconfigures standard and builds the shipped `libmain.so` +
+   `libgenerals.so` + DXVK + hooks — upstream's `build-dual-hz.sh`
+   shape, with the packaging script's own pristine `GX_SECOND_GAME_LIB`
+   / `GX_SECOND_BASE_GAME_LIB` knobs staging the 60 Hz pair. Our engine
+   is built separately, once, in `reforged-src` with
+   `REFORGED_60_STEPS=ON` and staged as `libmainrf60.so` through the
+   overlay's `GX_REFORGED60_LIB` knob. The APK guard requires exactly
+   `libmain.so` + `libmain60.so` + `libgenerals.so` + `libgenerals60.so`
+   + `libmainrf60.so`; the `*60.so` set must be exactly
+   `{libgenerals60.so, libmain60.so, libmainrf60.so}`.
 4. **Upload** the APK as the workflow artifact **`ZeroHourReforged-apk`**
-   (plus symbol tables for all three Zero Hour engines for crash
-   symbolization, and build logs).
+   (plus symbol tables for all five engines for crash symbolization,
+   and build logs).
 
 ## Signing
 
