@@ -13,6 +13,17 @@ name: Build Zero Hour Reforged APK
 # 60-steps engine behind the launcher's opt-in switch). The base game is
 # built once, standard only.
 #
+# v1.8 adds the third Zero Hour engine: the host's OWN 60 Hz build,
+# packaged under its genuine name libmain60.so. It is built from a SECOND,
+# pristine checkout of the pinned upstream tree (host60-src) with
+# SAGE_HIGH_FPS_SIM=ON and NO overlay applied -- the host's own
+# build-dual-hz.sh pass 1, mirrored -- because its value is provenance:
+# under Online Mode the launcher loads it, and a GeneralsOnline session
+# then presents exactly a stock dual-Hz install's identity (unstamped
+# version, gen_online_60hz client id) and the stock 60 Hz simulation, so
+# it joins the 60 Hz population and holds lockstep with it. NONE of this
+# repo's patches go into it, not even render-only ones.
+#
 # Signing stays LOCAL (project decision): this workflow's artifact is the
 # AGP release output, debug-signed by the project's own config -- exactly
 # the pre-signing state of the local v1 build. The owner re-signs the
@@ -26,11 +37,11 @@ on:
     inputs:
       version_name:
         type: string
-        description: "Override versionName (blank = build.gradle default, currently '1.7'). Bump together with version_code for a new release."
+        description: "Override versionName (blank = build.gradle default, currently '1.8'). Bump together with version_code for a new release."
         default: ""
       version_code:
         type: string
-        description: "Override versionCode (blank = build.gradle default, currently 8). Must increase between published releases."
+        description: "Override versionCode (blank = build.gradle default, currently 9). Must increase between published releases."
         default: ""
 
 env:
@@ -73,6 +84,25 @@ jobs:
           # init above is not recursive.
           git -C references/fbraz3-dxvk submodule update --init --depth 1
           echo "DXVK_REF=$(git rev-parse HEAD:references/fbraz3-dxvk)" >> "$GITHUB_ENV"
+
+      # v1.8: the pristine second checkout the host's own 60 Hz engine is
+      # built from. Deliberately a separate checkout, not a reconfigure of
+      # the overlay tree: nothing of the overlay may reach this build, and
+      # a clean git status in the build step below proves none did.
+      - name: Checkout pristine host tree for the 60 Hz engine (v1.8)
+        uses: actions/checkout@v4
+        with:
+          repository: MYSOREZ/GeneralsZH-Android-Port
+          ref: ${{ env.MYSOREZ_REF }}
+          path: host60-src
+          fetch-depth: 0
+          submodules: false
+
+      - name: Checkout DXVK fork submodule (host60 tree)
+        run: |
+          set -euo pipefail
+          git -C host60-src submodule update --init --depth 1 references/fbraz3-dxvk
+          git -C host60-src/references/fbraz3-dxvk submodule update --init --depth 1
 
       - name: Apply Reforged overlay
         run: |
@@ -120,6 +150,13 @@ jobs:
           grep -q "reforged_online_mode" android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java
           grep -q "getOnlineMode" android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java
           grep -q "applyOnlineMode" android/app/src/main/java/com/generalsx/zerohour/ModManager.java
+          grep -q "pristine second checkout" android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java
+          grep -q "getOnlineMode" android/app/src/main/java/com/generalsx/zerohour/GeneralsOnlineSession.java
+          # v1.8: the UpdateManager engine-override load path is REMOVED by
+          # surgery phase 1g -- its entry points must be absent from the
+          # launcher activity (the APK's engines are the only engines).
+          ! grep -q "activeEngineLibrary" android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java
+          ! grep -q "activeEngineSeq" android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java
           grep -q "GX_REFORGED60_LIB" scripts/build/android/package-android-zh.sh
           grep -q "ensureBundledReforgedData" android/app/src/main/java/com/generalsx/zerohour/ModManager.java
           test -f 'android/app/src/main/assets/reforged/!Reforged-v1.big'
@@ -383,6 +420,88 @@ jobs:
             echo "::error::libdxvk_d3d9.so built without SDL3 WSI"; exit 1; }
           echo "Artifacts verified: AArch64 libmain.so + libgenerals.so + libmainrf60.so (RF60-stamped) + DXVK with SDL3 WSI"
 
+      # Tree C (v1.8): the host's OWN 60 Hz engine, built from the pristine
+      # host60-src checkout with SAGE_HIGH_FPS_SIM=ON -- the host's
+      # build-dual-hz.sh pass 1, mirrored with the same preset and flags
+      # this workflow uses for the main tree. NO overlay step runs in that
+      # tree; the step opens by proving it (pinned ref + clean git status
+      # + the carry-over marker absent), because the library's whole value
+      # is that it is byte-provenance host-only. Only z_generals is built:
+      # pass 1 of build-dual-hz.sh builds everything, but libmain.so is
+      # the only artifact it sets aside, and the packaging script stages
+      # every other library from the main tree. The output is staged at
+      # the workspace root under its packaged name, like libmainrf60.so.
+      - name: Build host 60 Hz engine (libmain60.so)
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          SRC60="${GITHUB_WORKSPACE}/host60-src"
+          # Provenance, capture-then-print (run #9 lesson): the checkout
+          # must be exactly the pinned upstream commit, with no local
+          # modification, and the overlay's engine marker must be absent.
+          HEAD60="$(git -C "${SRC60}" rev-parse HEAD)"
+          echo "host60-src HEAD: ${HEAD60} (pinned: ${{ env.MYSOREZ_REF }})"
+          [ "${HEAD60}" = "${{ env.MYSOREZ_REF }}" ] || { echo "::error::host60-src is not at the pinned upstream commit"; exit 1; }
+          STATUS60="$(git -C "${SRC60}" status --porcelain)"
+          echo "host60-src git status (must be empty): '${STATUS60}'"
+          [ -z "${STATUS60}" ] || { echo "::error::host60-src is not pristine -- the overlay must never touch this tree"; exit 1; }
+          if grep -q "Zero Hour Reforged" "${SRC60}/GeneralsMD/Code/GameEngine/Source/Common/Thing/ThingTemplate.cpp"; then
+            echo "::error::overlay marker found in host60-src -- wrong tree"; exit 1
+          fi
+          # Configure inside host60-src ONLY (the preset resolves paths
+          # from the working directory, like the main tree's configure);
+          # the main tree's own configuration is never touched here.
+          ( cd "${SRC60}" && cmake --preset ${{ env.PRESET }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DANDROID_CI_BUILD_NUMBER=${{ github.run_number }} \
+            -DSAGE_HIGH_FPS_SIM=ON \
+            -DALSOFT_BACKEND_PIPEWIRE=OFF -DALSOFT_BACKEND_PULSEAUDIO=OFF -DALSOFT_BACKEND_ALSA=OFF \
+            -DALSOFT_BACKEND_OSS=OFF -DALSOFT_BACKEND_SNDIO=OFF -DALSOFT_BACKEND_PORTAUDIO=OFF -DALSOFT_BACKEND_JACK=OFF \
+            2>&1 | tee "${GITHUB_WORKSPACE}/logs/configure_host60.log" )
+          # The 60 Hz switch must be ON here, and nothing of the overlay
+          # (the REFORGED_60_STEPS option does not even exist upstream).
+          grep "^SAGE_HIGH_FPS_SIM:" "${SRC60}/build/${{ env.PRESET }}/CMakeCache.txt" || echo "SAGE_HIGH_FPS_SIM: (absent from CMakeCache.txt)"
+          grep -q "^SAGE_HIGH_FPS_SIM:BOOL=ON" "${SRC60}/build/${{ env.PRESET }}/CMakeCache.txt" \
+            || { echo "::error::SAGE_HIGH_FPS_SIM is not ON in the host60 build"; exit 1; }
+          if grep -q "REFORGED" "${SRC60}/build/${{ env.PRESET }}/CMakeCache.txt"; then
+            echo "::error::a REFORGED option reached the host60 build -- wrong tree"; exit 1
+          fi
+          ( cd "${SRC60}" && cmake --build build/${{ env.PRESET }} --target z_generals -- -k 0 2>&1 | tee "${GITHUB_WORKSPACE}/logs/build_host60.log" )
+          LIB60_SRC="${SRC60}/build/${{ env.PRESET }}/GeneralsMD/Code/Main/libmain.so"
+          [ -f "${LIB60_SRC}" ] || { echo "::error::host60 z_generals output missing at ${LIB60_SRC}"; exit 1; }
+          READELF="$(ls "${ANDROID_NDK_HOME}"/toolchains/llvm/prebuilt/*/bin/llvm-readelf | head -1)"
+          [ -x "$READELF" ] || { echo "::error::llvm-readelf not found under ANDROID_NDK_HOME=${ANDROID_NDK_HOME}"; exit 1; }
+          ls -la "${LIB60_SRC}"
+          OK=0
+          for attempt in 1 2 3 4 5; do
+            if HDR="$("$READELF" -h "${LIB60_SRC}" 2>&1)" && echo "$HDR" | grep -E "Machine:.*AArch64"; then OK=1; break; fi
+            echo "readelf attempt ${attempt} did not confirm AArch64; full output was:"
+            echo "$HDR"
+            sleep 1
+          done
+          [ "$OK" = "1" ] || { echo "::error::libmain60 build is not AArch64 (see the ELF headers printed above)"; exit 1; }
+          # Identity evidence, from the artifact itself: the engine's
+          # compiled-in GeneralsOnline client id is the 60 Hz one
+          # (NextGenMP_defines.h selects the literal by
+          # GENERALS_ONLINE_HIGH_FPS_SERVER, which SAGE_HIGH_FPS_SIM
+          # defines). The shipped v1.7 libraries measured exactly one
+          # client-id literal each (libmain.so: gen_online_30hz only), so
+          # the symmetric requirement is applied here: 60hz present, 30hz
+          # absent, and no RF60 stamp anywhere near it.
+          strings "${LIB60_SRC}" > "${RUNNER_TEMP}/host60-strings.txt"
+          grep -o "gen_online_[0-9]*hz" "${RUNNER_TEMP}/host60-strings.txt" | sort | uniq -c || true
+          grep -q "gen_online_60hz" "${RUNNER_TEMP}/host60-strings.txt" || { echo "::error::libmain60.so does not carry the gen_online_60hz client id -- not a HIGH_FPS build"; exit 1; }
+          if grep -q "gen_online_30hz" "${RUNNER_TEMP}/host60-strings.txt"; then
+            echo "::error::gen_online_30hz found in libmain60.so -- the 60 Hz define did not take effect"; exit 1
+          fi
+          if grep -q " RF60" "${RUNNER_TEMP}/host60-strings.txt"; then
+            echo "::error::RF60 stamp found in libmain60.so -- trees crossed"; exit 1
+          fi
+          cp "${LIB60_SRC}" "${GITHUB_WORKSPACE}/libmain60.so"
+          ls -la "${GITHUB_WORKSPACE}/libmain60.so"
+          ccache --show-stats
+
       # Symbol table of the unstripped libmain.so, kept so crash logs from
       # this build can be symbolized later (a few MB of text; the library
       # itself is far too big to archive). Same step as upstream's CI.
@@ -420,6 +539,19 @@ jobs:
             "$TOOLS/llvm-nm" --defined-only --numeric-sort --print-size --demangle "$LIB60"
           } > "$OUT60"
           gzip -9 "$OUT60"
+          # Same for the host 60 Hz engine (v1.8; its unstripped copy sits
+          # at the workspace root, staged by the Tree C step).
+          LIBH60="${GITHUB_WORKSPACE}/libmain60.so"
+          OUTH60="symbols/libmain60-run${{ github.run_number }}.symbols.txt"
+          BUILD_IDH60="$(readelf -n "$LIBH60" 2>/dev/null | sed -n 's/.*Build ID: \([0-9a-f]*\).*/\1/p' | head -1)"
+          {
+            echo "# libmain60.so symbols -- run ${{ github.run_number }}, commit ${{ github.sha }}"
+            echo "# BuildID: ${BUILD_IDH60:-UNKNOWN}"
+            "$TOOLS/llvm-readelf" --notes --program-headers "$LIBH60"
+            echo "# --- defined symbols: address size type name ---"
+            "$TOOLS/llvm-nm" --defined-only --numeric-sort --print-size --demangle "$LIBH60"
+          } > "$OUTH60"
+          gzip -9 "$OUTH60"
           ls -la symbols/
 
       # Strip list is the v1 local build's (build-apk.sh): upstream's list
@@ -447,6 +579,9 @@ jobs:
           # fails loud with its own message instead of a bare strip error.
           [ -f "${GITHUB_WORKSPACE}/libmainrf60.so" ] || { echo "::error::libmainrf60.so missing at strip time (Tree B staging lost)"; exit 1; }
           "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainrf60.so"
+          # The host 60 Hz engine's packaged copy strips the same way.
+          [ -f "${GITHUB_WORKSPACE}/libmain60.so" ] || { echo "::error::libmain60.so missing at strip time (Tree C staging lost)"; exit 1; }
+          "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmain60.so"
 
       # GX_GRADLE_TASK is the overlay patch's knob: the packaging script
       # stages jniLibs/assets, then runs assembleRelease instead of its
@@ -459,6 +594,9 @@ jobs:
           GX_ANDROID_STAGING: ${{ github.workspace }}/android-staging
           GX_GRADLE_TASK: assembleRelease
           GX_REFORGED60_LIB: ${{ github.workspace }}/libmainrf60.so
+          # The packaging script's own pristine knob (build-dual-hz.sh
+          # uses it the same way): stages Tree C's output as libmain60.so.
+          GX_SECOND_GAME_LIB: ${{ github.workspace }}/libmain60.so
           GX_ANDROID_VERSION_CODE: ${{ inputs.version_code }}
           GX_ANDROID_VERSION_NAME: ${{ inputs.version_name }}
         run: |
@@ -486,24 +624,27 @@ jobs:
           unzip -q "${APK}" 'lib/arm64-v8a/*' -d "${WORKDIR}"
           echo "Packaged libraries:"
           ls "${WORKDIR}/lib/arm64-v8a/"
-          # Engine set, exactly (v1.5): the standard Zero Hour engine, the
-          # Reforged 60-steps engine under its own name, and the standard
-          # base-game engine are all REQUIRED. The GeneralsOnline 60 Hz
-          # names stay hard-banned: the only *60.so allowed in the APK is
-          # libmainrf60.so.
-          for required in libmain.so libmainrf60.so libgenerals.so; do
+          # Engine set, exactly (v1.8): the standard Zero Hour engine, the
+          # Reforged 60-steps engine under its own name, the host's own
+          # 60 Hz engine under its genuine name, and the standard
+          # base-game engine are all REQUIRED. The *60.so set is exactly
+          # {libmain60.so, libmainrf60.so}: libgenerals60.so stays banned
+          # (the base game ships no 60 Hz engine in this build -- Online
+          # Mode is a Zero Hour feature), as does any other *60.so name.
+          for required in libmain.so libmainrf60.so libmain60.so libgenerals.so; do
             if [ ! -f "${WORKDIR}/lib/arm64-v8a/${required}" ]; then
               echo "::error::required engine library ${required} is missing from the APK"
               exit 1
             fi
           done
           SIXTY="$(ls "${WORKDIR}/lib/arm64-v8a/" | grep -E '^lib.*60\.so$' || true)"
-          if [ "${SIXTY}" != "libmainrf60.so" ]; then
-            echo "::error::unexpected *60.so set in the APK: '${SIXTY}' (only libmainrf60.so is allowed)"
+          if [ "${SIXTY}" != "libmain60.so
+          libmainrf60.so" ]; then
+            echo "::error::unexpected *60.so set in the APK: '${SIXTY}' (only libmain60.so + libmainrf60.so are allowed)"
             exit 1
           fi
           missing=0
-          for engine in libmain.so libmainrf60.so; do
+          for engine in libmain.so libmainrf60.so libmain60.so; do
             NEEDED="$("${READELF}" -d "${WORKDIR}/lib/arm64-v8a/${engine}" | grep NEEDED | sed -E 's/.*\[(.*)\]/\1/')"
             for lib in ${NEEDED}; do
               case "${lib}" in
@@ -521,7 +662,7 @@ jobs:
             echo "::error::APK is missing required native libraries."
             exit 1
           fi
-          echo "OK: engine set exact (libmain.so + libmainrf60.so + libgenerals.so), and every DT_NEEDED of both Zero Hour engines is present in the APK."
+          echo "OK: engine set exact (libmain.so + libmainrf60.so + libmain60.so + libgenerals.so), and every DT_NEEDED of all three Zero Hour engines is present in the APK."
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
