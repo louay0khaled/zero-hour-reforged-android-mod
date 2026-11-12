@@ -11,7 +11,8 @@ every run and applies this repo's small overlay on top:
    `reforged-overlay/`. Since v1.9 the build is **separated**: the base
    tree receives identity surgery + our launcher page only and builds the
    host's own engines their way; the engine patches go to `reforged-src/`
-   alone, which builds our 60-steps engine.
+   alone, which builds our two engines (the 60-steps engine and, since
+   v1.10, the enhanced standard engine).
 2. **Apply the overlay** (this folder) — the ten patches to `reforged-src/`;
    the surgery + phase 2 to the base tree (the surgery's phase 1b also
    runs, in paths mode, on `reforged-src/`). One exception: the
@@ -59,9 +60,11 @@ every run and applies this repo's small overlay on top:
      once-a-retail-frame gate, the parseFrictionPerSec divisor switch —
      all inert or identical at the retail rate), the RF60 version stamp,
      and the GameState save rate stamp that makes each engine refuse the
-     other's saves cleanly. Since v1.9 the flipped build is the only
-     build this tree gets: `reforged-src/` is configured once with the
-     flip ON and its `libmain.so` output ships as `libmainrf60.so`.
+     other's saves cleanly. Since v1.9 `reforged-src/` is configured with
+     the flip ON and its `libmain.so` output ships as `libmainrf60.so`;
+     since v1.10 the same build dir is then reconfigured with the flip
+     OFF — the tree's existing standard configuration — and that output
+     ships as `libmainrf.so`.
    - `patches/step-perf.patch` — the M2 wave-7 per-step perf ports
      (v1.6), applied after the gradle-task patch: four upstream-measured,
      checksum-identical logic/client savings (CRC register-local fold,
@@ -86,29 +89,37 @@ every run and applies this repo's small overlay on top:
    - `patches/package-android-zh-gradle-task.patch` — lets the upstream
      packaging script run `assembleRelease` (via `GX_GRADLE_TASK`), checks
      the release output path, and adds the `GX_REFORGED60_LIB` knob that
-     stages the flipped engine as `libmainrf60.so` (never `libmain60.so`).
+     stages the flipped engine as `libmainrf60.so` (never `libmain60.so`)
+     and the `GX_REFORGED_LIB` knob (v1.10) that stages the standard build
+     as `libmainrf.so` (never `libmain.so` — in the separated build that
+     name belongs to the host's own engine; the launcher loads ours only
+     through the Reforged page's enhanced-engine switch).
    - `apply-surgery.py` — runs in two modes. On the **base tree**
      (`full`, the default): new applicationId
-     `com.louay.zerohour.reforged`, version 10 / "1.9", the native
+     `com.louay.zerohour.reforged`, version 11 / "1.10", the native
      hardcoded data paths repointed to the new id, the "Zero Hour
      Reforged" label in all locales, the OTA update channel pointed at
      this repo (so upstream engine updates can never overwrite this
      build), and (phase 1e, v1.9) the **Reforged page**: a sixth
      bottom-navigation tab that is ours alone, carrying the 60-steps
      engine switch (pref `reforged_60_steps`, default OFF — the card
-     that sat on the Graphics tab in v1.5–v1.8, moved here) and the
-     bundled mod switch; their pages are untouched, so the Simulation
-     Rate card works again. `GeneralsZHActivity.getLibraries()` keeps
-     the host's own sim_hz selection with the engaged 60-steps engine
-     taking precedence (it is the player's explicit choice on our
-     page); `GeneralsOnlineSession.clientId()` keeps the host's own
-     sim_hz keying with one guard in front, so the 60-steps state
-     announces the id its engine actually compiled in
+     that sat on the Graphics tab in v1.5–v1.8, moved here), the
+     enhanced standard engine switch (pref `reforged_enhanced_30`,
+     default OFF — v1.10; the two engine switches are alternatives and
+     engaging one visibly disengages the other) and the bundled mod
+     switch; their pages are untouched, so the Simulation Rate card
+     works again. `GeneralsZHActivity.getLibraries()` keeps the host's
+     own sim_hz selection with our engaged engines taking precedence
+     (60-steps first, then the enhanced standard — they are the
+     player's explicit choices on our page);
+     `GeneralsOnlineSession.clientId()` keeps the host's own sim_hz
+     keying with a guard in front for each of our engines, so their
+     states announce the id those engines actually compiled in
      (`gen_online_30hz`); and the upstream UpdateManager
      engine-override load path stays removed from `GeneralsZHActivity`
      — the APK's engines are the only engines. On the **Reforged
      tree** (`REFORGED_SURGERY_MODE=paths`): phase 1b only, because
-     that tree's engine binary carries the same hardcoded old-id data
+     that tree's engine binaries carry the same hardcoded old-id data
      paths and must resolve this app's files directory.
    - `apply-phase2.py` — bundles the Reforged data as ONE merged package
      (`ci/assets/!Reforged-v1.big`, sha256-verified by the script before
@@ -141,15 +152,17 @@ every run and applies this repo's small overlay on top:
    reconfigures standard and builds the shipped `libmain.so` +
    `libgenerals.so` + DXVK + hooks — upstream's `build-dual-hz.sh`
    shape, with the packaging script's own pristine `GX_SECOND_GAME_LIB`
-   / `GX_SECOND_BASE_GAME_LIB` knobs staging the 60 Hz pair. Our engine
-   is built separately, once, in `reforged-src` with
-   `REFORGED_60_STEPS=ON` and staged as `libmainrf60.so` through the
-   overlay's `GX_REFORGED60_LIB` knob. The APK guard requires exactly
-   `libmain.so` + `libmain60.so` + `libgenerals.so` + `libgenerals60.so`
-   + `libmainrf60.so`; the `*60.so` set must be exactly
+   / `GX_SECOND_BASE_GAME_LIB` knobs staging the 60 Hz pair. Our engines
+   are built separately in `reforged-src`, which is configured twice:
+   with `REFORGED_60_STEPS=ON` (staged as `libmainrf60.so` through the
+   overlay's `GX_REFORGED60_LIB` knob) and then with the flip OFF
+   (staged as `libmainrf.so` through `GX_REFORGED_LIB`). The APK guard
+   requires exactly `libmain.so` + `libmain60.so` + `libgenerals.so` +
+   `libgenerals60.so` + `libmainrf60.so` + `libmainrf.so`; the `*60.so`
+   set must be exactly
    `{libgenerals60.so, libmain60.so, libmainrf60.so}`.
 4. **Upload** the APK as the workflow artifact **`ZeroHourReforged-apk`**
-   (plus symbol tables for all five engines for crash symbolization,
+   (plus symbol tables for all six engines for crash symbolization,
    and build logs).
 
 ## Signing
