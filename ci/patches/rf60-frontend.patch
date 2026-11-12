@@ -1,0 +1,28 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+index fe1f373..00b5b64 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -1443,7 +1443,23 @@ void GameEngine::update()
+ 			}
+ 			else if (!TheGameLogic->isInGame() || TheShell->isShellActive())
+ 			{
++				// GeneralsX @feature Zero Hour Reforged 12/11/2026 Front-end
++				// cadence in the 60-steps build. The host's own 60 Hz build
++				// gets 60 fps screens because SAGE_HIGH_FPS_SIM raises
++				// GENERALS_ONLINE_HIGH_FPS_LIMIT to 60 for it; this build
++				// raises only LOGICFRAMES_PER_SECOND (60flip) and must NOT
++				// raise that macro -- it also seeds GeneralsOnline session
++				// latency data (FrameMetrics / ConnectionManager) and is
++				// static_asserted equal to WWSyncPerSecond, which stays 30
++				// here. So the shell branch asks the pacer for the build's
++				// own logic rate instead: 60 in libmainrf60.so, and the
++				// macro's own 30 in the standard library, whose compiled
++				// branch below is the pristine line, unchanged.
++#if defined(REFORGED_60_STEPS)
++				TheFramePacer->setFramesPerSecondLimit(LOGICFRAMES_PER_SECOND);
++#else
+ 				TheFramePacer->setFramesPerSecondLimit(GENERALS_ONLINE_HIGH_FPS_LIMIT);
++#endif
+ 			}
+ 			// GeneralsX @bugfix Android port 28/09/2026 An offline game keeps the limit
+ 			// MSG_NEW_GAME set from the skirmish Game Speed slider (GameLogicDispatch.cpp). This
