@@ -1,4 +1,4 @@
-# Stage C, slice C0 — Reforged GPU probe APK
+# Stage C, slices C0 + C2 — Reforged GPU probe / renderer harness APK
 
 A throwaway Android app (`com.louay.zerohour.gpuprobe`) whose only job is to
 run Reforged's own GPU capability probe on a real phone and show the table.
@@ -56,10 +56,57 @@ is touched. Full record: the project's
   byte-identical, hash-pinned) are compiled in CI with the NDK clang and
   Reforged's determinism flags — the plan's §3.12 spelling check.
 
+## Slice C2 — the renderer selfcheck harness
+
+With the workflow input `harness=renderer`, the same APK also carries
+the Reforged engine's **own** renderer selfchecks, so C2 can prove the
+engine's real renderer initialises on the phone — not a proxy:
+
+- Payloads: upstream's `sdl_gpu_frame_selfcheck` (creates a GPU device
+  through `SdlGpuFrame::Create` — the engine's production call site,
+  carrying the C1 §5 Android compat fix — clears, readback value checks,
+  depth-format fallback, pipeline/sampler creation, offscreen Present)
+  and `sdl_gpu_depth_format_selfcheck` (the depth-format selection the
+  C0 table priced; D24S8 preferred). Both are existing upstream CMake
+  targets linking `posixd3d9`.
+- Built from source in CI: the workflow checks out the pinned Reforged
+  tree (`61dbc59`), applies the formalised C1 patch set in `patches/`
+  (`reforged-c1-android.patch`, byte-equivalent to the C1 compile-proof
+  diff; `gamespy-android-pthread.patch` into the vendored GameSpy tree
+  after `vendor.sh`), builds a host `build_fingerprint` (C1 blocker B4),
+  and compiles both targets with NDK r27c — the exact sequence rehearsed
+  locally before this wiring landed (record: stage-c-c1-plan.md §7).
+- Packaging: the two binaries ride in the APK as
+  `libsdl_gpu_frame_selfcheck.so` / `libsdl_gpu_depth_format_selfcheck.so`
+  next to `libmain.so` (the manifest's `extractNativeLibs=true` makes
+  them real executable files). They are AArch64 PIEs needing only system
+  libraries.
+- Running: the launcher shows a **Run renderer selfcheck** button only
+  when the payloads are packaged. A tap writes `renderer` into
+  `harness-mode.txt`; the shim then runs both payloads as **child
+  processes** (frame first) with `SDL_VIDEODRIVER=offscreen`, teeing
+  their output into the same `probe-result.txt` / `probe-log.txt`
+  plumbing, and the run's exit code is the frame selfcheck's when
+  nonzero, else the depth one's (0 pass, 1 fail, 77 skip — the
+  payloads' own convention). Child processes, not in-process linking:
+  the engine closure carries its own vendored, statically linked SDL
+  while the harness runs on the shared SDL — two SDL implementations in
+  one process is the hazard the stage-C plan flags — and a dying payload
+  cannot take the harness (and its log) down with it. Deviation from
+  the §6 sketch recorded in stage-c-c1-plan.md §7.
+- `device_mode` does **not** apply to the payloads: they create their
+  device inside the engine, through the fixed call site. The log's
+  harness line says so on every renderer run.
+
 ## Build
 
-Actions → **Build Reforged GPU Probe (stage C0)** → Run workflow
-(`sdl_java` = `host` first) → artifact **`ReforgedGpuProbe-apk`**.
+Actions → **Build Reforged GPU Probe (stage C0/C2)** → Run workflow:
+
+- C0 probe: defaults (`harness=probe`) → artifact **`ReforgedGpuProbe-apk`**.
+- C2 renderer: `harness=renderer`, `sdl_java=upstream`,
+  `device_mode=plain` → artifact **`ReforgedRendererSelfcheck-apk`**
+  (same APK package; installs over the C0 build).
+
 The APK is debug-signed on purpose: it is a disposable probe, not the game.
 
 ## On the phone
@@ -70,3 +117,9 @@ results screen showing the capability table — screenshot it. If the app
 instead dies and comes back with a "last run crashed" screen, screenshot
 that: it is the dead run's `probe-log.txt`, partial table and crash line
 included — that log is the evidence the run existed to produce.
+
+On a renderer build there is a second button, **Run renderer
+selfcheck**: the screen returns showing the selfchecks' output and
+verdict lines (per-payload exit codes at the end; combined exit 0 =
+PASS). Screenshot that screen — or, if anything died, the error-log
+screen it falls back to.

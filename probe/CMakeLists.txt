@@ -1,10 +1,15 @@
-# Stage C, slice C0 — native build for the GPU capability probe APK.
+# Stage C, slices C0 + C2 — native build for the GPU probe harness APK.
 #
 # Builds upstream's pinned SDL 3.4.16 (shared, as SDL's own Android layout
 # expects: SDLActivity loads "SDL3" then "main") plus libmain.so from the
 # unmodified probe and the Android harness shim. SDL_SOURCE_DIR is supplied
 # by the workflow and points at the hash-verified SDL 3.4.16 source tree
 # (the exact archive Reforged's Tools/vendor.sh pins).
+#
+# C2 note: the renderer harness's payloads (the engine selfchecks) are NOT
+# built here — the workflow builds them from the pinned Reforged tree with
+# the C1 route and build-apk.sh packages them next to this library; the
+# shim only locates (dladdr) and runs them as child processes.
 
 cmake_minimum_required(VERSION 3.22)
 project(reforged_gpu_probe)
@@ -62,4 +67,6 @@ endif()
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/sdl_gpu_probe.cpp
     PROPERTIES COMPILE_OPTIONS "${PROBE_TU_OPTIONS}")
 
-target_link_libraries(main PRIVATE SDL3-shared log)
+# dl: dladdr, which the shim uses to locate the C2 selfcheck payloads
+# packaged next to this library.
+target_link_libraries(main PRIVATE SDL3-shared log dl)

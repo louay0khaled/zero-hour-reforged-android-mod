@@ -1,11 +1,36 @@
 /*
- * Android harness for upstream's sdl_gpu_probe (stage C, slice C0).
+ * Android harness for the stage-C instruments (slices C0 + C2).
  *
- * This file is scaffolding, not probe logic. It provides the SDL_main entry
- * point SDLActivity calls, runs the probe (whose `main` is renamed to
- * `probe_main` at compile time — see CMakeLists.txt; the probe source itself
- * is byte-identical to upstream and SHA-256-verified in CI), captures
- * everything the probe prints, and leaves the evidence in three places:
+ * This file is scaffolding, not test logic. It provides the SDL_main entry
+ * point SDLActivity calls, runs ONE of two instruments selected by the
+ * launcher through harness-mode.txt (same directory as the logs; first
+ * token wins; absent or unrecognised means gpu-probe, the C0 behaviour):
+ *
+ *   - gpu-probe (stage C0): upstream's sdl_gpu_probe, run in-process (its
+ *     `main` is renamed to `probe_main` at compile time — see
+ *     CMakeLists.txt; the probe source itself is byte-identical to
+ *     upstream and SHA-256-verified in CI).
+ *
+ *   - renderer (stage C2): upstream's own engine selfchecks
+ *     (sdl_gpu_frame_selfcheck + sdl_gpu_depth_format_selfcheck, built
+ *     from the pinned Reforged tree by the workflow and packaged next to
+ *     this library as lib*.so PIEs), run as CHILD PROCESSES. Stage
+ *     C1/C2 deviation, recorded in stage-c-c1-plan.md section 7: plan
+ *     section 6 sketched linking the selfcheck TU into this library, but
+ *     C1's build showed the engine closure carries its own vendored,
+ *     statically linked SDL while this harness runs on the shared SDL —
+ *     two SDL implementations in one process is the hazard the stage-C
+ *     plan itself flags (its section 3.2), and the payloads as linked
+ *     need only system libraries (libm/libdl/liblog/libandroid/libc).
+ *     Child processes keep the instruments separate and buy crash
+ *     isolation for free: a dying payload cannot take the harness (and
+ *     its log) down with it. The children run headless with
+ *     SDL_VIDEODRIVER=offscreen (the vendored SDL compiles that driver
+ *     in; the selfchecks are offscreen tests by upstream design) and
+ *     with the working directory set to the app's files directory.
+ *
+ * Either way the shim captures everything the instrument prints, and
+ * leaves the evidence in three places:
  *
  *   - probe-result.txt in the app's external files directory: the captured
  *     stdout table, written when the probe returns — the launcher activity
@@ -42,13 +67,18 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 
@@ -349,6 +379,153 @@ void WriteResultFile(const std::string &text)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Harness selection (C2)                                              */
+/* ------------------------------------------------------------------ */
+
+enum class Harness { GpuProbe, Renderer };
+
+Harness g_harness = Harness::GpuProbe;
+
+/* The launcher writes harness-mode.txt next to the logs on every Run tap;
+   the first whitespace-delimited token selects the instrument. Anything
+   else (missing file, unreadable, unknown token) keeps the C0 default. */
+Harness ReadHarnessMode()
+{
+    const std::string &dir = ExternalDir();
+    if (dir.empty()) {
+        return Harness::GpuProbe;
+    }
+    FILE *f = std::fopen((dir + "harness-mode.txt").c_str(), "r");
+    if (f == NULL) {
+        return Harness::GpuProbe;
+    }
+    char token[32] = {0};
+    bool ok = std::fscanf(f, "%31s", token) == 1;
+    std::fclose(f);
+    if (ok && std::strcmp(token, "renderer") == 0) {
+        return Harness::Renderer;
+    }
+    return Harness::GpuProbe;
+}
+
+void HarnessAnchor() {}
+
+/* Directory this library was loaded from — the selfcheck payloads are
+   packaged next to it (also under their lib*.so names, so the package
+   manager extracts them as real, executable files; the manifest sets
+   extractNativeLibs=true). Empty string when the lookup fails; the
+   renderer runner reports that honestly instead of guessing a path. */
+std::string PayloadDir()
+{
+    Dl_info info;
+    if (dladdr(reinterpret_cast<const void *>(&HarnessAnchor), &info) == 0 ||
+        info.dli_fname == NULL) {
+        return std::string();
+    }
+    std::string path = info.dli_fname;
+    size_t slash = path.find_last_of('/');
+    if (slash == std::string::npos) {
+        return std::string();
+    }
+    return path.substr(0, slash + 1);
+}
+
+/* Run one selfcheck payload as a child process. Called with stdout and
+   stderr already redirected into the capture pipes, so the payload's own
+   output flows through the same drain/log/result plumbing as the probe's
+   does; separator and status lines printed here join the same stream.
+   Returns the payload's exit code, 127 when it could not be launched at
+   all, or 128+signal when it died by one (the shell's convention; the
+   log additionally gets a CRASH line in the section-7 shape). */
+int RunOnePayload(const std::string &dir, const char *fileName, const char *label,
+                  int index, int count)
+{
+    std::printf("[harness] --- payload %d/%d: %s ---\n", index, count, label);
+    std::fflush(stdout);
+    std::string path = dir + fileName;
+    if (dir.empty() || access(path.c_str(), X_OK) != 0) {
+        std::printf("[harness] payload missing or not executable: %s\n", path.c_str());
+        std::fflush(stdout);
+        LogLine("[harness] payload missing or not executable: " + path);
+        return 127;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        std::printf("[harness] fork failed for %s\n", label);
+        std::fflush(stdout);
+        return 127;
+    }
+    if (pid == 0) {
+        /* Child: fds 1/2 are the capture pipes (inherited across exec);
+           nothing but exec is safe or needed here. */
+        execl(path.c_str(), label, static_cast<char *>(NULL));
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            status = 0;
+            break;
+        }
+    }
+    if (WIFEXITED(status)) {
+        int code = WEXITSTATUS(status);
+        std::printf("[harness] payload %s exited; exit code %d\n", label, code);
+        std::fflush(stdout);
+        return code;
+    }
+    if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        std::printf("[harness] payload %s died by signal %d\n", label, sig);
+        std::fflush(stdout);
+        char line[256];
+        std::snprintf(line, sizeof(line),
+                      "[harness] CRASH: payload %s died by signal %d -- it did not return; "
+                      "whatever it printed is above",
+                      label, sig);
+        LogLine(line);
+        return 128 + sig;
+    }
+    std::printf("[harness] payload %s ended with an undecodable wait status %d\n", label, status);
+    std::fflush(stdout);
+    return 127;
+}
+
+/* The C2 instrument: both engine selfchecks, frame first (it is the one
+   that creates a GPU device through the engine's fixed call site), then
+   the depth-format selection selfcheck. Combined exit code: the frame
+   selfcheck's when it is nonzero, else the depth selfcheck's — 0 pass,
+   1 fail, 77 skip (SDL_Init or device creation declined, in the
+   payload's own printed words). */
+int RunRendererPayloads()
+{
+    const std::string &dir = ExternalDir();
+    if (!dir.empty()) {
+        /* A writable working directory for anything the payloads stage,
+           and a headless video driver for a process with no window and
+           no Java side: the selfchecks are offscreen tests by design. */
+        if (chdir(dir.c_str()) != 0) {
+            LogLine("[harness] chdir to the files directory failed; payloads keep the app default cwd");
+        }
+        setenv("SDL_VIDEODRIVER", "offscreen", 1);
+        std::printf("[harness] payload environment: SDL_VIDEODRIVER=offscreen, cwd = app files directory\n");
+        std::fflush(stdout);
+    } else {
+        LogLine("[harness] no external storage path; payload cwd/env left at defaults");
+    }
+    const std::string payloadDir = PayloadDir();
+    int frame = RunOnePayload(payloadDir, "libsdl_gpu_frame_selfcheck.so",
+                              "sdl_gpu_frame_selfcheck", 1, 2);
+    int depth = RunOnePayload(payloadDir, "libsdl_gpu_depth_format_selfcheck.so",
+                              "sdl_gpu_depth_format_selfcheck", 2, 2);
+    char summary[256];
+    std::snprintf(summary, sizeof(summary),
+                  "[harness] payload exit codes: frame %d, depth %d\n", frame, depth);
+    LogText(summary);
+    return frame != 0 ? frame : depth;
+}
+
 /* Open the forensic log for this run (rotating first if needed) and write
    the run header + start record BEFORE the probe runs, so even a probe that
    dies on its first instruction leaves a marked, dated section behind. */
@@ -379,12 +556,19 @@ void OpenLog()
                   SDL_MAJOR_VERSION, SDL_MINOR_VERSION, SDL_MICRO_VERSION,
                   linked / 1000000, (linked / 1000) % 1000, linked % 1000);
     LogText(versions);
+    if (g_harness == Harness::Renderer) {
+        LogText("[harness] harness: renderer (engine selfchecks as child processes; the GPU "
+                "device is created inside the payload through the engine's own fixed call "
+                "site - the harness compat forwarder is not in this path)\n");
+    } else {
+        LogText("[harness] harness: gpu-probe (upstream sdl_gpu_probe, in-process)\n");
 #if defined(PROBE_DEVICE_COMPAT)
-    LogText("[harness] device mode: compat (SDL_CreateGPUDeviceWithProperties; "
-            "feature.depth_clamping=false, feature.clip_distance=false)\n");
+        LogText("[harness] device mode: compat (SDL_CreateGPUDeviceWithProperties; "
+                "feature.depth_clamping=false, feature.clip_distance=false)\n");
 #else
-    LogText("[harness] device mode: plain (SDL_CreateGPUDevice with SDL defaults)\n");
+        LogText("[harness] device mode: plain (SDL_CreateGPUDevice with SDL defaults)\n");
 #endif
+    }
 }
 
 } // namespace
@@ -394,6 +578,7 @@ int main(int argc, char *argv[])
     (void)argc;
     (void)argv;
 
+    g_harness = ReadHarnessMode();
     OpenLog();
     InstallCrashHandlers();
 
@@ -421,7 +606,7 @@ int main(int argc, char *argv[])
             drainErr = std::thread(DrainPipe, err_fds[0], false);
         }
 
-        exit_code = probe_main();
+        exit_code = (g_harness == Harness::Renderer) ? RunRendererPayloads() : probe_main();
 
         std::fflush(stdout);
         std::fflush(stderr);
@@ -438,17 +623,22 @@ int main(int argc, char *argv[])
             close(err_fds[0]);
         }
     } else {
-        /* Capture unavailable: still run the probe so its exit code and its
-           own stdout destination carry what they can. */
-        LogLine("[harness] stdout capture unavailable this run (pipe failed); probe runs uncaptured");
-        exit_code = probe_main();
-        g_captured = "(stdout capture unavailable in harness; probe ran without capture)\n";
+        /* Capture unavailable: still run the instrument so its exit code and
+           its own stdout destination carry what they can. */
+        LogLine("[harness] stdout capture unavailable this run (pipe failed); instrument runs uncaptured");
+        exit_code = (g_harness == Harness::Renderer) ? RunRendererPayloads() : probe_main();
+        g_captured = "(stdout capture unavailable in harness; instrument ran without capture)\n";
     }
 
     {
-        char tail[192];
-        std::snprintf(tail, sizeof(tail), "[harness] probe exited normally; exit code %d\n",
-                      exit_code);
+        char tail[224];
+        if (g_harness == Harness::Renderer) {
+            std::snprintf(tail, sizeof(tail),
+                          "[harness] renderer run finished; combined exit code %d\n", exit_code);
+        } else {
+            std::snprintf(tail, sizeof(tail), "[harness] probe exited normally; exit code %d\n",
+                          exit_code);
+        }
         LogText(tail);
         LogLine("===== probe run end " + TimestampNow() + " =====");
     }
@@ -457,9 +647,11 @@ int main(int argc, char *argv[])
         g_logFd = -1;
     }
 
-    SDL_Log("=== sdl_gpu_probe output (exit code %d) ===", exit_code);
+    SDL_Log("=== %s output (exit code %d) ===",
+            g_harness == Harness::Renderer ? "renderer selfcheck" : "sdl_gpu_probe", exit_code);
     LogLineByLine(g_captured);
-    SDL_Log("=== sdl_gpu_probe end ===");
+    SDL_Log("=== %s end ===",
+            g_harness == Harness::Renderer ? "renderer selfcheck" : "sdl_gpu_probe");
     WriteResultFile(g_captured);
     return exit_code;
 }

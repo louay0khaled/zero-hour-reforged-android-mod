@@ -21,10 +21,20 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * Launcher screen for the stage-C0 GPU probe. Runs upstream's SDL probe as a
- * child SDLActivity and displays the capability table the native harness
- * leaves behind in probe-result.txt (this app's external files directory),
- * ready to screenshot. All UI is built in code; the app ships no resources.
+ * Launcher screen for the stage-C harness app (slices C0 + C2). Runs one of
+ * two instruments as a child SDLActivity and displays what the native
+ * harness leaves behind in probe-result.txt (this app's external files
+ * directory), ready to screenshot:
+ *
+ *   - "Run GPU probe" (C0): upstream's SDL GPU capability probe.
+ *   - "Run renderer selfcheck" (C2, shown only when the selfcheck
+ *     payloads are packaged in this APK): the Reforged engine's own
+ *     sdl_gpu_frame/depth_format selfchecks, run by the native shim as
+ *     child processes.
+ *
+ * The choice reaches the native side through harness-mode.txt in the same
+ * directory, rewritten on every tap. All UI is built in code; the app
+ * ships no resources.
  *
  * Error log: the native harness also keeps probe-log.txt in the same
  * directory - a run section is opened before the probe starts, every output
@@ -65,22 +75,23 @@ public class ProbeMainActivity extends Activity {
         root.setPadding(24, 24, 24, 24);
 
         TextView title = new TextView(this);
-        title.setText("Reforged GPU Probe (stage C0)");
+        title.setText("Reforged GPU Probe (stage C0/C2)");
         title.setTextSize(18);
         root.addView(title);
 
         Button run = new Button(this);
         run.setText("Run GPU probe");
-        run.setOnClickListener(v -> {
-            long now = System.currentTimeMillis();
-            prefs().edit().putLong("run_started_at", now).apply();
-            appendLog("starting probe activity (Run tapped)");
-            mLaunchedChild = true;
-            mMode = MODE_AUTO;
-            mResultView.setText("Running... the probe screen opens; when it finishes you return here and the table appears.");
-            startActivity(new Intent(this, org.libsdl.app.SDLActivity.class));
-        });
+        run.setOnClickListener(v -> startInstrument("gpu-probe",
+                "Running... the probe screen opens; when it finishes you return here and the table appears."));
         root.addView(run);
+
+        if (rendererPayloadPresent()) {
+            Button runRenderer = new Button(this);
+            runRenderer.setText("Run renderer selfcheck");
+            runRenderer.setOnClickListener(v -> startInstrument("renderer",
+                    "Running... the engine selfchecks run; when they finish you return here and their verdict appears."));
+            root.addView(runRenderer);
+        }
 
         mLogToggle = new Button(this);
         mLogToggle.setText("Show error log");
@@ -112,6 +123,21 @@ public class ProbeMainActivity extends Activity {
         showContent();
     }
 
+    // One launch path for both instruments: record the tap (the result
+    // file only counts as this run's when it is newer than this moment),
+    // tell the native side which instrument to run, leave the launcher's
+    // own line in the error log, and open the SDL activity.
+    private void startInstrument(String harness, String busyText) {
+        long now = System.currentTimeMillis();
+        prefs().edit().putLong("run_started_at", now).putString("last_harness", harness).apply();
+        writeHarnessMode(harness);
+        appendLog("starting " + harness + " activity (Run tapped)");
+        mLaunchedChild = true;
+        mMode = MODE_AUTO;
+        mResultView.setText(busyText);
+        startActivity(new Intent(this, org.libsdl.app.SDLActivity.class));
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
@@ -119,10 +145,11 @@ public class ProbeMainActivity extends Activity {
             mLaunchedChild = false;
             File result = resultFile();
             long startedAt = prefs().getLong("run_started_at", 0);
+            String harness = prefs().getString("last_harness", "gpu-probe");
             if (isFreshResult(result, startedAt)) {
-                appendLog("resumed; fresh probe result present (" + result.length() + " bytes)");
+                appendLog("resumed; fresh " + harness + " result present (" + result.length() + " bytes)");
             } else {
-                appendLog("resumed WITHOUT a fresh probe result - the last run left no table");
+                appendLog("resumed WITHOUT a fresh " + harness + " result - the last run left no output file");
             }
         }
         showContent();
@@ -187,11 +214,12 @@ public class ProbeMainActivity extends Activity {
     }
 
     private static String placeholderText() {
-        return "No probe result yet.\n\n"
-                + "Tap \"Run GPU probe\". When the probe finishes you return "
-                + "here and the capability table appears on this screen - "
-                + "screenshot it.\n\n"
-                + "(The same table is saved as probe-result.txt in this "
+        return "No result yet.\n\n"
+                + "Tap \"Run GPU probe\" for the capability table, or \"Run "
+                + "renderer selfcheck\" (when present) for the engine's own "
+                + "renderer verdict. When the run finishes you return here "
+                + "and its output appears on this screen - screenshot it.\n\n"
+                + "(The same output is saved as probe-result.txt in this "
                 + "app's files folder. If a run crashes, its error log is "
                 + "kept in probe-log.txt in the same folder - tap \"Show "
                 + "error log\" to read it.)";
@@ -220,8 +248,9 @@ public class ProbeMainActivity extends Activity {
             return false;
         }
         int lastEnd = Math.max(tail.lastIndexOf("probe exited normally"),
-                Math.max(tail.lastIndexOf("CRASH:"),
-                        tail.lastIndexOf("===== probe run end")));
+                Math.max(tail.lastIndexOf("renderer run finished"),
+                        Math.max(tail.lastIndexOf("CRASH:"),
+                                tail.lastIndexOf("===== probe run end"))));
         return lastStart > lastEnd;
     }
 
@@ -258,6 +287,39 @@ public class ProbeMainActivity extends Activity {
     private File logFile() {
         File dir = getExternalFilesDir(null);
         return (dir == null) ? null : new File(dir, "probe-log.txt");
+    }
+
+    // The C2 payloads ride in the APK under lib*.so names next to the
+    // harness library; the renderer button exists only when this build
+    // actually carries them (the workflow's harness=renderer mode).
+    private boolean rendererPayloadPresent() {
+        try {
+            String libDir = getApplicationInfo().nativeLibraryDir;
+            return libDir != null
+                    && new File(libDir, "libsdl_gpu_frame_selfcheck.so").isFile()
+                    && new File(libDir, "libsdl_gpu_depth_format_selfcheck.so").isFile();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    // The native shim reads this file at SDL_main; the first token is the
+    // instrument name. A failed write leaves the shim at its gpu-probe
+    // default, which the log's harness line then shows honestly.
+    private void writeHarnessMode(String harness) {
+        try {
+            File dir = getExternalFilesDir(null);
+            if (dir == null) {
+                return;
+            }
+            File mode = new File(dir, "harness-mode.txt");
+            try (FileOutputStream out = new FileOutputStream(mode, false)) {
+                out.write((harness + "\n").getBytes("UTF-8"));
+                out.getFD().sync();
+            }
+        } catch (Throwable ignored) {
+            // Mode selection must never take the launcher down.
+        }
     }
 
     private void appendLog(String msg) {

@@ -12,6 +12,14 @@
 #   ANDROID_JAR       path to platforms/android-34/android.jar
 #   BUILD_TOOLS       Android build-tools dir (aapt2, d8, zipalign, apksigner)
 #   OUT_APK           output APK path
+# Optional environment:
+#   PAYLOAD_DIR       stage C2: directory holding the engine selfcheck
+#                     payloads under their final lib*.so names; every file
+#                     in it is packaged into lib/arm64-v8a/ next to
+#                     libmain.so, where the shim finds and executes them.
+#                     A renderer build without its payloads is a broken
+#                     artifact, so a set-but-missing/empty PAYLOAD_DIR
+#                     fails the packaging loudly.
 set -euo pipefail
 
 for v in PROBE_DIR JAVA_SRC_DIR NATIVE_BUILD_DIR NDK_HOME ANDROID_JAR BUILD_TOOLS OUT_APK; do
@@ -41,6 +49,19 @@ for f in "$LIBMAIN" "$LIBSDL" "$LIBCXX"; do
 done
 echo "native libs:"
 ls -la "$LIBMAIN" "$LIBSDL" "$LIBCXX"
+
+PAYLOADS=()
+if [ -n "${PAYLOAD_DIR:-}" ]; then
+    if [ ! -d "$PAYLOAD_DIR" ]; then
+        echo "build-apk.sh: PAYLOAD_DIR does not exist: $PAYLOAD_DIR" >&2; exit 1
+    fi
+    while IFS= read -r p; do PAYLOADS+=("$p"); done < <(find "$PAYLOAD_DIR" -maxdepth 1 -type f | sort)
+    if [ "${#PAYLOADS[@]}" -eq 0 ]; then
+        echo "build-apk.sh: PAYLOAD_DIR is empty: $PAYLOAD_DIR" >&2; exit 1
+    fi
+    echo "payload libs (stage C2 renderer selfchecks):"
+    ls -la "${PAYLOADS[@]}"
+fi
 
 # 1) Java: launcher activity + the selected SDL Java layer.
 mkdir -p "$WORK/classes"
@@ -80,6 +101,9 @@ fi
     zip -q probe-unsigned.apk -j dex/classes.dex
     mkdir -p lib/arm64-v8a
     cp "$LIBMAIN" "$LIBSDL" "$LIBCXX" lib/arm64-v8a/
+    if [ "${#PAYLOADS[@]}" -gt 0 ]; then
+        cp "${PAYLOADS[@]}" lib/arm64-v8a/
+    fi
     zip -q -r probe-unsigned.apk lib
 )
 
