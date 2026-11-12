@@ -206,11 +206,15 @@ edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java',
 
 # Card strings in every locale, inserted right after the sim-rate toast line
 # (the anchor string name exists in all locales; its text is translated).
+# AAPT2 law: an apostrophe inside a string resource must reach the XML
+# escaped as \' or mergeReleaseResources rejects the string ("unescaped
+# apostrophe in string") -- hence the \\' in the Python literals below,
+# which puts a literal backslash before the apostrophe in the XML.
 _RF60_STRINGS_EN = [
     ('setup_card_reforged60', 'Reforged Engine'),
     ('setup_reforged60_title', 'Reforged engine \u2014 60 steps per second (experimental)'),
-    ('setup_reforged60_desc', "Reforged's own doubled simulation rate: smoother motion and faster response, at the cost of heavier work for the processor."),
-    ('setup_reforged60_help', "The engine is chosen when the game starts, so the change applies the next time you launch it. Save games and replays belong to the rate that made them: each engine refuses the other's, cleanly. This mode plays no network games. If large battles slow down, switch it off."),
+    ('setup_reforged60_desc', "Reforged\\'s own doubled simulation rate: smoother motion and faster response, at the cost of heavier work for the processor."),
+    ('setup_reforged60_help', "The engine is chosen when the game starts, so the change applies the next time you launch it. Save games and replays belong to the rate that made them: each engine refuses the other\\'s, cleanly. This mode plays no network games. If large battles slow down, switch it off."),
 ]
 _RF60_STRINGS_AR = [
     ('setup_card_reforged60', 'محرك ريفورجيد'),
