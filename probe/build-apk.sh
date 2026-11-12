@@ -18,6 +18,18 @@ for v in PROBE_DIR JAVA_SRC_DIR NATIVE_BUILD_DIR NDK_HOME ANDROID_JAR BUILD_TOOL
     if [ -z "${!v:-}" ]; then echo "build-apk.sh: $v is not set" >&2; exit 1; fi
 done
 
+# The selected SDL Java layer must actually be on disk. Probe workflow
+# run #1 died at the find in step 1 because JAVA_SRC_DIR pointed at the
+# host repo's android/app/src/main/java-sdl — a generated, gitignored
+# directory that a fresh checkout never contains (the workflow now stages
+# it itself). Fail here with a readable message instead of find's bare one.
+if [ ! -d "$JAVA_SRC_DIR" ]; then
+    echo "build-apk.sh: JAVA_SRC_DIR does not exist: $JAVA_SRC_DIR" >&2; exit 1
+fi
+if ! find "$JAVA_SRC_DIR" -name 'SDLActivity.java' -type f | grep -q .; then
+    echo "build-apk.sh: no SDLActivity.java under JAVA_SRC_DIR: $JAVA_SRC_DIR" >&2; exit 1
+fi
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
