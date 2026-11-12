@@ -357,8 +357,21 @@ jobs:
           grep -q "^SAGE_HIGH_FPS_SIM:BOOL=ON" build/${{ env.PRESET }}/CMakeCache.txt
           ! grep -q "REFORGED_60_STEPS" build/${{ env.PRESET }}/CMakeCache.txt
           cmake --build build/${{ env.PRESET }} --target z_generals g_generals -- -k 0 2>&1 | tee logs/build_60hz.log
-          cp build/${{ env.PRESET }}/libmain.so "${{ github.workspace }}/libmain60.so"
-          cp build/${{ env.PRESET }}/libgenerals.so "${{ github.workspace }}/libgenerals60.so"
+          # The engine targets live in GeneralsMD/Code/Main and
+          # Generals/Code/Main with no output-directory override, so
+          # their products land in the mirrored per-directory paths
+          # under the preset dir -- NOT at its root (run #18 failed on
+          # exactly this assumption). Upstream's build-dual-hz.sh reads
+          # the same two paths, asserting existence before copying; the
+          # same shape is kept here so a future layout drift fails with
+          # the expected path named, not a bare cp error.
+          MAIN60_SO="build/${{ env.PRESET }}/GeneralsMD/Code/Main/libmain.so"
+          GENERALS60_SO="build/${{ env.PRESET }}/Generals/Code/Main/libgenerals.so"
+          [ -f "$MAIN60_SO" ] || { echo "::error::host 60 Hz z_generals output missing at $MAIN60_SO"; exit 1; }
+          [ -f "$GENERALS60_SO" ] || { echo "::error::host 60 Hz g_generals output missing at $GENERALS60_SO"; exit 1; }
+          ls -la "$MAIN60_SO" "$GENERALS60_SO"
+          cp "$MAIN60_SO" "${{ github.workspace }}/libmain60.so"
+          cp "$GENERALS60_SO" "${{ github.workspace }}/libgenerals60.so"
           for lib60 in "${{ github.workspace }}/libmain60.so" "${{ github.workspace }}/libgenerals60.so"; do
             ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf -h "$lib60" | grep -qi "AArch64" || { echo "NOT AARCH64: $lib60"; exit 1; }
           done
