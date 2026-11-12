@@ -16,6 +16,13 @@ as two total conversions. The migration in the generated
 ensureBundledReforgedData removes the app-installed legacy folders
 (ReforgedFixes / ReforgedBalance) and their stored-order entries once the
 merged folder is in place.
+Online mode (v1.7): the injected block also carries applyOnlineMode --
+the launcher's Online Mode switch (surgery phase 1f) snapshots the merged
+mod's switch state here on entry and restores it on exit, through the
+same listMods/saveOrder mechanism the Mods screen uses; and a first
+install that happens while online mode is on installs the mod switched
+off with the snapshot pre-recorded as enabled, so leaving the mode later
+restores the default-install state.
 
 Layout: REFORGED_SRC (env) points at the MYSOREZ checkout; default is the
 parent of this repo's checkout (the CI workflow checks the overlay repo out
@@ -269,7 +276,22 @@ method = '''
         List<Mod> ordered = new java.util.ArrayList<>(rest);
         if (mergedMod != null) {
             if (!mergedKnown) {
-                mergedMod.enabled = true;
+                // GeneralsX @feature Zero Hour Reforged 12/11/2026 First
+                // sight while online mode is on: the mod installs in the
+                // online state instead -- switched off, with the pre-mode
+                // snapshot recorded as enabled, so leaving online mode
+                // restores the default-install state.
+                if (SetupActivity.getOnlineMode(ctx)) {
+                    mergedMod.enabled = false;
+                    android.content.SharedPreferences prefs =
+                            ctx.getSharedPreferences(SetupActivity.PREFS_NAME,
+                                    Context.MODE_PRIVATE);
+                    if (!prefs.contains(PREF_ONLINE_SNAPSHOT_MOD)) {
+                        prefs.edit().putInt(PREF_ONLINE_SNAPSHOT_MOD, 1).apply();
+                    }
+                } else {
+                    mergedMod.enabled = true;
+                }
             }
             ordered.add(mergedMod);
         }
@@ -284,6 +306,60 @@ method = '''
             }
         }
         return false;
+    }
+
+    // GeneralsX @feature Zero Hour Reforged 12/11/2026 Online mode
+    // (SetupActivity, surgery phase 1f): while it is on, the bundled
+    // Reforged mod must be switched off, so GeneralsOnline sees the stock
+    // data set. The mod's own switch state is snapshotted on entry and
+    // restored on exit -- a mod the player had switched off by hand stays
+    // off. The switch itself goes through listMods/saveOrder, the exact
+    // mechanism the Mods screen uses, so every screen keeps showing the
+    // same state. The snapshot lives in the setup prefs next to the
+    // online-mode pref itself.
+    private static final String PREF_ONLINE_SNAPSHOT_MOD =
+            "reforged_online_snapshot_mod";
+
+    static void applyOnlineMode(Context ctx, boolean entering) {
+        File root = modsRoot(ctx);
+        if (root == null) {
+            return;
+        }
+        File bundledDir = findBundledDir(root, "reforged-v1");
+        android.content.SharedPreferences prefs = ctx.getSharedPreferences(
+                SetupActivity.PREFS_NAME, Context.MODE_PRIVATE);
+        List<Mod> mods = listMods(ctx);
+        Mod bundled = null;
+        if (bundledDir != null) {
+            for (Mod mod : mods) {
+                if (mod.dir.getName().equals(bundledDir.getName())) {
+                    bundled = mod;
+                    break;
+                }
+            }
+        }
+        if (entering) {
+            if (bundled == null || prefs.contains(PREF_ONLINE_SNAPSHOT_MOD)) {
+                return;
+            }
+            prefs.edit()
+                    .putInt(PREF_ONLINE_SNAPSHOT_MOD, bundled.enabled ? 1 : 0)
+                    .apply();
+            if (bundled.enabled) {
+                bundled.enabled = false;
+                saveOrder(ctx, mods);
+            }
+        } else {
+            if (!prefs.contains(PREF_ONLINE_SNAPSHOT_MOD)) {
+                return;
+            }
+            boolean restore = prefs.getInt(PREF_ONLINE_SNAPSHOT_MOD, 1) == 1;
+            prefs.edit().remove(PREF_ONLINE_SNAPSHOT_MOD).apply();
+            if (bundled != null && bundled.enabled != restore) {
+                bundled.enabled = restore;
+                saveOrder(ctx, mods);
+            }
+        }
     }
 
 '''
