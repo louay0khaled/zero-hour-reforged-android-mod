@@ -1,32 +1,8 @@
 diff --git a/scripts/build/android/package-android-zh.sh b/scripts/build/android/package-android-zh.sh
-index 075ff87..e1fbfe5 100644
+index 075ff87..6f4180c 100755
 --- a/scripts/build/android/package-android-zh.sh
 +++ b/scripts/build/android/package-android-zh.sh
-@@ -367,10 +367,14 @@ if [[ -n "${GX_ANDROID_VERSION_NAME:-}" ]]; then
-     GRADLE_VERSION_ARG="${GRADLE_VERSION_ARG} -PandroidVersionName=${GX_ANDROID_VERSION_NAME}"
- fi
- 
--echo "==> ${GRADLE_CMD} assembleDebug ${GRADLE_VERSION_ARG}"
--"${GRADLE_CMD}" assembleDebug ${GRADLE_VERSION_ARG}
-+echo "==> ${GRADLE_CMD} ${GX_GRADLE_TASK:-assembleDebug} ${GRADLE_VERSION_ARG}"
-+"${GRADLE_CMD}" ${GX_GRADLE_TASK:-assembleDebug} ${GRADLE_VERSION_ARG}
- 
--APK="${ANDROID_DIR}/app/build/outputs/apk/debug/app-debug.apk"
-+if [[ "${GX_GRADLE_TASK:-assembleDebug}" == "assembleRelease" ]]; then
-+    APK="${ANDROID_DIR}/app/build/outputs/apk/release/app-release.apk"
-+else
-+    APK="${ANDROID_DIR}/app/build/outputs/apk/debug/app-debug.apk"
-+fi
- if [[ ! -f "${APK}" ]]; then
-     echo "ERROR: expected APK not found at ${APK}"
-     exit 1
-@@ -58,11 +58,27 @@
- if [[ -n "${GX_SECOND_GAME_LIB:-}" ]]; then
-     if [[ ! -f "${GX_SECOND_GAME_LIB}" ]]; then
-         echo "ERROR: GX_SECOND_GAME_LIB points at a file that does not exist: ${GX_SECOND_GAME_LIB}"
-         exit 1
-     fi
-     cp "${GX_SECOND_GAME_LIB}" "${JNILIBS}/libmain60.so"
+@@ -64,6 +64,37 @@ if [[ -n "${GX_SECOND_GAME_LIB:-}" ]]; then
      echo "Packaging a second engine: libmain60.so ($(du -h "${GX_SECOND_GAME_LIB}" | cut -f1))"
  fi
  
@@ -46,5 +22,39 @@ index 075ff87..e1fbfe5 100644
 +    echo "Packaging the Reforged 60-steps engine: libmainrf60.so ($(du -h "${GX_REFORGED60_LIB}" | cut -f1))"
 +fi
 +
++# GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.10) The Reforged enhanced standard
++# engine (Zero Hour only): the same patched tree built WITHOUT the flip
++# (REFORGED_60_STEPS=OFF) -- the engine that shipped as this build's standard library in
++# v1.0-v1.8, under its own name since v1.10 so the base tree's libmain.so stays the host's
++# own. The launcher loads it only when the player turns the enhanced-engine switch on
++# (SetupActivity.getReforgedEnhanced30()).
++if [[ -n "${GX_REFORGED_LIB:-}" ]]; then
++    if [[ ! -f "${GX_REFORGED_LIB}" ]]; then
++        echo "ERROR: GX_REFORGED_LIB points at a file that does not exist: ${GX_REFORGED_LIB}"
++        exit 1
++    fi
++    cp "${GX_REFORGED_LIB}" "${JNILIBS}/libmainrf.so"
++    echo "Packaging the Reforged enhanced standard engine: libmainrf.so ($(du -h "${GX_REFORGED_LIB}" | cut -f1))"
++fi
++
  # GeneralsX @feature Android port 04/10/2026 The base game, Command & Conquer Generals, in the
  # same APK: libgenerals.so (30 Hz) and, from build-dual-hz.sh, libgenerals60.so. The launcher
+ # loads one of the four (GeneralsZHActivity.getLibraries()).
+@@ -367,10 +398,14 @@ if [[ -n "${GX_ANDROID_VERSION_NAME:-}" ]]; then
+     GRADLE_VERSION_ARG="${GRADLE_VERSION_ARG} -PandroidVersionName=${GX_ANDROID_VERSION_NAME}"
+ fi
+ 
+-echo "==> ${GRADLE_CMD} assembleDebug ${GRADLE_VERSION_ARG}"
+-"${GRADLE_CMD}" assembleDebug ${GRADLE_VERSION_ARG}
++echo "==> ${GRADLE_CMD} ${GX_GRADLE_TASK:-assembleDebug} ${GRADLE_VERSION_ARG}"
++"${GRADLE_CMD}" ${GX_GRADLE_TASK:-assembleDebug} ${GRADLE_VERSION_ARG}
+ 
+-APK="${ANDROID_DIR}/app/build/outputs/apk/debug/app-debug.apk"
++if [[ "${GX_GRADLE_TASK:-assembleDebug}" == "assembleRelease" ]]; then
++    APK="${ANDROID_DIR}/app/build/outputs/apk/release/app-release.apk"
++else
++    APK="${ANDROID_DIR}/app/build/outputs/apk/debug/app-debug.apk"
++fi
+ if [[ ! -f "${APK}" ]]; then
+     echo "ERROR: expected APK not found at ${APK}"
+     exit 1
