@@ -26,11 +26,11 @@ on:
     inputs:
       version_name:
         type: string
-        description: "Override versionName (blank = build.gradle default, currently '1.6'). Bump together with version_code for a new release."
+        description: "Override versionName (blank = build.gradle default, currently '1.7'). Bump together with version_code for a new release."
         default: ""
       version_code:
         type: string
-        description: "Override versionCode (blank = build.gradle default, currently 7). Must increase between published releases."
+        description: "Override versionCode (blank = build.gradle default, currently 8). Must increase between published releases."
         default: ""
 
 env:
@@ -89,6 +89,7 @@ jobs:
           git apply --verbose reforged-overlay/ci/patches/package-android-zh-gradle-task.patch
           git apply --verbose reforged-overlay/ci/patches/step-perf.patch
           git apply --verbose reforged-overlay/ci/patches/speed-pacing-fix.patch
+          git apply --verbose reforged-overlay/ci/patches/rf60-frontend.patch
           # Package-id surgery + bundled-data phase (both scripts resolve
           # the MYSOREZ tree as the parent of the overlay checkout).
           python3 reforged-overlay/ci/apply-surgery.py
@@ -115,6 +116,10 @@ jobs:
           grep -q "m_frameRate = LOGICFRAMES_PER_SECOND" Core/GameEngine/Source/GameNetwork/Network.cpp
           grep -q "reforged_60_steps" android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java
           grep -q "mainrf60" android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java
+          grep -q "setFramesPerSecondLimit(LOGICFRAMES_PER_SECOND)" GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+          grep -q "reforged_online_mode" android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java
+          grep -q "getOnlineMode" android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java
+          grep -q "applyOnlineMode" android/app/src/main/java/com/generalsx/zerohour/ModManager.java
           grep -q "GX_REFORGED60_LIB" scripts/build/android/package-android-zh.sh
           grep -q "ensureBundledReforgedData" android/app/src/main/java/com/generalsx/zerohour/ModManager.java
           test -f 'android/app/src/main/assets/reforged/!Reforged-v1.big'
