@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Zero Hour Reforged — package-id surgery on a pristine MYSOREZ checkout.
-CI version of the v1 local apply-surgery.py (phases 1a/1b/1c/1d/1e):
+CI version of the v1 local apply-surgery.py (phases 1a/1b/1c/1d/1e/1f):
   1a applicationId + version defaults in android/app/build.gradle
   1b native hardcoded /data/user/<uid>/<old id>/files/ paths (7 files)
   1c app_name label in every locale's strings.xml
@@ -9,6 +9,12 @@ CI version of the v1 local apply-surgery.py (phases 1a/1b/1c/1d/1e):
      switch card replacing the dead Simulation Rate card on the Graphics
      tab, GeneralsZHActivity loads libmainrf60.so when it is on, and the
      card's strings in every locale
+  1f Online Mode launcher option (v1.7): pref reforged_online_mode, a
+     switch card under the Reforged Engine card on the Graphics tab; while
+     it is on, GeneralsZHActivity never loads libmainrf60.so (the standard
+     engine runs, whatever the 60-steps pref says) and ModManager (phase 2)
+     keeps the bundled mod switched off -- together the stock identity
+     GeneralsOnline lobbies check for; the card's strings in every locale
 The phase-3 engine change (locomotor carry-over, ThingTemplate.cpp) is NOT
 here: it ships as ci/patches/engine-carryover.patch and is applied with
 `git apply` before this script runs.
@@ -40,8 +46,8 @@ print('surgery target tree:', SRC)
 # ---------------- Phase 1a: applicationId + version ----------------
 edit('android/app/build.gradle', [
     ("applicationId 'com.generalsx.zerohour'", f"applicationId '{NEW_ID}'"),
-    ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 7)'),
-    ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.6')"),
+    ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 8)'),
+    ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.7')"),
 ])
 
 # ---------------- Phase 1b: native hardcoded data paths ----------------
@@ -241,6 +247,128 @@ for d in os.listdir(resdir):
     open(p, 'w', encoding='utf-8').write('\n'.join(lines))
     print('rf60 strings', os.path.join(d, 'strings.xml'))
 
+# ---------------- Phase 1f: Online Mode launcher option (v1.7) ----------------
+# GeneralsOnline lobbies gate a join on two CRCs (see the wave-8 record):
+# exe_crc (engine version + the stock .scb scripts; engine code is never
+# hashed) and ini_crc (every INI line read at init). This build reads as a
+# different game to the lobby whenever the bundled Reforged mod is mounted
+# (its INI lines enter ini_crc and the host refuses the Community Patch
+# whenever any data mod is on) or the 60-steps engine runs (its version
+# stamp enters exe_crc). Online mode packages the stock identity in one
+# switch: pref reforged_online_mode (default OFF) -- while it is on,
+# ModManager (phase 2) keeps the bundled mod switched off through the same
+# order prefs the Mods screen uses, and GeneralsZHActivity never loads
+# libmainrf60.so. The player's own reforged_60_steps pref is never
+# overwritten: the veto lives in the launch decision, not in the pref.
+edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
+    ("""    static void setReforged60(android.content.Context ctx, boolean on) {
+        ctx.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean(PREF_REFORGED_60, on)
+            .apply();
+    }""",
+     """    static void setReforged60(android.content.Context ctx, boolean on) {
+        ctx.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean(PREF_REFORGED_60, on)
+            .apply();
+    }
+
+    // GeneralsX @feature Zero Hour Reforged 12/11/2026 Online mode: while
+    // it is on, GeneralsOnline lobbies must see this build exactly as a
+    // stock one -- the bundled Reforged mod switched off (ModManager,
+    // phase 2) and the standard engine loaded (GeneralsZHActivity). Its
+    // own pref, default OFF; the 60-steps pref is never rewritten by it.
+    static final String PREF_REFORGED_ONLINE = "reforged_online_mode";
+
+    static boolean getOnlineMode(android.content.Context ctx) {
+        return ctx.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getBoolean(PREF_REFORGED_ONLINE, false);
+    }
+
+    static void setOnlineMode(android.content.Context ctx, boolean on) {
+        ctx.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean(PREF_REFORGED_ONLINE, on)
+            .apply();
+    }"""),
+    ('                buildReforged60Section(page);',
+     """                buildReforged60Section(page);
+                buildOnlineModeSection(page);"""),
+    ("""        sw.setOnCheckedChangeListener((button, checked) -> setReforged60(this, checked));
+        UiKit.helpText(content, getString(R.string.setup_reforged60_help));
+    }""",
+     """        sw.setOnCheckedChangeListener((button, checked) -> setReforged60(this, checked));
+        UiKit.helpText(content, getString(R.string.setup_reforged60_help));
+    }
+
+    // GeneralsX @feature Zero Hour Reforged 12/11/2026 The Online Mode
+    // card, directly under the Reforged Engine card on the Graphics tab.
+    // Zero Hour only, like the card above it -- but deliberately NO
+    // library-presence gate: the mod half of the mode matters even on a
+    // build without libmainrf60.so. Toggling writes the pref and hands the
+    // mod state to ModManager.applyOnlineMode, which snapshots the
+    // bundled mod's switch state on entry and restores it on exit.
+    private void buildOnlineModeSection(LinearLayout root) {
+        if (isGeneralsSelected(this)) {
+            return;
+        }
+        LinearLayout content = UiKit.card(root);
+        UiKit.sectionHeader(content, R.drawable.ic_gzh_chip,
+            getString(R.string.setup_card_online_mode), true);
+        com.google.android.material.materialswitch.MaterialSwitch sw = UiKit.switchRow(content,
+            getString(R.string.setup_online_mode_title), getString(R.string.setup_online_mode_desc));
+        sw.setChecked(getOnlineMode(this));
+        sw.setOnCheckedChangeListener((button, checked) -> {
+            setOnlineMode(this, checked);
+            ModManager.applyOnlineMode(this, checked);
+        });
+        UiKit.helpText(content, getString(R.string.setup_online_mode_help));
+    }"""),
+])
+
+edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java', [
+    ("""        // the standard engine rather than failing to start.
+        if (!SetupActivity.isGeneralsSelected(this)
+                && SetupActivity.getReforged60(this)""",
+     """        // the standard engine rather than failing to start. Online mode
+        // (v1.7) vetoes this branch without touching the player's own
+        // 60-steps pref: while it is on, the standard engine always runs.
+        if (!SetupActivity.isGeneralsSelected(this)
+                && SetupActivity.getReforged60(this)
+                && !SetupActivity.getOnlineMode(this)"""),
+])
+
+# Online card strings in every locale, inserted right after the 60-steps
+# help line phase 1e put in (the anchor string name exists in all locales).
+_ONLINE_STRINGS_EN = [
+    ('setup_card_online_mode', 'Online Mode'),
+    ('setup_online_mode_title', 'Online mode'),
+    ('setup_online_mode_desc', 'Turns the Reforged mod off and uses the standard engine, so GeneralsOnline lobbies accept this build as a standard one.'),
+    ('setup_online_mode_help', 'Online lobbies only accept the standard data and engine. While online mode is on, the standard engine is used even if the 60-steps switch is on. Turn it off and the mod and your engine choice come back exactly as they were.'),
+]
+_ONLINE_STRINGS_AR = [
+    ('setup_card_online_mode', 'وضع الأونلاين'),
+    ('setup_online_mode_title', 'وضع الأونلاين'),
+    ('setup_online_mode_desc', 'يوقف مود ريفورجيد ويستخدم المحرك القياسي، فتقبل ردهات GeneralsOnline هذه النسخة بوصفها نسخة قياسية.'),
+    ('setup_online_mode_help', 'ردهات الأونلاين لا تقبل إلا البيانات والمحرك القياسيين. ما دام وضع الأونلاين يعمل، يُستخدم المحرك القياسي حتى لو كان مفتاح الـ60 خطوة يعمل. أوقف الوضع فيعود المود واختيار المحرك تمامًا كما كانا.'),
+]
+for d in os.listdir(resdir):
+    p = os.path.join(resdir, d, 'strings.xml')
+    if not (d.startswith('values') and os.path.isfile(p)):
+        continue
+    s = open(p, encoding='utf-8').read()
+    if 'name="setup_card_online_mode"' in s:
+        continue
+    entries = _ONLINE_STRINGS_AR if d == 'values-ar' else _ONLINE_STRINGS_EN
+    block = ''.join(f'\n    <string name="{n}">{t}</string>' for n, t in entries)
+    lines = s.split('\n')
+    idx = next((i for i, ln in enumerate(lines) if 'name="setup_reforged60_help"' in ln), None)
+    if idx is None:
+        idx = next(i for i, ln in enumerate(lines) if '</resources>' in ln)
+        lines.insert(idx, block.lstrip('\n'))
+    else:
+        lines.insert(idx + 1, block.lstrip('\n'))
+    open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+    print('online strings', os.path.join(d, 'strings.xml'))
+
 # ---------------- post-check: no old-id native paths remain ----------------
 leftover = []
 for f in ['Core/GameEngine/Include/Common/GXControlScheme.h',
@@ -255,4 +383,4 @@ for f in ['Core/GameEngine/Include/Common/GXControlScheme.h',
 if leftover:
     sys.exit(f'OLD-ID PATHS REMAIN in: {leftover}')
 
-print('SURGERY (phases 1a-1e) DONE')
+print('SURGERY (phases 1a-1f) DONE')
