@@ -16,7 +16,9 @@
 #   PAYLOAD_DIR       stage C2: directory holding the engine selfcheck
 #                     payloads under their final lib*.so names; every file
 #                     in it is packaged into lib/arm64-v8a/ next to
-#                     libmain.so, where the shim finds and executes them.
+#                     libmain.so. The shim finds and executes the depth
+#                     payload; the frame payload is a shared library its
+#                     own SDLActivity (FrameCheckActivity) loads.
 #                     A renderer build without its payloads is a broken
 #                     artifact, so a set-but-missing/empty PAYLOAD_DIR
 #                     fails the packaging loudly.
@@ -67,6 +69,7 @@ fi
 mkdir -p "$WORK/classes"
 find "$JAVA_SRC_DIR" -name '*.java' > "$WORK/sources.txt"
 echo "$PROBE_DIR/ProbeMainActivity.java" >> "$WORK/sources.txt"
+echo "$PROBE_DIR/FrameCheckActivity.java" >> "$WORK/sources.txt"
 echo "java sources:"; cat "$WORK/sources.txt"
 JAVAC_CP="$ANDROID_JAR"
 if [ -n "${EXTRA_CP:-}" ]; then JAVAC_CP="$JAVAC_CP:$EXTRA_CP"; fi

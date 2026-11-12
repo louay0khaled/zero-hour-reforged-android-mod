@@ -29,8 +29,14 @@ import java.util.Locale;
  *   - "Run GPU probe" (C0): upstream's SDL GPU capability probe.
  *   - "Run renderer selfcheck" (C2, shown only when the selfcheck
  *     payloads are packaged in this APK): the Reforged engine's own
- *     sdl_gpu_frame/depth_format selfchecks, run by the native shim as
- *     child processes.
+ *     sdl_gpu_frame/depth_format selfchecks. Route B (plan section
+ *     10): the depth selfcheck still runs as a child process of the
+ *     native shim's activity, but the frame selfcheck - which died
+ *     inside SDL_Init as a bare child process - now runs as a shared
+ *     library under its own SDLActivity (FrameCheckActivity, separate
+ *     process) and leaves its output in frame-result.txt. This
+ *     launcher chains the two activities and merges both halves into
+ *     probe-result.txt under the renderer's usual verdict line.
  *
  * The choice reaches the native side through harness-mode.txt in the same
  * directory, rewritten on every tap. All UI is built in code; the app
@@ -88,8 +94,7 @@ public class ProbeMainActivity extends Activity {
         if (rendererPayloadPresent()) {
             Button runRenderer = new Button(this);
             runRenderer.setText("Run renderer selfcheck");
-            runRenderer.setOnClickListener(v -> startInstrument("renderer",
-                    "Running... the engine selfchecks run; when they finish you return here and their verdict appears."));
+            runRenderer.setOnClickListener(v -> startRenderer());
             root.addView(runRenderer);
         }
 
@@ -130,6 +135,10 @@ public class ProbeMainActivity extends Activity {
     private void startInstrument(String harness, String busyText) {
         long now = System.currentTimeMillis();
         prefs().edit().putLong("run_started_at", now).putString("last_harness", harness).apply();
+        if (!"renderer".equals(harness)) {
+            // A non-renderer run abandons any half-finished renderer chain.
+            prefs().edit().putInt("renderer_phase", 0).apply();
+        }
         writeHarnessMode(harness);
         appendLog("starting " + harness + " activity (Run tapped)");
         mLaunchedChild = true;
@@ -138,9 +147,29 @@ public class ProbeMainActivity extends Activity {
         startActivity(new Intent(this, org.libsdl.app.SDLActivity.class));
     }
 
+    // Route B renderer launch: clear the previous run's frame/depth
+    // evidence files (so a stale frame-result.txt can never be merged
+    // as this run's), mark phase 1 (the harness activity runs the
+    // depth half), then take the normal launch path. onResume chains
+    // phase 2 (FrameCheckActivity) when the harness activity returns,
+    // and merges when that returns.
+    private void startRenderer() {
+        File dir = getExternalFilesDir(null);
+        if (dir != null) {
+            deleteQuietly(new File(dir, "frame-result.txt"));
+            deleteQuietly(new File(dir, "renderer-depth.txt"));
+        }
+        prefs().edit().putInt("renderer_phase", 1).apply();
+        startInstrument("renderer",
+                "Running... two screens open in turn: first the harness (depth selfcheck), "
+                + "then the frame selfcheck in its own screen. When both finish you return "
+                + "here and the merged verdict appears.");
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
+        boolean returnedFromChild = mLaunchedChild;
         if (mLaunchedChild) {
             mLaunchedChild = false;
             File result = resultFile();
@@ -152,7 +181,118 @@ public class ProbeMainActivity extends Activity {
                 appendLog("resumed WITHOUT a fresh " + harness + " result - the last run left no output file");
             }
         }
+        // Route B renderer chain. Phase 1 -> 2 fires only on the resume
+        // that follows the harness activity, so a cold start with a
+        // stale phase 1 never launches anything unasked. Phase 2 merges
+        // on any resume that finds it set: normally the return from
+        // FrameCheckActivity, but if this process died while the frame
+        // activity ran, the merge still happens here on relaunch.
+        String chainHarness = prefs().getString("last_harness", "gpu-probe");
+        int phase = prefs().getInt("renderer_phase", 0);
+        if ("renderer".equals(chainHarness) && phase == 1 && returnedFromChild) {
+            prefs().edit().putInt("renderer_phase", 2).apply();
+            appendLog("depth half finished; starting frame selfcheck activity (route B)");
+            mLaunchedChild = true;
+            mMode = MODE_AUTO;
+            mResultView.setText("Depth selfcheck done. Running the frame selfcheck in its own screen...");
+            startActivity(new Intent(this, FrameCheckActivity.class));
+            return;
+        }
+        if ("renderer".equals(chainHarness) && phase == 2) {
+            prefs().edit().putInt("renderer_phase", 0).apply();
+            mergeRendererResults();
+        }
         showContent();
+    }
+
+    // Route B merge: the frame activity's process has exited (or died).
+    // Fold frame-result.txt and the depth half's captured output into
+    // probe-result.txt under the same closing line the combined runs
+    // always used, and append the frame section to the error log so
+    // the forensic record holds both halves. The frame file is then
+    // deleted - it has been consumed, and the next run must never
+    // mistake it for its own.
+    private void mergeRendererResults() {
+        File dir = getExternalFilesDir(null);
+        if (dir == null) {
+            appendLog("renderer merge skipped - no external files directory");
+            return;
+        }
+        File frameFile = new File(dir, "frame-result.txt");
+        String frameText;
+        String frameCode;
+        if (frameFile.isFile() && frameFile.length() > 0) {
+            frameText = readFully(frameFile);
+            frameCode = parseFrameCode(frameText);
+        } else {
+            frameText = "(the frame selfcheck produced no frame-result.txt - its process died "
+                    + "before its entry could write, or the storage path was unavailable)\n";
+            frameCode = "no result file";
+        }
+        File depthCodeFile = new File(dir, "renderer-depth.txt");
+        String depthCode = depthCodeFile.isFile() ? readFully(depthCodeFile).trim() : "unknown";
+        if (depthCode.isEmpty()) {
+            depthCode = "unknown";
+        }
+        File result = resultFile();
+        String depthText = (result != null && result.isFile())
+                ? readFully(result)
+                : "(the depth half left no captured output)\n";
+        String merged = frameText
+                + (frameText.endsWith("\n") ? "" : "\n")
+                + "\n[harness] --- depth selfcheck (child process of the harness activity) ---\n"
+                + depthText
+                + (depthText.endsWith("\n") ? "" : "\n")
+                + "[harness] payload exit codes: frame " + frameCode + ", depth " + depthCode + "\n";
+        if (result != null) {
+            try (FileOutputStream out = new FileOutputStream(result, false)) {
+                out.write(merged.getBytes("UTF-8"));
+                out.getFD().sync();
+            } catch (Throwable ignored) {
+                // The log append below still carries the verdict.
+            }
+        }
+        appendRawLog("\n===== renderer frame section (frame-result.txt, written by the FrameCheckActivity process) =====\n"
+                + frameText
+                + (frameText.endsWith("\n") ? "" : "\n")
+                + "===== renderer frame section end =====\n");
+        appendLog("renderer merge complete; payload exit codes: frame " + frameCode + ", depth " + depthCode);
+        deleteQuietly(frameFile);
+    }
+
+    // The frame payload's verdict channel: the entry TU appends a
+    // "[framecheck] body returned N" trailer (SDLActivity never hands
+    // SDL_main's return value to the launcher), and its crash handler
+    // appends a "[crumb] CRASH: signal S ..." line when it dies by one.
+    private static String parseFrameCode(String frameText) {
+        String marker = "[framecheck] body returned ";
+        int at = frameText.lastIndexOf(marker);
+        if (at >= 0) {
+            int i = at + marker.length();
+            int j = i;
+            if (j < frameText.length() && frameText.charAt(j) == '-') {
+                j++;
+            }
+            while (j < frameText.length() && Character.isDigit(frameText.charAt(j))) {
+                j++;
+            }
+            if (j > i) {
+                return frameText.substring(i, j);
+            }
+        }
+        String crash = "CRASH: signal ";
+        int c = frameText.lastIndexOf(crash);
+        if (c >= 0) {
+            int i = c + crash.length();
+            int j = i;
+            while (j < frameText.length() && Character.isDigit(frameText.charAt(j))) {
+                j++;
+            }
+            if (j > i) {
+                return "crashed (signal " + frameText.substring(i, j) + ")";
+            }
+        }
+        return "unknown";
     }
 
     // ------------------------------------------------------------------
@@ -335,6 +475,34 @@ public class ProbeMainActivity extends Activity {
             }
         } catch (Throwable ignored) {
             // Logging must never take the launcher down.
+        }
+    }
+
+    // Raw multi-line append to the error log, no timestamp prefix -
+    // used by the route B merge to fold the frame activity's own
+    // output section into the forensic record verbatim.
+    private void appendRawLog(String text) {
+        try {
+            File log = logFile();
+            if (log == null) {
+                return;
+            }
+            try (FileOutputStream out = new FileOutputStream(log, true)) {
+                out.write(text.getBytes("UTF-8"));
+                out.getFD().sync();
+            }
+        } catch (Throwable ignored) {
+            // Logging must never take the launcher down.
+        }
+    }
+
+    private static void deleteQuietly(File f) {
+        try {
+            if (f != null && f.isFile()) {
+                f.delete();
+            }
+        } catch (Throwable ignored) {
+            // A stale evidence file is untidy, never fatal.
         }
     }
 

@@ -76,24 +76,28 @@ engine's real renderer initialises on the phone — not a proxy:
   after `vendor.sh`), builds a host `build_fingerprint` (C1 blocker B4),
   and compiles both targets with NDK r27c — the exact sequence rehearsed
   locally before this wiring landed (record: stage-c-c1-plan.md §7).
-- Packaging: the two binaries ride in the APK as
+- Packaging: the two payloads ride in the APK as
   `libsdl_gpu_frame_selfcheck.so` / `libsdl_gpu_depth_format_selfcheck.so`
   next to `libmain.so` (the manifest's `extractNativeLibs=true` makes
-  them real executable files). They are AArch64 PIEs needing only system
-  libraries.
+  them real files). The depth payload is an AArch64 PIE needing only
+  system libraries; the frame payload is an AArch64 shared library
+  (route B, below) carrying its own statically linked SDL, likewise
+  needing only system libraries.
 - Running: the launcher shows a **Run renderer selfcheck** button only
   when the payloads are packaged. A tap writes `renderer` into
-  `harness-mode.txt`; the shim then runs both payloads as **child
-  processes** (frame first) with `SDL_VIDEODRIVER=offscreen`, teeing
-  their output into the same `probe-result.txt` / `probe-log.txt`
-  plumbing, and the run's exit code is the frame selfcheck's when
-  nonzero, else the depth one's (0 pass, 1 fail, 77 skip — the
-  payloads' own convention). Child processes, not in-process linking:
-  the engine closure carries its own vendored, statically linked SDL
-  while the harness runs on the shared SDL — two SDL implementations in
-  one process is the hazard the stage-C plan flags — and a dying payload
-  cannot take the harness (and its log) down with it. Deviation from
-  the §6 sketch recorded in stage-c-c1-plan.md §7.
+  `harness-mode.txt`; the shim then runs the depth payload as a **child
+  process** with `SDL_VIDEODRIVER=offscreen`, teeing its output into
+  the same `probe-result.txt` / `probe-log.txt` plumbing and recording
+  its exit code in `renderer-depth.txt`. The launcher then chains the
+  frame selfcheck's own activity (route B, below) and merges both
+  halves into `probe-result.txt`. Exit codes keep the payloads' own
+  convention (0 pass, 1 fail, 77 skip). Separate processes throughout,
+  never in-process linking: the engine closure carries its own
+  vendored, statically linked SDL while the harness runs on the shared
+  SDL — two SDL implementations in one process is the hazard the
+  stage-C plan flags — and a dying payload cannot take the harness
+  (and its log) down with it. Deviation from the §6 sketch recorded
+  in stage-c-c1-plan.md §7.
 - Frame-entry fix (first device run, 2026-11-12): the depth payload
   passed (exit 0) but the frame payload **skipped at startup with
   exit 77** — `SDL_Init: Application didn't initialize properly, did
@@ -117,8 +121,9 @@ engine's real renderer initialises on the phone — not a proxy:
   never flushes it, so the silence localised the crash only to
   "somewhere before the first stdio flush". The entry patch now also
   carries section-9 instrumentation: `zh_probe_crumb` stage
-  breadcrumbs written with `write()` to stderr (the shim tees child
-  stderr into `probe-log.txt` live) between the payload's stages —
+  breadcrumbs written with `write()` (under route B they land in
+  `frame-result.txt`, which the launcher folds into `probe-log.txt`)
+  between the payload's stages —
   entry, SDL_Init, `SdlGpuFrame::Create`'s device call, the first
   checks — and a crash handler in the launcher TU (async-signal-safe
   writes only) that appends the signal, the fault address, the last
@@ -127,6 +132,24 @@ engine's real renderer initialises on the phone — not a proxy:
   The next renderer log therefore either shows
   `payload exit codes: frame 0, depth 0` (PASS) or names the exact
   stage that dies. The instrumentation stays until the PASS lands.
+- Route B (third device run, 2026-11-12): the instrumented log named
+  the wall exactly — breadcrumbs `entry → main-ready → init-begin`,
+  then `CRASH: signal 11 at address 0x0; last stage: init-begin`: the
+  crash is inside `SDL_Init` itself, in a process with no Java side.
+  The pre-committed §9.8 rule fired, and the frame payload moved into
+  SDLActivity — the entry model the real game will use. The entry
+  patch now builds it as a shared library exporting `SDL_main`; the
+  app declares `FrameCheckActivity` (an SDLActivity subclass naming
+  that one library) in its own process
+  (`android:process=":framecheck"`). The entry TU redirects the body's
+  output into `frame-result.txt` in the external files directory (an
+  activity process's stdout is logcat, which the harness cannot read)
+  and appends a `[framecheck] body returned N` trailer — the
+  exit-code channel, since SDLActivity never hands SDL_main's return
+  value to the launcher. The launcher chains the two activities,
+  folds the frame section into `probe-log.txt`, and writes the merged
+  `probe-result.txt`; PASS is still the closing line
+  `payload exit codes: frame 0, depth 0`.
 - `device_mode` does **not** apply to the payloads: they create their
   device inside the engine, through the fixed call site. The log's
   harness line says so on every renderer run.

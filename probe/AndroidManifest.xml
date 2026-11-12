@@ -29,5 +29,18 @@
             android:exported="false"
             android:configChanges="orientation|keyboardHidden|keyboard|navigation|screenSize|screenLayout|smallestScreenSize|density|layoutDirection|locale|fontScale|uiMode"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
+
+        <!-- Stage C2 route B: the frame selfcheck's own SDLActivity
+             (subclass naming its library), in a SEPARATE PROCESS so
+             the payload's statically linked SDL never shares a
+             process with the harness's shared SDL. The launcher
+             chains it after the harness activity and merges its
+             frame-result.txt into the verdict. -->
+        <activity
+            android:name=".FrameCheckActivity"
+            android:exported="false"
+            android:process=":framecheck"
+            android:configChanges="orientation|keyboardHidden|keyboard|navigation|screenSize|screenLayout|smallestScreenSize|density|layoutDirection|locale|fontScale|uiMode"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
     </application>
 </manifest>

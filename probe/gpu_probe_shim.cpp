@@ -11,23 +11,25 @@
  *     CMakeLists.txt; the probe source itself is byte-identical to
  *     upstream and SHA-256-verified in CI).
  *
- *   - renderer (stage C2): upstream's own engine selfchecks
- *     (sdl_gpu_frame_selfcheck + sdl_gpu_depth_format_selfcheck, built
- *     from the pinned Reforged tree by the workflow and packaged next to
- *     this library as lib*.so PIEs), run as CHILD PROCESSES. Stage
- *     C1/C2 deviation, recorded in stage-c-c1-plan.md section 7: plan
- *     section 6 sketched linking the selfcheck TU into this library, but
- *     C1's build showed the engine closure carries its own vendored,
- *     statically linked SDL while this harness runs on the shared SDL —
- *     two SDL implementations in one process is the hazard the stage-C
- *     plan itself flags (its section 3.2), and the payloads as linked
- *     need only system libraries (libm/libdl/liblog/libandroid/libc).
- *     Child processes keep the instruments separate and buy crash
- *     isolation for free: a dying payload cannot take the harness (and
- *     its log) down with it. The children run headless with
- *     SDL_VIDEODRIVER=offscreen (the vendored SDL compiles that driver
- *     in; the selfchecks are offscreen tests by upstream design) and
- *     with the working directory set to the app's files directory.
+ *   - renderer (stage C2): upstream's own engine selfchecks, split
+ *     across two processes since route B (plan section 10). THIS shim
+ *     runs only the depth-format selfcheck, as a CHILD PROCESS: it
+ *     never initialises SDL, so the bare-process model was never its
+ *     problem. The frame selfcheck — the one that creates a GPU device
+ *     through the engine's fixed call site — is a shared library whose
+ *     SDL_main runs under its own SDLActivity (FrameCheckActivity, a
+ *     separate process, so its statically linked SDL never shares a
+ *     process with this harness's shared SDL: the two-SDL hazard of
+ *     plan section 3.2, avoided by isolation instead). The launcher
+ *     chains that activity after this one and merges its
+ *     frame-result.txt into the verdict. History: plan section 6
+ *     sketched linking the selfcheck TU into this library; section 7
+ *     ran both payloads as child processes of this shim instead; the
+ *     frame payload then died inside SDL_Init in a bare process
+ *     (sections 8-9), and the pre-committed section 9.8 rule moved it
+ *     into the activity. The depth child runs headless with
+ *     SDL_VIDEODRIVER=offscreen and with the working directory set to
+ *     the app's files directory.
  *
  * Either way the shim captures everything the instrument prints, and
  * leaves the evidence in three places:
@@ -492,19 +494,23 @@ int RunOnePayload(const std::string &dir, const char *fileName, const char *labe
     return 127;
 }
 
-/* The C2 instrument: both engine selfchecks, frame first (it is the one
-   that creates a GPU device through the engine's fixed call site), then
-   the depth-format selection selfcheck. Combined exit code: the frame
-   selfcheck's when it is nonzero, else the depth selfcheck's — 0 pass,
-   1 fail, 77 skip (SDL_Init or device creation declined, in the
-   payload's own printed words). */
+/* The C2 instrument's harness half, route B (plan section 10): the
+   depth-format selection selfcheck as a child process — it never
+   initialises SDL (pure capability-bit logic), so the bare-process
+   model that killed the frame payload inside SDL_Init was never its
+   problem, and its working path stays untouched. The frame selfcheck
+   runs in its own SDLActivity process after this activity returns;
+   the launcher merges frame-result.txt with this half's output into
+   the verdict. The depth exit code is therefore ALSO written to
+   renderer-depth.txt, the one machine-readable fact the launcher's
+   merge needs from this process. Returns the depth code. */
 int RunRendererPayloads()
 {
     const std::string &dir = ExternalDir();
     if (!dir.empty()) {
-        /* A writable working directory for anything the payloads stage,
+        /* A writable working directory for anything the payload stages,
            and a headless video driver for a process with no window and
-           no Java side: the selfchecks are offscreen tests by design. */
+           no Java side: the selfcheck is an offscreen test by design. */
         if (chdir(dir.c_str()) != 0) {
             LogLine("[harness] chdir to the files directory failed; payloads keep the app default cwd");
         }
@@ -515,15 +521,31 @@ int RunRendererPayloads()
         LogLine("[harness] no external storage path; payload cwd/env left at defaults");
     }
     const std::string payloadDir = PayloadDir();
-    int frame = RunOnePayload(payloadDir, "libsdl_gpu_frame_selfcheck.so",
-                              "sdl_gpu_frame_selfcheck", 1, 2);
     int depth = RunOnePayload(payloadDir, "libsdl_gpu_depth_format_selfcheck.so",
-                              "sdl_gpu_depth_format_selfcheck", 2, 2);
-    char summary[256];
+                              "sdl_gpu_depth_format_selfcheck", 1, 1);
+    if (!dir.empty()) {
+        std::string codePath = dir + "renderer-depth.txt";
+        int fd = open(codePath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            char code[24];
+            int len = std::snprintf(code, sizeof(code), "%d\n", depth);
+            if (len > 0) {
+                ssize_t w = write(fd, code, static_cast<size_t>(len));
+                (void)w;
+                fsync(fd);
+            }
+            close(fd);
+        } else {
+            LogLine("[harness] could not write renderer-depth.txt; the launcher merge will report the depth code as unknown");
+        }
+    }
+    char summary[320];
     std::snprintf(summary, sizeof(summary),
-                  "[harness] payload exit codes: frame %d, depth %d\n", frame, depth);
+                  "[harness] depth payload exit code: %d; the frame selfcheck runs in its own "
+                  "SDLActivity process (FrameCheckActivity) - the launcher merges frame-result.txt\n",
+                  depth);
     LogText(summary);
-    return frame != 0 ? frame : depth;
+    return depth;
 }
 
 /* Open the forensic log for this run (rotating first if needed) and write
@@ -557,9 +579,10 @@ void OpenLog()
                   linked / 1000000, (linked / 1000) % 1000, linked % 1000);
     LogText(versions);
     if (g_harness == Harness::Renderer) {
-        LogText("[harness] harness: renderer (engine selfchecks as child processes; the GPU "
-                "device is created inside the payload through the engine's own fixed call "
-                "site - the harness compat forwarder is not in this path)\n");
+        LogText("[harness] harness: renderer, route B (depth selfcheck as a child process "
+                "here; frame selfcheck in its own SDLActivity process, creating its GPU "
+                "device through the engine's own fixed call site - the harness compat "
+                "forwarder is not in either path; the launcher merges frame-result.txt)\n");
     } else {
         LogText("[harness] harness: gpu-probe (upstream sdl_gpu_probe, in-process)\n");
 #if defined(PROBE_DEVICE_COMPAT)
@@ -634,7 +657,8 @@ int main(int argc, char *argv[])
         char tail[224];
         if (g_harness == Harness::Renderer) {
             std::snprintf(tail, sizeof(tail),
-                          "[harness] renderer run finished; combined exit code %d\n", exit_code);
+                          "[harness] renderer run finished; depth exit code %d "
+                          "(frame half runs in its own activity; launcher merges)\n", exit_code);
         } else {
             std::snprintf(tail, sizeof(tail), "[harness] probe exited normally; exit code %d\n",
                           exit_code);
