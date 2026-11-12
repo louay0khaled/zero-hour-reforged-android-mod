@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Zero Hour Reforged — package-id surgery on a pristine MYSOREZ checkout.
-CI version of the v1 local apply-surgery.py (phases 1a/1b/1c/1d/1e/1f):
+CI version of the v1 local apply-surgery.py (phases 1a/1b/1c/1d/1e/1f/1g):
   1a applicationId + version defaults in android/app/build.gradle
   1b native hardcoded /data/user/<uid>/<old id>/files/ paths (7 files)
   1c app_name label in every locale's strings.xml
@@ -15,6 +15,15 @@ CI version of the v1 local apply-surgery.py (phases 1a/1b/1c/1d/1e/1f):
      engine runs, whatever the 60-steps pref says) and ModManager (phase 2)
      keeps the bundled mod switched off -- together the stock identity
      GeneralsOnline lobbies check for; the card's strings in every locale
+  1g Online Mode engine (v1.8): while Online Mode is on, GeneralsZHActivity
+     loads the host's own 60 Hz engine (libmain60.so, built in CI from a
+     pristine second checkout of the pinned tree, SAGE_HIGH_FPS_SIM=ON, no
+     overlay) instead of the standard engine -- the 60 Hz GeneralsOnline
+     population runs exactly that engine, so the session joins it and
+     holds lockstep with it; GeneralsOnlineSession.clientId mirrors the
+     new branch; the upstream UpdateManager engine-override load path is
+     removed (the APK's engines are the only engines); the Online Mode
+     card text (phase 1f strings) says what the mode now does
 The phase-3 engine change (locomotor carry-over, ThingTemplate.cpp) is NOT
 here: it ships as ci/patches/engine-carryover.patch and is applied with
 `git apply` before this script runs.
@@ -46,8 +55,8 @@ print('surgery target tree:', SRC)
 # ---------------- Phase 1a: applicationId + version ----------------
 edit('android/app/build.gradle', [
     ("applicationId 'com.generalsx.zerohour'", f"applicationId '{NEW_ID}'"),
-    ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 8)'),
-    ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.7')"),
+    ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 9)'),
+    ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.8')"),
 ])
 
 # ---------------- Phase 1b: native hardcoded data paths ----------------
@@ -275,7 +284,8 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
     // GeneralsX @feature Zero Hour Reforged 12/11/2026 Online mode: while
     // it is on, GeneralsOnline lobbies must see this build exactly as a
     // stock one -- the bundled Reforged mod switched off (ModManager,
-    // phase 2) and the standard engine loaded (GeneralsZHActivity). Its
+    // phase 2) and the host's own 60 Hz engine loaded (GeneralsZHActivity,
+    // since v1.8; the standard engine in v1.7). Its
     // own pref, default OFF; the 60-steps pref is never rewritten by it.
     static final String PREF_REFORGED_ONLINE = "reforged_online_mode";
 
@@ -341,14 +351,14 @@ edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java',
 _ONLINE_STRINGS_EN = [
     ('setup_card_online_mode', 'Online Mode'),
     ('setup_online_mode_title', 'Online mode'),
-    ('setup_online_mode_desc', 'Turns the Reforged mod off and uses the standard engine, so GeneralsOnline lobbies accept this build as a standard one.'),
-    ('setup_online_mode_help', 'Online lobbies only accept the standard data and engine. While online mode is on, the standard engine is used even if the 60-steps switch is on. Turn it off and the mod and your engine choice come back exactly as they were.'),
+    ('setup_online_mode_desc', 'Turns the Reforged mod off and plays online games on the original 60 Hz engine, so GeneralsOnline lobbies accept this build and 60 Hz games stay in sync.'),
+    ('setup_online_mode_help', 'Online lobbies only accept the standard data. While online mode is on, the Reforged mod stays off and online games run on the original 60 Hz engine \u2014 the same engine the original app ships \u2014 even if the 60-steps switch is on. Turn it off and the mod and your engine choice come back exactly as they were.'),
 ]
 _ONLINE_STRINGS_AR = [
     ('setup_card_online_mode', 'وضع الأونلاين'),
     ('setup_online_mode_title', 'وضع الأونلاين'),
-    ('setup_online_mode_desc', 'يوقف مود ريفورجيد ويستخدم المحرك القياسي، فتقبل ردهات GeneralsOnline هذه النسخة بوصفها نسخة قياسية.'),
-    ('setup_online_mode_help', 'ردهات الأونلاين لا تقبل إلا البيانات والمحرك القياسيين. ما دام وضع الأونلاين يعمل، يُستخدم المحرك القياسي حتى لو كان مفتاح الـ60 خطوة يعمل. أوقف الوضع فيعود المود واختيار المحرك تمامًا كما كانا.'),
+    ('setup_online_mode_desc', 'يوقف مود ريفورجيد ويشغّل مباريات الأونلاين بمحرك الـ60 هرتز الأصلي، فتقبل ردهات GeneralsOnline هذه النسخة وتبقى مباريات الـ60 هرتز متزامنة.'),
+    ('setup_online_mode_help', 'ردهات الأونلاين لا تقبل إلا البيانات القياسية. ما دام وضع الأونلاين يعمل، يبقى مود ريفورجيد موقوفًا وتعمل مباريات الأونلاين بمحرك الـ60 هرتز الأصلي — وهو محرك التطبيق الأصلي نفسه — حتى لو كان مفتاح الـ60 خطوة يعمل. أوقف الوضع فيعود المود واختيار المحرك تمامًا كما كانا.'),
 ]
 for d in os.listdir(resdir):
     p = os.path.join(resdir, d, 'strings.xml')
@@ -369,6 +379,152 @@ for d in os.listdir(resdir):
     open(p, 'w', encoding='utf-8').write('\n'.join(lines))
     print('online strings', os.path.join(d, 'strings.xml'))
 
+# ---------------- Phase 1g: Online Mode engine = host's own 60 Hz (v1.8) ----------------
+# The 60 Hz GeneralsOnline population runs the host's own libmain60.so: its
+# version is unstamped (its exe_crc equals the stock value, which is how
+# those players sit in the normal lobby) and its simulation is the host's
+# HIGH_FPS conversion. The Reforged 60-steps engine can never join them --
+# its version stamp moves exe_crc and its converted simulation is a
+# different stream (wave-8 record, section 7.2). From v1.8 the APK also
+# ships the genuine article: CI builds a pristine second checkout of the
+# pinned tree with SAGE_HIGH_FPS_SIM=ON (no overlay, exactly the host's
+# own build-dual-hz.sh pass 1) and packages its z_generals output as
+# libmain60.so. While Online Mode is on, that is the engine that runs.
+# Offline, nothing changes: the 60-steps pref still rules (libmainrf60.so),
+# and libmain60.so is never loaded outside Online Mode -- in particular
+# sim_hz cannot select it, because phase 1e replaced the sim_hz branch in
+# getLibraries() and GeneralsOnlineActivity's crossplay flow (which writes
+# sim_hz) is disabled by the signed settings in this build.
+edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java', [
+    ("""        // the standard engine rather than failing to start. Online mode
+        // (v1.7) vetoes this branch without touching the player's own
+        // 60-steps pref: while it is on, the standard engine always runs.
+        if (!SetupActivity.isGeneralsSelected(this)
+                && SetupActivity.getReforged60(this)
+                && !SetupActivity.getOnlineMode(this)""",
+     """        // the standard engine rather than failing to start. Online mode
+        // vetoes this branch without touching the player's own 60-steps
+        // pref: while it is on, the branch below runs instead.
+        // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.8) Online
+        // mode's engine: the host's own 60 Hz build (engines[1] is
+        // "main60"), shipped since v1.8 from a pristine second checkout
+        // of the pinned upstream tree (SAGE_HIGH_FPS_SIM=ON, no overlay
+        // -- the host's own build-dual-hz.sh pass 1). A GeneralsOnline
+        // session under it presents exactly a stock dual-Hz install's
+        // identity -- unstamped version (exe_crc), the 60 Hz client id
+        // (GeneralsOnlineSession.clientId mirrors this branch) -- so it
+        // joins the 60 Hz population and holds lockstep with it, which
+        // the Reforged 60-steps engine never can. Zero Hour only, like
+        // the branch below; if the library is somehow missing, fall
+        // through to the standard engine (the v1.7 behaviour) rather
+        // than failing to start.
+        if (!SetupActivity.isGeneralsSelected(this)
+                && SetupActivity.getOnlineMode(this)
+                && new java.io.File(getApplicationInfo().nativeLibraryDir, "lib" + engines[1] + ".so").isFile()) {
+            engine = engines[1];
+        }
+        if (!SetupActivity.isGeneralsSelected(this)
+                && SetupActivity.getReforged60(this)
+                && !SetupActivity.getOnlineMode(this)"""),
+    # The UpdateManager engine override is removed at its only point of
+    # use. Proof it could never fire in this build is in the wave-8
+    # record (section 8.4): the phase-1d channel serves no manifest, and
+    # any manifest would have to be signed with the upstream ECDSA key,
+    # which this project does not hold. The removal makes "the APK's
+    # engines are the only engines" structural instead of circumstantial
+    # -- from v1.8 that also covers libmain60.so, whose whole value online
+    # is being exactly the file this APK installed. UpdateManager itself
+    # is untouched; its checks simply find no loadable engine here.
+    ("""    // GeneralsX @feature Android port 27/09/2026 An engine delivered by UpdateManager (signed
+    // manifest, SHA-256 checked, built against this APK's own libraries) runs instead of the
+    // APK's. Only the engine library is replaced; SDL3 and everything the engine links against
+    // or dlopen()s by name still come from the APK, which is why the manifest has to name the
+    // exact libraries it was built with. Null means the APK's own engine.
+    private String mEngineOverridePath;""",
+     """    // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.8) The
+    // upstream UpdateManager engine override that stood here is REMOVED,
+    // not merely unused: no downloaded engine is ever loaded in this
+    // build, for "main", "main60" or "mainrf60" -- the libraries in the
+    // APK are the only engines. See loadLibraries() below and the wave-8
+    // record, section 8.4."""),
+    ("""    @Override
+    public void loadLibraries() {
+        for (String lib : getLibraries()) {
+            // Signed engine updates are Zero Hour's (UpdateManager.ENGINE_LIBS).
+            if ("main".equals(lib) || "main60".equals(lib)) {
+                int seq = UpdateManager.activeEngineSeq(this);
+                if (seq > 0 && UpdateManager.noteEngineBoot(this, seq)) {
+                    String path = UpdateManager.activeEngineLibrary(this, "lib" + lib + ".so");
+                    if (path != null) {
+                        try {
+                            System.load(path);
+                            mEngineOverridePath = path;
+                            Log.i(TAG, "Loaded updated engine " + seq + ": " + path);
+                            continue;
+                        } catch (UnsatisfiedLinkError e) {
+                            Log.e(TAG, "updated engine " + seq + " failed to load; using the APK's", e);
+                        }
+                    }
+                }
+            }
+            System.loadLibrary(lib);
+        }
+    }
+
+    @Override
+    protected String getMainSharedObject() {
+        return mEngineOverridePath != null ? mEngineOverridePath : super.getMainSharedObject();
+    }""",
+     """    @Override
+    public void loadLibraries() {
+        // Zero Hour Reforged (v1.8): no UpdateManager engine override --
+        // the APK's own libraries always load, exactly as every shipped
+        // build of this project has in fact run (the repointed channel
+        // has never delivered an engine to it).
+        for (String lib : getLibraries()) {
+            System.loadLibrary(lib);
+        }
+    }"""),
+])
+
+# The launcher's GeneralsOnline client id must announce the engine that
+# will actually run (the file's own header comment demands the mirror).
+# Pristine keys it on sim_hz, but this build's getLibraries() has not
+# honoured sim_hz since v1.5 -- with libmain60.so now in the APK, the
+# pristine condition could announce 60 Hz for a session the standard or
+# Reforged engine would run. Key it on the online-mode branch instead:
+# 60 Hz is announced exactly when getLibraries() loads libmain60.so.
+edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsOnlineSession.java', [
+    ("""    static String clientId( Context ctx ) {
+        if (ctx != null
+                && SetupActivity.getSimHz(ctx) == SetupActivity.SIM_HZ_CROSSPLAY
+                && new java.io.File(ctx.getApplicationInfo().nativeLibraryDir,
+                        "libmain60.so").isFile()) {
+            return "gen_online_60hz";
+        }
+        return CLIENT_ID;
+    }""",
+     """    static String clientId( Context ctx ) {
+        // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.8) The
+        // mirror rule above now resolves through Online Mode: this
+        // build's GeneralsZHActivity.getLibraries() has not honoured
+        // sim_hz since v1.5 (the Reforged 60-steps branch replaced the
+        // crossplay branch, and the crossplay flow that writes sim_hz is
+        // disabled by the signed settings), so keying the id on sim_hz
+        // could announce an engine that will not run. The 60 Hz engine
+        // runs when Online Mode is on and libmain60.so is in the APK --
+        // the exact condition under which getLibraries() loads it --
+        // and in no other case.
+        if (ctx != null
+                && SetupActivity.getOnlineMode(ctx)
+                && new java.io.File(ctx.getApplicationInfo().nativeLibraryDir,
+                        "libmain60.so").isFile()) {
+            return "gen_online_60hz";
+        }
+        return CLIENT_ID;
+    }"""),
+])
+
 # ---------------- post-check: no old-id native paths remain ----------------
 leftover = []
 for f in ['Core/GameEngine/Include/Common/GXControlScheme.h',
@@ -383,4 +539,4 @@ for f in ['Core/GameEngine/Include/Common/GXControlScheme.h',
 if leftover:
     sys.exit(f'OLD-ID PATHS REMAIN in: {leftover}')
 
-print('SURGERY (phases 1a-1f) DONE')
+print('SURGERY (phases 1a-1g) DONE')
