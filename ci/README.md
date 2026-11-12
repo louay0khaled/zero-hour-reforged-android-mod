@@ -62,18 +62,33 @@ every run and applies this repo's small overlay on top:
      session runs at normal game speed instead of half, and the speed
      slider stays a relative control in both engines. Value-identical in
      the 30-steps build.
+   - `patches/rf60-frontend.patch` — the M2 wave-8 front-end cadence fix
+     (v1.7), applied last: in the flipped build only, the shell branch of
+     GameEngine::update asks the frame pacer for the build's own
+     LOGICFRAMES_PER_SECOND, so menus, settings and the online lobby run
+     at 60 like the host's own 60 Hz build (which gets there by raising
+     GENERALS_ONLINE_HIGH_FPS_LIMIT -- a macro this build must not raise:
+     it also seeds GeneralsOnline session latency data and is
+     static_asserted equal to WWSyncPerSecond). The standard library
+     compiles the pristine line, unchanged.
    - `patches/package-android-zh-gradle-task.patch` — lets the upstream
      packaging script run `assembleRelease` (via `GX_GRADLE_TASK`), checks
      the release output path, and adds the `GX_REFORGED60_LIB` knob that
      stages the flipped engine as `libmainrf60.so` (never `libmain60.so`).
    - `apply-surgery.py` — new applicationId `com.louay.zerohour.reforged`,
-     version 7 / "1.6", the native hardcoded data paths repointed to the
+     version 8 / "1.7", the native hardcoded data paths repointed to the
      new id, the "Zero Hour Reforged" label in all locales, the OTA
      update channel pointed at this repo (so upstream engine updates can
-     never overwrite the patched build), and (phase 1e) the Reforged
+     never overwrite the patched build), (phase 1e) the Reforged
      60-steps launcher switch: pref `reforged_60_steps` (default OFF)
      replacing the dead Simulation Rate card on the Graphics tab, shown
-     only when Zero Hour is selected and `libmainrf60.so` is in the APK.
+     only when Zero Hour is selected and `libmainrf60.so` is in the APK,
+     and (phase 1f, v1.7) the Online Mode switch under it: pref
+     `reforged_online_mode` (default OFF) -- while it is on,
+     GeneralsZHActivity never loads `libmainrf60.so` and phase 2 keeps
+     the bundled mod switched off, so GeneralsOnline lobbies see this
+     build exactly as a stock one; the player's 60-steps pref is never
+     overwritten, and the card's strings ship in all locales.
    - `apply-phase2.py` — bundles the Reforged data as ONE merged package
      (`ci/assets/!Reforged-v1.big`, sha256-verified by the script before
      use) and adds the launcher code that installs + enables it as a single
@@ -85,7 +100,13 @@ every run and applies this repo's small overlay on top:
      app-installed `ReforgedFixes` / `ReforgedBalance` folders and their
      stored-order entries once the merged folder is in place. The pair was
      merged because the launcher's mod analysis warned about the two mods
-     on every visit (they share INI files by design).
+     on every visit (they share INI files by design). For Online Mode
+     (v1.7) the generated code also carries `applyOnlineMode`: entering
+     the mode snapshots the merged mod's switch state and switches it off
+     through the same stored-order mechanism the Mods screen uses, and
+     exiting restores the snapshot exactly (a hand-disabled mod stays
+     disabled); a first install made while the mode is on installs the
+     mod switched off with the snapshot pre-recorded as enabled.
 3. **Build** exactly like upstream's own `build-android.yml` (same pinned
    NDK/Gradle/vcpkg/CMake preset `android-vulkan`, arm64), with the v1
    build's target list (both `libmain.so` and `libgenerals.so`) and strip
