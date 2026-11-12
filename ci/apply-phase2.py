@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""Phase 2 (CI version): bundle the Reforged data packages as APK assets and
-install them as enabled mods on first game-folder setup:
-  - fixes:   !ReforgedFixes-v3.big   (engine-native variant of the v3 package:
-             v3 content with the 16 data-side Locomotor restatement blocks
-             dropped -- the patched engine carries the sets over natively and
-             restating them would now throw in parseLocomotorSet). Bytes live
-             in this repo at ci/assets/!ReforgedFixes-v3.big.
-  - balance: !ReforgedBalance-v2.big (the ENGINE-NATIVE variant of the v2
-             package: published v2 content with its 38 data-side Locomotor
-             restatement blocks dropped -- with the patched engine those
-             restatements throw in parseLocomotorSet and the game does not
-             start; see the project report start-crash-investigation.md).
-             Bytes live in this repo at ci/assets/!ReforgedBalance-v2.big.
-             The published packages/!ReforgedBalance-v2.big is NOT used here:
-             it stays byte-identical for the unpatched engine.
-Balance mounts after fixes (end of the mod order = highest priority), matching
-the verified combined state where balance entries supersede fixes entries.
+"""Phase 2 (CI version): bundle the Reforged data as ONE merged package and
+install it as a single enabled mod on first game-folder setup:
+  - merged: !Reforged-v1.big -- the two engine-native packages merged into a
+            single archive: every path of !ReforgedFixes-v3.big (sha256
+            0f314b9e...) and !ReforgedBalance-v2.big (sha256 c736128f...),
+            with the balance bytes winning the 102 shared paths, exactly as
+            when the pair mounted fixes-first / balance-last. Mechanical
+            equivalence of the merge is proven path-by-path in
+            hidden_files/ws2-mod-merge.md. Bytes live in this repo at
+            ci/assets/!Reforged-v1.big.
+One mod replaces the pair because the launcher's mod analysis warns about
+every pair of enabled mods that change the same INI files (the pair shared
+102 by design), and pre-v1.1 (no kind declaration) it even flagged the pair
+as two total conversions. The migration in the generated
+ensureBundledReforgedData removes the app-installed legacy folders
+(ReforgedFixes / ReforgedBalance) and their stored-order entries once the
+merged folder is in place.
 
 Layout: REFORGED_SRC (env) points at the MYSOREZ checkout; default is the
 parent of this repo's checkout (the CI workflow checks the overlay repo out
-into <workspace>/reforged-overlay and MYSOREZ at <workspace>). Both assets are
+into <workspace>/reforged-overlay and MYSOREZ at <workspace>). The asset is
 sha256-verified before anything is copied."""
 import hashlib, os, shutil, sys
 
@@ -27,8 +27,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 OVERLAY = os.path.dirname(_HERE)
 SRC = os.environ.get('REFORGED_SRC') or os.path.dirname(OVERLAY)
 JAVA = os.path.join(SRC, 'android/app/src/main/java/com/generalsx/zerohour')
-FIXES_SHA256 = '0f314b9efd5612d707a7a2f3f0ed061541edc5f0e52ee6cb693caf94b14ac6b5'
-BALANCE_SHA256 = 'c736128fd1dc87950445cace87a49fa822928b78c7dd9df0089d1227416bf218'
+MERGED_SHA256 = 'a80534063888a5a22a3c2548d2d7a5d9a6bd7d2df1f88c22744b26668dce680a'
 
 def edit(path, old, new):
     s = open(path, encoding='utf-8').read()
@@ -42,47 +41,43 @@ def sha256_of(p):
 
 print('phase2 target tree:', SRC)
 
-# 0) verify + stage the two bundled packages from this repo
-fix_src = os.path.join(_HERE, 'assets', '!ReforgedFixes-v3.big')
-h = sha256_of(fix_src)
-if h != FIXES_SHA256:
-    sys.exit(f'FIXES (engine-native) SHA MISMATCH: {h}')
-print('fixes engine-native verified:', h)
-bal_src = os.path.join(_HERE, 'assets', '!ReforgedBalance-v2.big')
-h = sha256_of(bal_src)
-if h != BALANCE_SHA256:
-    sys.exit(f'BALANCE (engine-native) SHA MISMATCH: {h}')
-print('balance engine-native verified:', h)
+# 0) verify + stage the merged bundled package from this repo
+merged_src = os.path.join(_HERE, 'assets', '!Reforged-v1.big')
+h = sha256_of(merged_src)
+if h != MERGED_SHA256:
+    sys.exit(f'MERGED SHA MISMATCH: {h}')
+print('merged package verified:', h)
 
 # 1) assets
 asset_dir = os.path.join(SRC, 'android/app/src/main/assets/reforged')
 os.makedirs(asset_dir, exist_ok=True)
-shutil.copy(fix_src, os.path.join(asset_dir, '!ReforgedFixes-v3.big'))
-shutil.copy(bal_src, os.path.join(asset_dir, '!ReforgedBalance-v2.big'))
-for f in ('!ReforgedFixes-v3.big', '!ReforgedBalance-v2.big'):
-    print('asset copied:', f, os.path.getsize(os.path.join(asset_dir, f)), 'bytes')
+shutil.copy(merged_src, os.path.join(asset_dir, '!Reforged-v1.big'))
+print('asset copied:', '!Reforged-v1.big', os.path.getsize(merged_src), 'bytes')
 
 # 2) ModManager.ensureBundledReforgedData: per-package install + enable.
 mm = os.path.join(JAVA, 'ModManager.java')
 method = '''
-    // GeneralsX @feature Zero Hour Reforged 10/11/2026 The Reforged data packages
-    // are bundled in the APK (assets/reforged): the fixes package and the balance
-    // package. The first time a Zero Hour game folder is in place, copy each one
-    // that is not already installed into mods/ and switch it on. End of the order
-    // is the highest priority, so the fixes go first and the balance last (the
-    // balance entries supersede the fixes entries, as in the verified combined
-    // package). A package folder the player installed by hand is never copied
-    // over; like a bundled one it is switched on the first time this app sees
-    // it, and a switch state already recorded for it is never overridden.
-    // A folder this app itself installed is refreshed in place when an app
-    // update ships different bundled bytes, so an updated install never
-    // keeps running the previous version's package.
-    static final String BUNDLED_FIXES_DIR = "ReforgedFixes";
-    static final String BUNDLED_BALANCE_DIR = "ReforgedBalance";
-    private static final String BUNDLED_FIXES_ASSET = "reforged/!ReforgedFixes-v3.big";
-    private static final String BUNDLED_FIXES_FILE = "!ReforgedFixes-v3.big";
-    private static final String BUNDLED_BALANCE_ASSET = "reforged/!ReforgedBalance-v2.big";
-    private static final String BUNDLED_BALANCE_FILE = "!ReforgedBalance-v2.big";
+    // GeneralsX @feature Zero Hour Reforged 12/11/2026 The Reforged data ships
+    // as ONE merged package bundled in the APK (assets/reforged): the fixes
+    // package and the balance package merged into a single archive, every
+    // path byte-identical to the old two-mod stack (balance bytes win the
+    // shared paths). The first time a Zero Hour game folder is in place, copy
+    // it into mods/ if it is not already installed and switch it on. End of
+    // the order is the highest priority. A folder the player installed by
+    // hand is never copied over; like a bundled one it is switched on the
+    // first time this app sees it, and a switch state already recorded for
+    // it is never overridden. A folder this app itself installed is refreshed
+    // in place when an app update ships different bundled bytes.
+    // Migration (v1.6): the pre-merge pair (ReforgedFixes / ReforgedBalance
+    // folders) is removed once the merged folder is in place -- only the
+    // exact folders this app itself installed; a hand-named folder is never
+    // deleted. The stored order is rebuilt from the folders that remain, so
+    // the removed pair's "1|name"/"0|name" entries go with them.
+    static final String BUNDLED_DIR = "Reforged";
+    private static final String BUNDLED_ASSET = "reforged/!Reforged-v1.big";
+    private static final String BUNDLED_FILE = "!Reforged-v1.big";
+    private static final String LEGACY_FIXES_DIR = "ReforgedFixes";
+    private static final String LEGACY_BALANCE_DIR = "ReforgedBalance";
 
     private static File findBundledDir(File root, String needle) {
         File[] children = root.listFiles(File::isDirectory);
@@ -143,8 +138,18 @@ method = '''
         return bos.toByteArray();
     }
 
+    private static void deleteRecursive(File f) {
+        File[] children = f.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                deleteRecursive(child);
+            }
+        }
+        f.delete();
+    }
+
     // GeneralsX @bugfix Zero Hour Reforged 10/11/2026 Refresh a folder this app
-    // itself installed (the caller passes only the exact bundled folder names)
+    // itself installed (the caller passes only the exact bundled folder name)
     // when the bundled content has moved on: an app update replaces the APK
     // but never the mods/ folders, so without this the install would keep the
     // previous version's package forever -- the v1.0 balance folder kept its
@@ -207,78 +212,66 @@ method = '''
         if (root == null) {
             return;
         }
-        final String fixesIni =
-                "name = Reforged Fixes\\n"
-                + "kind = gameplay\\n"
-                + "version = v3\\n"
-                + "author = Reforged (Olcay Seygan) - Android package\\n"
-                + "description = The Reforged engine fixes, bundled with Zero Hour Reforged.\\n";
-        final String balanceIni =
-                "name = Reforged Balance\\n"
-                + "kind = gameplay\\n"
-                + "version = v2\\n"
-                + "author = Reforged (Olcay Seygan) - Android package\\n"
-                + "description = The Reforged balance layer, bundled with Zero Hour Reforged.\\n";
-        File fixesDir = findBundledDir(root, "reforgedfixes");
-        File balanceDir = findBundledDir(root, "reforgedbalance");
-        if (fixesDir == null) {
-            if (installBundled(ctx, root, BUNDLED_FIXES_DIR, BUNDLED_FIXES_ASSET,
-                    BUNDLED_FIXES_FILE, fixesIni)) {
-                fixesDir = new File(root, BUNDLED_FIXES_DIR);
+        final String mergedIni =
+                "name = Reforged\n"
+                + "kind = gameplay\n"
+                + "version = v1\n"
+                + "author = Reforged (Olcay Seygan) - Android package\n"
+                + "description = The Reforged fixes and balance packages merged into one, bundled with Zero Hour Reforged.\n";
+        File mergedDir = findBundledDir(root, "reforged-v1");
+        if (mergedDir == null) {
+            if (installBundled(ctx, root, BUNDLED_DIR, BUNDLED_ASSET,
+                    BUNDLED_FILE, mergedIni)) {
+                mergedDir = new File(root, BUNDLED_DIR);
             }
-        } else if (fixesDir.getName().equals(BUNDLED_FIXES_DIR)) {
+        } else if (mergedDir.getName().equals(BUNDLED_DIR)) {
             // Our own folder: refresh it if this build ships different bytes.
             // A folder the player named themselves is left exactly as it is.
-            refreshBundled(ctx, fixesDir, BUNDLED_FIXES_ASSET,
-                    BUNDLED_FIXES_FILE, fixesIni);
+            refreshBundled(ctx, mergedDir, BUNDLED_ASSET,
+                    BUNDLED_FILE, mergedIni);
         }
-        if (balanceDir == null) {
-            if (installBundled(ctx, root, BUNDLED_BALANCE_DIR, BUNDLED_BALANCE_ASSET,
-                    BUNDLED_BALANCE_FILE, balanceIni)) {
-                balanceDir = new File(root, BUNDLED_BALANCE_DIR);
-            }
-        } else if (balanceDir.getName().equals(BUNDLED_BALANCE_DIR)) {
-            refreshBundled(ctx, balanceDir, BUNDLED_BALANCE_ASSET,
-                    BUNDLED_BALANCE_FILE, balanceIni);
-        }
-        if (fixesDir == null && balanceDir == null) {
+        if (mergedDir == null) {
             return;
         }
-        // GeneralsX @bugfix Zero Hour Reforged 10/11/2026 This step used to run
-        // only when this call had just copied a package in, so a folder the
-        // player had installed by hand counted as done and was never switched
-        // on: the game started plain. It now runs whenever either folder is
-        // there. A Reforged folder is switched on only at its first sight in
-        // this app -- no entry for it in the stored order yet; a folder that
-        // already has an entry keeps the switch it records, on or off.
+        // GeneralsX @feature Zero Hour Reforged 12/11/2026 Migration: the merged
+        // folder is in place, so the pre-merge pair leaves the install. Only
+        // the exact app-installed folders are removed (a hand-named folder is
+        // never deleted, as before); the order rebuild below drops their
+        // stored entries, and a last-enabled pointer at a removed folder is
+        // cleared here (that pref lives in this class).
+        for (String legacyName : new String[]{LEGACY_FIXES_DIR, LEGACY_BALANCE_DIR}) {
+            File legacy = new File(root, legacyName);
+            if (legacy.isDirectory()) {
+                deleteRecursive(legacy);
+            }
+        }
+        String lastEnabled = lastEnabled(ctx);
+        if (LEGACY_FIXES_DIR.equals(lastEnabled) || LEGACY_BALANCE_DIR.equals(lastEnabled)) {
+            ctx.getSharedPreferences(SetupActivity.PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit().remove(PREF_LAST_ENABLED).apply();
+        }
+        // GeneralsX @bugfix Zero Hour Reforged 10/11/2026 A Reforged folder is
+        // switched on only at its first sight in this app -- no entry for it
+        // in the stored order yet; a folder that already has an entry keeps
+        // the switch it records, on or off.
         List<String> stored = readOrder(ctx);
-        boolean fixesKnown = fixesDir != null && hasOrderEntry(stored, fixesDir.getName());
-        boolean balanceKnown = balanceDir != null && hasOrderEntry(stored, balanceDir.getName());
+        boolean mergedKnown = hasOrderEntry(stored, mergedDir.getName());
         List<Mod> mods = listMods(ctx);
-        Mod fixesMod = null;
-        Mod balanceMod = null;
+        Mod mergedMod = null;
         List<Mod> rest = new java.util.ArrayList<>();
         for (Mod mod : mods) {
-            if (fixesDir != null && mod.dir.getName().equals(fixesDir.getName())) {
-                fixesMod = mod;
-            } else if (balanceDir != null && mod.dir.getName().equals(balanceDir.getName())) {
-                balanceMod = mod;
+            if (mod.dir.getName().equals(mergedDir.getName())) {
+                mergedMod = mod;
             } else {
                 rest.add(mod);
             }
         }
         List<Mod> ordered = new java.util.ArrayList<>(rest);
-        if (fixesMod != null) {
-            if (!fixesKnown) {
-                fixesMod.enabled = true;
+        if (mergedMod != null) {
+            if (!mergedKnown) {
+                mergedMod.enabled = true;
             }
-            ordered.add(fixesMod);
-        }
-        if (balanceMod != null) {
-            if (!balanceKnown) {
-                balanceMod.enabled = true;
-            }
-            ordered.add(balanceMod);
+            ordered.add(mergedMod);
         }
         saveOrder(ctx, ordered);
     }
