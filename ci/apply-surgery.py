@@ -15,13 +15,19 @@ phases are:
      ours alone, carrying the Reforged 60-steps engine switch (pref
      reforged_60_steps, default OFF -- the card that sat on the Graphics
      tab in v1.5-v1.8, moved here unchanged in substance) and the bundled
-     Reforged mod switch (phase 2 supplies the state). Their pages are
-     untouched: the Simulation Rate card works again because libmain60.so
-     really ships, GeneralsZHActivity keeps the host's own sim_hz engine
-     selection with the engaged 60-steps engine taking precedence (it is
-     the player's explicit choice on our page), GeneralsOnlineSession's
-     clientId keeps the host's own sim_hz keying with a guard so the
-     60-steps state announces the id its engine actually compiled in, and
+     Reforged mod switch (phase 2 supplies the state). Since v1.10 the
+     engine card carries a second switch, for the enhanced standard
+     engine (libmainrf.so -- the same patched tree at the standard rate,
+     pref reforged_enhanced_30, default OFF); the two engine switches
+     are alternatives and engaging one disengages the other, in the
+     open. Their pages are untouched: the Simulation Rate card works
+     again because libmain60.so really ships, GeneralsZHActivity keeps
+     the host's own sim_hz engine selection with the engaged Reforged
+     engines taking precedence (60-steps first, then the enhanced
+     standard -- they are the player's explicit choices on our page),
+     GeneralsOnlineSession's clientId keeps the host's own sim_hz
+     keying with guards so our engines' states announce the id they
+     actually compiled in, and
      the upstream UpdateManager engine-override load path stays removed
      (kept from v1.8: the APK's engines are the only engines -- an engine
      substitution would silently break the unmodified-base promise).
@@ -39,11 +45,12 @@ libmainrf60.so).
 Modes (env REFORGED_SURGERY_MODE):
   full  (default) -- the base tree: phases 1a-1e + the post-check.
   paths           -- the Reforged-engine tree: phase 1b + the post-check
-                     only (that tree contributes exactly one native
-                     library, libmainrf60.so; its Java/resources are
-                     never packaged, but its engine binary carries the
-                     same hardcoded old-id data paths and must resolve
-                     this app's files directory).
+                     only (that tree contributes the Reforged engine
+                     libraries -- libmainrf60.so and, since v1.10,
+                     libmainrf.so; its Java/resources are never
+                     packaged, but its engine binaries carry the same
+                     hardcoded old-id data paths and must resolve this
+                     app's files directory).
 
 Layout: REFORGED_SRC (env) points at the MYSOREZ checkout; default is the
 parent of this repo's checkout (the CI workflow checks the overlay repo out
@@ -89,8 +96,8 @@ print('surgery target tree:', SRC, '| mode:', MODE)
 if MODE == 'full':
     edit('android/app/build.gradle', [
         ("applicationId 'com.generalsx.zerohour'", f"applicationId '{NEW_ID}'"),
-        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 10)'),
-        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.9')"),
+        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 11)'),
+        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.10')"),
     ])
 
 # ---------------- Phase 1b: native hardcoded data paths ----------------
@@ -134,11 +141,18 @@ edit('android/app/src/main/java/com/generalsx/zerohour/UpdateManager.java', [
 # buildBottomNav(), a tabTitle() case, a showTab() case. Their pages are
 # not edited at all -- in particular the Simulation Rate card keeps its
 # pristine body and works again, because libmain60.so really ships now.
-# The page carries two switches, both Zero Hour only:
+# The page carries the engine switches and the mod switch, all Zero
+# Hour only:
 #  * the Reforged 60-steps engine (libmainrf60.so, from the patched tree):
 #    its own pref (reforged_60_steps, default OFF) -- never a sim_hz
 #    value, because GeneralsOnlineActivity's crossplay flow writes sim_hz
 #    itself and must never enable this engine;
+#  * the enhanced standard engine (libmainrf.so, the same patched tree
+#    at the standard rate -- v1.10): its own pref again
+#    (reforged_enhanced_30, default OFF). The two engine switches are
+#    alternatives, never a stack: the card's listeners disengage the
+#    other engine when one is engaged, so the page never displays a
+#    state the engine selection would read differently;
 #  * the bundled Reforged mod, through the ModManager helpers phase 2
 #    injects -- the same listMods/saveOrder state the Mods screen shows,
 #    so there is one switch state with two handles, never two states.
@@ -176,6 +190,29 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
     static void setReforged60(android.content.Context ctx, boolean on) {
         ctx.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
             .putBoolean(PREF_REFORGED_60, on)
+            .apply();
+    }
+
+    // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.10) The enhanced
+    // standard engine (libmainrf.so): the same patched tree as the
+    // 60-steps engine, built at the standard rate -- the engine that
+    // shipped as this build's standard library in v1.0-v1.8, under its
+    // own name since v1.10 so the base tree's libmain.so stays the
+    // host's own. Its own pref again, never sim_hz, for the same reason
+    // as the 60-steps pref above. The two engine switches on our page
+    // are alternatives (engaging one disengages the other -- see
+    // buildReforgedEngineCard); GeneralsZHActivity.getLibraries() still
+    // gives the 60-steps engine precedence if both prefs are ever on.
+    static final String PREF_REFORGED_30 = "reforged_enhanced_30";
+
+    static boolean getReforgedEnhanced30(android.content.Context ctx) {
+        return ctx.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getBoolean(PREF_REFORGED_30, false);
+    }
+
+    static void setReforgedEnhanced30(android.content.Context ctx, boolean on) {
+        ctx.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean(PREF_REFORGED_30, on)
             .apply();
     }"""),
     ('    private static final int TAB_HELP = 5;',
@@ -219,25 +256,59 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
         buildReforgedModCard(page);
     }
 
-    // The Reforged 60-steps engine switch: the card that sat on the
-    // Graphics tab in v1.5-v1.8, moved to our own page with its gates
-    // (the library must actually be in the APK; the page itself owns the
-    // Zero Hour gate now). The switch writes only the player's own
-    // reforged_60_steps pref; GeneralsZHActivity.getLibraries() gives
-    // that choice precedence over the Simulation Rate selection, because
-    // exactly one engine can load and this is the explicit one.
+    // The Reforged engine card: the card that sat on the Graphics tab
+    // in v1.5-v1.8, moved to our own page. Since v1.10 it carries BOTH
+    // of our engines -- the 60-steps engine and the enhanced standard
+    // engine -- each row gated on its library actually being in the
+    // APK, and the card renders only when at least one of them is (the
+    // page itself owns the Zero Hour gate now). The two switches are
+    // alternatives, never a stack: engaging one disengages the other,
+    // in the open -- the other switch visibly flips off and its pref is
+    // cleared -- so the page can never display a state that
+    // GeneralsZHActivity.getLibraries() would read differently. (That
+    // selection still arbitrates 60-steps-first if hand-edited prefs
+    // ever turn both on.) Each switch writes only its own pref.
     private void buildReforgedEngineCard(LinearLayout root) {
-        if (!new java.io.File(getApplicationInfo().nativeLibraryDir, "libmainrf60.so").isFile()) {
+        boolean have60 = new java.io.File(getApplicationInfo().nativeLibraryDir, "libmainrf60.so").isFile();
+        boolean have30 = new java.io.File(getApplicationInfo().nativeLibraryDir, "libmainrf.so").isFile();
+        if (!have60 && !have30) {
             return;
         }
         LinearLayout content = UiKit.card(root);
         UiKit.sectionHeader(content, R.drawable.ic_gzh_chip,
             getString(R.string.setup_card_reforged60), true);
-        com.google.android.material.materialswitch.MaterialSwitch sw = UiKit.switchRow(content,
-            getString(R.string.setup_reforged60_title), getString(R.string.setup_reforged60_desc));
-        sw.setChecked(getReforged60(this));
-        sw.setOnCheckedChangeListener((button, checked) -> setReforged60(this, checked));
-        UiKit.helpText(content, getString(R.string.setup_reforged60_help));
+        com.google.android.material.materialswitch.MaterialSwitch sw60 = null;
+        com.google.android.material.materialswitch.MaterialSwitch sw30 = null;
+        if (have60) {
+            sw60 = UiKit.switchRow(content,
+                getString(R.string.setup_reforged60_title), getString(R.string.setup_reforged60_desc));
+            sw60.setChecked(getReforged60(this));
+            UiKit.helpText(content, getString(R.string.setup_reforged60_help));
+        }
+        if (have30) {
+            sw30 = UiKit.switchRow(content,
+                getString(R.string.setup_reforged30_title), getString(R.string.setup_reforged30_desc));
+            sw30.setChecked(getReforgedEnhanced30(this));
+            UiKit.helpText(content, getString(R.string.setup_reforged30_help));
+        }
+        final com.google.android.material.materialswitch.MaterialSwitch fsw60 = sw60;
+        final com.google.android.material.materialswitch.MaterialSwitch fsw30 = sw30;
+        if (fsw60 != null) {
+            fsw60.setOnCheckedChangeListener((button, checked) -> {
+                setReforged60(this, checked);
+                if (checked && fsw30 != null && fsw30.isChecked()) {
+                    fsw30.setChecked(false);
+                }
+            });
+        }
+        if (fsw30 != null) {
+            fsw30.setOnCheckedChangeListener((button, checked) -> {
+                setReforgedEnhanced30(this, checked);
+                if (checked && fsw60 != null && fsw60.isChecked()) {
+                    fsw60.setChecked(false);
+                }
+            });
+        }
     }
 
     // The bundled Reforged mod switch: ModManager's own state (the same
@@ -281,7 +352,9 @@ edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java',
         // page. Zero Hour only (the base game has no 60-steps library),
         // the player's own switch only (never sim_hz -- GeneralsOnline-
         // Activity writes that pref itself), and only when the library
-        // is actually in the APK. With the switch off, the host's own
+        // is actually in the APK. The enhanced standard engine (v1.10)
+        // sits between the two under the same gates and yields to the
+        // 60-steps branch. With both our switches off, the host's own
         // selection runs exactly as upstream wrote it.
         if (!SetupActivity.isGeneralsSelected(this)
                 && SetupActivity.getReforged60(this)
@@ -291,6 +364,22 @@ edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java',
                 && new java.io.File(getApplicationInfo().nativeLibraryDir, "lib" + engines[1] + ".so").isFile()) {
             engine = engines[1];
         }"""),
+    ("""            engine = "mainrf60";
+        } else if (SetupActivity.getSimHz(this) == SetupActivity.SIM_HZ_CROSSPLAY""",
+     """            engine = "mainrf60";
+        } else if (!SetupActivity.isGeneralsSelected(this)
+                && SetupActivity.getReforgedEnhanced30(this)
+                && new java.io.File(getApplicationInfo().nativeLibraryDir, "libmainrf.so").isFile()) {
+            // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.10)
+            // The enhanced standard engine: our own build of the patched
+            // tree at the standard rate. The same three gates as the
+            // 60-steps branch above (Zero Hour only, the player's own
+            // switch, the library really in the APK), and it yields to
+            // that branch -- our page keeps the two switches mutually
+            // exclusive, so this order only ever arbitrates hand-edited
+            // prefs, never a state the page can display.
+            engine = "mainrf";
+        } else if (SetupActivity.getSimHz(this) == SetupActivity.SIM_HZ_CROSSPLAY"""),
     # The UpdateManager engine override stays removed at its only point of
     # use (kept from v1.8, wave-8 record section 8.4: proof it could never
     # fire in this build -- the phase-1d channel serves no manifest, and
@@ -358,13 +447,17 @@ edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java',
 # For the host's own engines the pristine sim_hz keying is truthful again
 # in v1.9 -- both of their libraries really ship, and getLibraries()
 # honours sim_hz exactly as upstream wrote it -- so the pristine body
-# below stands, with ONE guard in front of it: when the Reforged page's
-# 60-steps engine is engaged it takes precedence in getLibraries(), and
-# its compiled-in GENERALS_ONLINE_CLIENT_ID is "gen_online_30hz" (it is
-# NOT built with GENERALS_ONLINE_HIGH_FPS_SERVER; the workflow strings-
-# checks both facts on every build). The guard returns this class's own
-# constant for exactly the states where that engine loads, so the
-# announcement never claims the host's 60 Hz for our engine.
+# below stands, with guards in front of it for OUR engines: when the
+# Reforged page's 60-steps engine (v1.9) or enhanced standard engine
+# (v1.10) is engaged it takes precedence in getLibraries(), and its
+# compiled-in GENERALS_ONLINE_CLIENT_ID is "gen_online_30hz" (neither is
+# built with GENERALS_ONLINE_HIGH_FPS_SERVER; the workflow strings-
+# checks both facts on every build). The guards return this class's own
+# constant for exactly the states where those engines load, so the
+# announcement never claims the host's 60 Hz for one of our engines --
+# the enhanced-30 state needs its guard exactly as much as the 60-steps
+# one: without it, a Simulation Rate selection of 60 would announce the
+# host's 60 Hz id while our standard engine runs.
 edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsOnlineSession.java', [
     ("""    static String clientId( Context ctx ) {
         if (ctx != null
@@ -380,11 +473,12 @@ edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsOnlineSession.jav
         // mirror rule above resolves through the host's own keying
         // again -- with both host engines really in the APK, the sim_hz
         // condition below names the engine getLibraries() will load.
-        // One state is ours, not theirs: the Reforged page's 60-steps
-        // engine takes precedence in getLibraries() when it is engaged,
-        // under exactly the condition mirrored here, and its compiled-in
-        // id is CLIENT_ID (it is not a HIGH_FPS build) -- so it is
-        // announced as what it is, never as the host's 60 Hz engine.
+        // Two states are ours, not theirs: the Reforged page's engines
+        // take precedence in getLibraries() when they are engaged,
+        // under exactly the conditions mirrored here, and their
+        // compiled-in id is CLIENT_ID (neither is a HIGH_FPS build) --
+        // so they are announced as what they are, never as the host's
+        // 60 Hz engine.
         if (ctx != null
                 && !SetupActivity.isGeneralsSelected(ctx)
                 && SetupActivity.getReforged60(ctx)
@@ -400,6 +494,34 @@ edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsOnlineSession.jav
         }
         return CLIENT_ID;
     }"""),
+    ("""                && new java.io.File(ctx.getApplicationInfo().nativeLibraryDir,
+                        "libmainrf60.so").isFile()) {
+            return CLIENT_ID;
+        }
+        if (ctx != null
+                && SetupActivity.getSimHz(ctx) == SetupActivity.SIM_HZ_CROSSPLAY""",
+     """                && new java.io.File(ctx.getApplicationInfo().nativeLibraryDir,
+                        "libmainrf60.so").isFile()) {
+            return CLIENT_ID;
+        }
+        // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.10) The
+        // enhanced standard engine's state is ours in the same way:
+        // when it is engaged it is the engine getLibraries() loads (it
+        // yields only to the 60-steps guard above, whose engine also
+        // announces CLIENT_ID), under exactly the condition mirrored
+        // here, and its compiled-in id is likewise CLIENT_ID. Without
+        // this guard the sim_hz keying below would announce the host's
+        // 60 Hz for our standard engine whenever the Simulation Rate
+        // selection stands at 60.
+        if (ctx != null
+                && !SetupActivity.isGeneralsSelected(ctx)
+                && SetupActivity.getReforgedEnhanced30(ctx)
+                && new java.io.File(ctx.getApplicationInfo().nativeLibraryDir,
+                        "libmainrf.so").isFile()) {
+            return CLIENT_ID;
+        }
+        if (ctx != null
+                && SetupActivity.getSimHz(ctx) == SetupActivity.SIM_HZ_CROSSPLAY"""),
 ])
 
 # Engine card strings in every locale, inserted right after the sim-rate
@@ -441,6 +563,41 @@ for d in os.listdir(resdir):
         lines.insert(idx + 1, block.lstrip('\n'))
     open(p, 'w', encoding='utf-8').write('\n'.join(lines))
     print('rf60 strings', os.path.join(d, 'strings.xml'))
+
+# Enhanced standard engine strings in every locale (v1.10), inserted
+# right after the 60-steps help line the loop above put in (the anchor
+# string name exists in all locales by then). Same AAPT2 escaping law
+# as above. The texts are honest in the 60-steps card's register: this
+# engine is ours, it plays network games only against this same build,
+# and the two engine switches are alternatives, never a stack.
+_RF30_STRINGS_EN = [
+    ('setup_reforged30_title', 'Reforged engine \u2014 standard rate, enhanced (experimental)'),
+    ('setup_reforged30_desc', "This build\\'s own standard-rate engine, carrying our smoothness, performance and graphics work."),
+    ('setup_reforged30_help', "The engine is chosen when the game starts, so the change applies the next time you launch it. This engine is ours, so online it plays only against this same build; for the original app\\'s online games, leave both engine switches on this page off and use the Simulation Rate card on the Graphics tab. Our two engine switches are alternatives: turning one on turns the other off."),
+]
+_RF30_STRINGS_AR = [
+    ('setup_reforged30_title', 'محرك ريفورجيد — المعدل القياسي، محسَّن (تجريبي)'),
+    ('setup_reforged30_desc', 'محرك هذه النسخة بالمعدل القياسي نفسه، حاملًا أعمال السلاسة والأداء والرسوميات الخاصة بنا.'),
+    ('setup_reforged30_help', 'يُختار المحرك عند بدء اللعبة، فيسري التغيير عند تشغيلها في المرة القادمة. هذا المحرك محركنا، فلا يلعب عبر الأونلاين إلا ضد هذه النسخة نفسها؛ ولمباريات التطبيق الأصلي عبر الأونلاين أوقف مفتاحَي المحرك في هذه الصفحة واستخدم بطاقة معدل المحاكاة في تبويب الرسوميات. مفتاحا محركينا بديلان: تشغيل أحدهما يوقف الآخر.'),
+]
+for d in os.listdir(resdir):
+    p = os.path.join(resdir, d, 'strings.xml')
+    if not (d.startswith('values') and os.path.isfile(p)):
+        continue
+    s = open(p, encoding='utf-8').read()
+    if 'name="setup_reforged30_title"' in s:
+        continue
+    entries = _RF30_STRINGS_AR if d == 'values-ar' else _RF30_STRINGS_EN
+    block = ''.join(f'\n    <string name="{n}">{t}</string>' for n, t in entries)
+    lines = s.split('\n')
+    idx = next((i for i, ln in enumerate(lines) if 'name="setup_reforged60_help"' in ln), None)
+    if idx is None:
+        idx = next(i for i, ln in enumerate(lines) if '</resources>' in ln)
+        lines.insert(idx, block.lstrip('\n'))
+    else:
+        lines.insert(idx + 1, block.lstrip('\n'))
+    open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+    print('rf30 strings', os.path.join(d, 'strings.xml'))
 
 # Reforged page strings in every locale (the tab label, the intro card,
 # the mod card), inserted right after the nav_tab_help line -- the shell's
