@@ -156,16 +156,21 @@ jobs:
           git -C "$SRC" apply --check "$PWD/probe/patches/reforged-c1-android.patch"
           git -C "$SRC" apply "$PWD/probe/patches/reforged-c1-android.patch"
           git -C "$SRC" diff --stat | tail -3
-          # Stage C2 frame-entry fix (probe/patches/, section 8 of the C1
-          # plan): without it the bare-exec'd frame payload is refused by
-          # SDL_Init (SDL_MAIN_NEEDED main-ready flag is only ever set by
-          # SDLActivity's trampoline) and the device run ends as a spurious
-          # SKIP / exit 77 before any GPU code runs. Marker-checked.
+          # Stage C2 frame-entry fix (probe/patches/, sections 8-9 of the
+          # C1 plan): without it the bare-exec'd frame payload is refused
+          # by SDL_Init (SDL_MAIN_NEEDED main-ready flag is only ever set
+          # by SDLActivity's trampoline) and the device run ends as a
+          # spurious SKIP / exit 77 before any GPU code runs. The patch
+          # also carries the section-9 crash instrumentation (stderr
+          # stage breadcrumbs + a crash handler in the launcher TU) that
+          # localises the frame payload's on-device SIGSEGV. Marker-checked.
           git -C "$SRC" apply --check "$PWD/probe/patches/reforged-frame-selfcheck-entry.patch"
           git -C "$SRC" apply "$PWD/probe/patches/reforged-frame-selfcheck-entry.patch"
           test -f "$SRC/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp"
           grep -q "sdl_gpu_frame_selfcheck_body" "$SRC/GeneralsMD/Code/CMakeLists.txt"
-          echo "frame entry patch applied; launcher TU + CMake wiring present"
+          grep -q "ZH_FRAME_PROBE_CRUMBS" "$SRC/GeneralsMD/Code/CMakeLists.txt"
+          grep -q "zh_probe_crumb" "$SRC/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp"
+          echo "frame entry patch applied; launcher TU + CMake wiring + crumb instrumentation present"
           # Vendor the pinned archives exactly as C1 did (vendor.sh
           # downloads them from their pinned URLs).
           bash "$SRC/GeneralsMD/Code/Tools/vendor.sh"
@@ -210,6 +215,13 @@ jobs:
           # renamed body symbol only exists if the launcher wiring built.
           grep -a -q "sdl_gpu_frame_selfcheck_body" "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" \
             || { echo "frame entry trampoline missing from the frame selfcheck"; exit 1; }
+          # The section-9 instrumentation must be inside too: the crumb
+          # function and its stage strings are what name the crash site
+          # in probe-log.txt if the payload still dies on device.
+          grep -a -q "zh_probe_crumb" "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" \
+            || { echo "crumb instrumentation missing from the frame selfcheck"; exit 1; }
+          grep -a -q "frame-create: device-call" "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" \
+            || { echo "crumb stage strings missing from the frame selfcheck"; exit 1; }
           ls -la "$PWD/payloads"
           sha256sum "$PWD/payloads/libsdl_gpu_frame_selfcheck.so" "$PWD/payloads/libsdl_gpu_depth_format_selfcheck.so"
           echo "PAYLOAD_DIR=$PWD/payloads" >> "$GITHUB_ENV"
