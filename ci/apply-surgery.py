@@ -172,7 +172,7 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
         LinearLayout content = UiKit.card(root);
         UiKit.sectionHeader(content, R.drawable.ic_gzh_chip,
             getString(R.string.setup_card_reforged60), true);
-        com.google.android.material.switchmaterial.SwitchMaterial sw = UiKit.switchRow(content,
+        com.google.android.material.materialswitch.MaterialSwitch sw = UiKit.switchRow(content,
             getString(R.string.setup_reforged60_title), getString(R.string.setup_reforged60_desc));
         sw.setChecked(getReforged60(this));
         sw.setOnCheckedChangeListener((button, checked) -> setReforged60(this, checked));
