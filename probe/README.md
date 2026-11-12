@@ -40,6 +40,18 @@ is touched. Full record: the project's
   the game shell's staged SDL 3.4.2 Java from the pinned MYSOREZ tree —
   whether that Java drives the 3.4.16 native library is itself one of
   C0's questions; `upstream` uses SDL 3.4.16's own Java.
+- The **device-creation mode** is a second dispatch-time choice,
+  `device_mode`: `plain` (default) is the probe exactly as upstream
+  wrote it — `SDL_CreateGPUDevice` with SDL's default requirements,
+  which include the Vulkan features `depthClamp` and
+  `shaderClipDistance`. `compat` compiles the probe TU with
+  `-DSDL_CreateGPUDevice=probe_compat_create_gpu_device`, routing its
+  call into the shim, which creates the device via
+  `SDL_CreateGPUDeviceWithProperties` with the depth-clamping and
+  clip-distance feature properties set false (SDL_gpu.h:2380–2381) —
+  SDL's documented remedy for GPUs that lack them, like the owner's
+  Mali-G52 (record §8). The probe source stays byte-identical in both
+  modes, and the probe log's run header names the mode that ran.
 - Side artefact: `test_detround.cpp` + `include/Lib/DetRound.h` (also
   byte-identical, hash-pinned) are compiled in CI with the NDK clang and
   Reforged's determinism flags — the plan's §3.12 spelling check.
