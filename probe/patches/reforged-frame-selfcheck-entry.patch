@@ -1,8 +1,8 @@
 diff --git a/GeneralsMD/Code/CMakeLists.txt b/GeneralsMD/Code/CMakeLists.txt
-index 7dbbfb16..74f64669 100644
+index 7dbbfb16..2d0fd637 100644
 --- a/GeneralsMD/Code/CMakeLists.txt
 +++ b/GeneralsMD/Code/CMakeLists.txt
-@@ -1487,6 +1487,17 @@ if(ZH_PLATFORM_POSIX)
+@@ -1487,6 +1487,23 @@ if(ZH_PLATFORM_POSIX)
      ${CMAKE_CURRENT_SOURCE_DIR}/GameEngineDevice/Source/PosixDevice/Render)
    target_link_libraries(sdl_gpu_frame_selfcheck PRIVATE posixd3d9 SDL3::SDL3-static)
    add_test(NAME sdl_gpu_frame_selfcheck COMMAND sdl_gpu_frame_selfcheck)
@@ -14,22 +14,85 @@ index 7dbbfb16..74f64669 100644
 +    # Tests/frame_selfcheck_main.cpp provides the entry, calling SDL_SetMainReady() first —
 +    # the one act of SDL's Android trampoline an offscreen test needs.
 +    target_sources(sdl_gpu_frame_selfcheck PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Tests/frame_selfcheck_main.cpp)
++    # Section 9 crash instrumentation: ZH_FRAME_PROBE_CRUMBS turns the
++    # ZH_CRUMB stage breadcrumbs on in the test TU and in
++    # SdlGpuFrame::Create; the entry TU provides zh_probe_crumb, the
++    # crash handler and the stderr plumbing. Stays until the PASS.
 +    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/Tests/test_sdl_gpu_frame.cpp
-+      PROPERTIES COMPILE_DEFINITIONS "main=sdl_gpu_frame_selfcheck_body")
++      PROPERTIES COMPILE_DEFINITIONS "main=sdl_gpu_frame_selfcheck_body;ZH_FRAME_PROBE_CRUMBS=1")
++    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
++      PROPERTIES COMPILE_DEFINITIONS "ZH_FRAME_PROBE_CRUMBS=1")
 +  endif()
  
    # A3c's resolve: the device's state into the generators' descriptions and the constants their
    # programs read, on a headless device.  No GPU.
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
+index cc0316a7..9a804e2f 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
+@@ -30,6 +30,17 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
++// Stage C2 (plan section 9) crash instrumentation: stage breadcrumbs,
++// provided by Tests/frame_selfcheck_main.cpp in Android probe builds
++// (ZH_FRAME_PROBE_CRUMBS, set by the CMake wiring in the probe entry
++// patch). A no-op everywhere the define is absent.
++#ifdef ZH_FRAME_PROBE_CRUMBS
++extern "C" void zh_probe_crumb(const char *stage);
++#define ZH_CRUMB(stage) zh_probe_crumb(stage)
++#else
++#define ZH_CRUMB(stage) ((void)0)
++#endif
++
+ // The back buffer's format.  D3D9's X8R8G8B8 and A8R8G8B8 are these bytes in this order.
+ static const SDL_GPUTextureFormat BACK_BUFFER_FORMAT = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+ 
+@@ -165,9 +176,11 @@ SdlGpuFrame::SdlGpuFrame() :
+ 
+ SdlGpuFrame * SdlGpuFrame::Create(RenderWindow window, unsigned int width, unsigned int height, std::string & error)
+ {
++	ZH_CRUMB("frame-create: begin");
+ 	SdlGpuFrame * frame = new SdlGpuFrame();
+ 	// Debug validation only when asked: it is slow, and the game runs without it.
+ 	const bool debug = getenv("ZH_GPU_DEBUG") != NULL;
++	ZH_CRUMB("frame-create: device-call");
+ #if defined(__ANDROID__)
+ 	// A default SDL GPU device requires the Vulkan core features depthClamp and
+ 	// shaderClipDistance, and mobile GPUs of the Mali-G52 class implement neither:
+@@ -197,6 +210,7 @@ SdlGpuFrame * SdlGpuFrame::Create(RenderWindow window, unsigned int width, unsig
+ 		delete frame;
+ 		return NULL;
+ 	}
++	ZH_CRUMB("frame-create: device-ok");
+ 	// The one place a RenderWindow is taken back to what it is: C2 hands the device its SDL_Window.
+ 	frame->Window = reinterpret_cast<SDL_Window *>(window);
+ 	if (frame->Window != NULL && !SDL_ClaimWindowForGPUDevice(frame->GpuDevice, frame->Window)) {
+@@ -216,11 +230,13 @@ SdlGpuFrame * SdlGpuFrame::Create(RenderWindow window, unsigned int width, unsig
+ 		delete frame;
+ 		return NULL;
+ 	}
++	ZH_CRUMB("frame-create: depth-ok");
+ 	if (!frame->Create_Targets(width, height)) {
+ 		error = std::string("the back buffer: ") + SDL_GetError();
+ 		delete frame;
+ 		return NULL;
+ 	}
++	ZH_CRUMB("frame-create: targets-ok");
+ 	return frame;
+ }
+ 
 diff --git a/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp b/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp
 new file mode 100644
-index 00000000..f8ff3392
+index 00000000..517ac713
 --- /dev/null
 +++ b/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,236 @@
 +/*
-+**	Entry point for sdl_gpu_frame_selfcheck on Android — added by the
-+**	Android probe harness patch (Stage C, slice C2; this file is not
-+**	part of upstream). Same licence as the tree: GNU GPL v3 or later.
++**	Entry point + crash instrumentation for sdl_gpu_frame_selfcheck on
++**	Android — added by the Android probe harness patch (Stage C, slice
++**	C2; this file is not part of upstream). Same licence as the tree:
++**	GNU GPL v3 or later.
 +**
 +**	Why this file exists: on Android SDL3 is built with
 +**	SDL_MAIN_NEEDED, so SDL_Init refuses to run until SDL's own entry
@@ -41,7 +104,7 @@ index 00000000..f8ff3392
 +**	process: no activity, no JNI, no trampoline, so its plain main()
 +**	reached SDL_Init with the flag clear and the run ended as a
 +**	"SKIP" (exit 77) before any GPU code ran — an entry-model
-+**	verdict masquerading as a device verdict.
++**	verdict masquerading as a device verdict (plan section 8).
 +**
 +**	The fix keeps the process model and gives the payload the one
 +**	act of the trampoline it actually needs: the test TU is compiled
@@ -51,6 +114,35 @@ index 00000000..f8ff3392
 +**	ready in this binary's own statically linked SDL instance, then
 +**	run the body. The offscreen video driver and the GPU device
 +**	need no JNI, no window and no surface.
++**
++**	Crash instrumentation (plan section 9): the first fixed build
++**	reached real initialisation on the owner's phone and died by
++**	SIGSEGV having printed nothing at all. That silence localised
++**	almost nothing: the payload's stdout is a pipe, hence
++**	block-buffered, and a signal death never flushes it — every
++**	printf the body made before dying was lost with the buffer. So
++**	this TU also carries:
++**
++**	  - zh_probe_crumb(stage): breadcrumbs written with write() to
++**	    stderr — unbuffered, and the harness tees the child's stderr
++**	    into probe-log.txt live. The test TU and SdlGpuFrame::Create
++**	    call it between their stages (ZH_FRAME_PROBE_CRUMBS, set by
++**	    the same CMake wiring), so one device run names the last
++**	    stage reached.
++**	  - a crash handler in the C0 shim's shape — async-signal-safe
++**	    write()s only — that appends the signal, the fault address
++**	    and the last breadcrumb, plus a backtrace when the runtime
++**	    provides one: bionic exports backtrace() and
++**	    backtrace_symbols_fd() from API 33 only, and the probe
++**	    builds at API 28 where the headers do not declare them,
++**	    so they are resolved with dlsym and warmed up once here in
++**	    normal context; the handler ever only calls the pre-resolved
++**	    pointers. It then restores the default disposition and
++**	    re-raises, so the process dies exactly as it would have
++**	    without us and the harness still reports 128+signal.
++**
++**	The instrumentation stays until the renderer PASS lands
++**	(section 9), then it can be trimmed.
 +*/
 +
 +/* SDL_MAIN_HANDLED: this TU provides its own main() and calls
@@ -60,12 +152,245 @@ index 00000000..f8ff3392
 +#define SDL_MAIN_HANDLED
 +#include <SDL3/SDL_main.h>
 +
++#include <dlfcn.h>
++#include <signal.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++#include <unistd.h>
++
 +int sdl_gpu_frame_selfcheck_body();
++
++/* ------------------------------------------------------------------ */
++/* Breadcrumbs                                                         */
++/* ------------------------------------------------------------------ */
++
++static const char *volatile g_zh_last_crumb = "entry-not-reached";
++
++static void zh_write2(const char *s)
++{
++	if (s == NULL) {
++		return;
++	}
++	size_t len = 0;
++	while (s[len] != '\0') {
++		++len;
++	}
++	size_t off = 0;
++	while (off < len) {
++		ssize_t w = write(STDERR_FILENO, s + off, len - off);
++		if (w <= 0) {
++			break;
++		}
++		off += static_cast<size_t>(w);
++	}
++}
++
++/* Called between the payload's stages by the test TU and by
++** SdlGpuFrame::Create (both under ZH_FRAME_PROBE_CRUMBS). Stage names
++** are string literals; the last one is kept for the crash handler. */
++extern "C" void zh_probe_crumb(const char *stage)
++{
++	if (stage == NULL) {
++		stage = "(null)";
++	}
++	g_zh_last_crumb = stage;
++	zh_write2("[crumb] ");
++	zh_write2(stage);
++	zh_write2("\n");
++	/* write() to a pipe is unbuffered and the harness drains it
++	   concurrently: the stage is in probe-log.txt the moment it is
++	   written, with no stdio buffer in between to lose. */
++}
++
++/* ------------------------------------------------------------------ */
++/* Crash forensics (async-signal-safe writes only)                     */
++/* ------------------------------------------------------------------ */
++
++typedef int (*zh_backtrace_fn)(void **buffer, int size);
++typedef void (*zh_backtrace_symbols_fd_fn)(void *const *buffer, int size, int fd);
++static zh_backtrace_fn g_zh_backtrace = NULL;
++static zh_backtrace_symbols_fd_fn g_zh_backtrace_symbols_fd = NULL;
++static void *g_zh_warmup_frames[8];
++
++static void zh_buf_append(char *&p, const char *s)
++{
++	while (*s) {
++		*p++ = *s++;
++	}
++}
++
++static void zh_buf_append_uint(char *&p, unsigned long v)
++{
++	char tmp[24];
++	int i = 0;
++	do {
++		tmp[i++] = static_cast<char>('0' + (v % 10));
++		v /= 10;
++	} while (v != 0);
++	while (i > 0) {
++		*p++ = tmp[--i];
++	}
++}
++
++static void zh_buf_append_hex(char *&p, unsigned long v)
++{
++	*p++ = '0';
++	*p++ = 'x';
++	char tmp[16];
++	int i = 0;
++	do {
++		unsigned long d = v & 0xFul;
++		tmp[i++] = static_cast<char>(d < 10 ? '0' + d : 'a' + (d - 10));
++		v >>= 4;
++	} while (v != 0);
++	while (i > 0) {
++		*p++ = tmp[--i];
++	}
++}
++
++static void zh_crash_handler(int sig, siginfo_t *info, void * /*context*/)
++{
++	char buf[512];
++	char *p = buf;
++	zh_buf_append(p, "[crumb] CRASH: signal ");
++	zh_buf_append_uint(p, static_cast<unsigned long>(sig));
++	zh_buf_append(p, " at address ");
++	zh_buf_append_hex(p, static_cast<unsigned long>(
++		reinterpret_cast<uintptr_t>(info ? info->si_addr : NULL)));
++	zh_buf_append(p, "; last stage: ");
++	zh_buf_append(p, g_zh_last_crumb ? g_zh_last_crumb : "(none)");
++	zh_buf_append(p, "\n");
++	ssize_t r = write(STDERR_FILENO, buf, static_cast<size_t>(p - buf));
++	(void)r;
++	if (g_zh_backtrace != NULL && g_zh_backtrace_symbols_fd != NULL) {
++		void *frames[24];
++		int n = g_zh_backtrace(frames, 24);
++		if (n > 0) {
++			zh_write2("[crumb] backtrace follows (the top frames are the "
++			          "handler itself):\n");
++			g_zh_backtrace_symbols_fd(frames, n, STDERR_FILENO);
++		}
++	}
++	signal(sig, SIG_DFL);
++	raise(sig);
++	_exit(128 + sig);
++}
++
++static void zh_install_crash_handler()
++{
++	/* Resolve + warm up in normal context ONLY. If the runtime lacks
++	   the functions (an API < 33 device), both pointers stay NULL and
++	   the handler writes its CRASH line without frames. */
++	g_zh_backtrace = reinterpret_cast<zh_backtrace_fn>(
++		dlsym(RTLD_DEFAULT, "backtrace"));
++	g_zh_backtrace_symbols_fd = reinterpret_cast<zh_backtrace_symbols_fd_fn>(
++		dlsym(RTLD_DEFAULT, "backtrace_symbols_fd"));
++	if (g_zh_backtrace != NULL && g_zh_backtrace_symbols_fd != NULL) {
++		/* Warm-up: any lazy unwinder setup happens here, never inside
++		   the signal handler. A non-positive return means unusable. */
++		if (g_zh_backtrace(g_zh_warmup_frames, 8) <= 0) {
++			g_zh_backtrace = NULL;
++			g_zh_backtrace_symbols_fd = NULL;
++		}
++	} else {
++		g_zh_backtrace = NULL;
++		g_zh_backtrace_symbols_fd = NULL;
++	}
++	struct sigaction sa;
++	memset(&sa, 0, sizeof(sa));
++	sa.sa_sigaction = zh_crash_handler;
++	sigemptyset(&sa.sa_mask);
++	sa.sa_flags = SA_SIGINFO;
++	const int sigs[] = {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL};
++	for (int s : sigs) {
++		sigaction(s, &sa, NULL);
++	}
++}
++
++/* ------------------------------------------------------------------ */
++/* Entry                                                               */
++/* ------------------------------------------------------------------ */
 +
 +int main(int argc, char *argv[])
 +{
 +	(void)argc;
 +	(void)argv;
++	zh_install_crash_handler();
++	zh_probe_crumb("entry");
 +	SDL_SetMainReady();
-+	return sdl_gpu_frame_selfcheck_body();
++	zh_probe_crumb("main-ready");
++	int rc = sdl_gpu_frame_selfcheck_body();
++	zh_probe_crumb("body-returned");
++	return rc;
 +}
+diff --git a/GeneralsMD/Code/Tests/test_sdl_gpu_frame.cpp b/GeneralsMD/Code/Tests/test_sdl_gpu_frame.cpp
+index 984fb0ca..b0cb51c4 100644
+--- a/GeneralsMD/Code/Tests/test_sdl_gpu_frame.cpp
++++ b/GeneralsMD/Code/Tests/test_sdl_gpu_frame.cpp
+@@ -69,6 +69,17 @@ static int failures = 0;
+ #define CHECK(condition) \
+ 	do { if (!(condition)) { ++failures; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #condition); } } while (0)
+ 
++// Stage C2 (plan section 9) crash instrumentation: stage breadcrumbs,
++// provided by Tests/frame_selfcheck_main.cpp in Android probe builds
++// (ZH_FRAME_PROBE_CRUMBS, set by the CMake wiring in the probe entry
++// patch). A no-op everywhere the define is absent.
++#ifdef ZH_FRAME_PROBE_CRUMBS
++extern "C" void zh_probe_crumb(const char *stage);
++#define ZH_CRUMB(stage) zh_probe_crumb(stage)
++#else
++#define ZH_CRUMB(stage) ((void)0)
++#endif
++
+ // Bind the production fragment layout even when a normal-only fixture has no mesh hulls.
+ static void push_empty_visual_water(SDL_GPUCommandBuffer *commands,const SdlWaterPixelConstants &water)
+ {
+@@ -7002,21 +7013,31 @@ float4 main(float4 pixel:SV_Position):SV_Target0 {
+ 
+ int main()
+ {
++	ZH_CRUMB("init-begin");
+ 	if (!SDL_Init(SDL_INIT_VIDEO)) {
+ 		printf("sdl_gpu_frame_selfcheck: SKIP - SDL_Init: %s\n", SDL_GetError());
+ 		return 77;
+ 	}
++	ZH_CRUMB("init-ok");
+ 	std::string error;
++	ZH_CRUMB("create-begin");
+ 	SdlGpuFrame *frame = SdlGpuFrame::Create(NULL, WIDTH, HEIGHT, error);
+ 	if (frame == NULL) {
+ 		printf("sdl_gpu_frame_selfcheck: SKIP - no GPU device here: %s\n", error.c_str());
+ 		SDL_Quit();
+ 		return 77;
+ 	}
++	ZH_CRUMB("create-ok");
+ 	printf("sdl_gpu_frame_selfcheck: %s\n", SDL_GetGPUDeviceDriver(frame->Device()));
++	ZH_CRUMB("check-begin: colour-only");
+ 	check_colour_only_target(frame);
++	ZH_CRUMB("check-ok: colour-only");
++	ZH_CRUMB("check-begin: scene-depth");
+ 	check_scene_depth_snapshot(frame);
++	ZH_CRUMB("check-ok: scene-depth");
++	ZH_CRUMB("check-begin: fft-ocean");
+ 	check_gpu_fft_ocean(frame);
++	ZH_CRUMB("check-ok: fft-ocean");
+ 	check_gpu_fft_quality_switch(frame);
+ 	check_gpu_water_opaque_alpha(frame);
+ 	check_gpu_water_vertex_uniform_order(frame);
+@@ -7071,6 +7092,7 @@ int main()
+ 	check_sun_depth_target(frame);
+ #endif
+ 
++	ZH_CRUMB("checks-done");
+ 	// A colour clear: D3DCOLOR 0x80402010 is A 0x80, R 0x40, G 0x20, B 0x10.
+ 	frame->Clear_Back_Buffer(true, true, true, 0x80402010u, 1.0f, 0);
+ 	std::vector<uint8_t> pixels;
+@@ -7197,6 +7219,7 @@ int main()
+ 	SDL_ReleaseGPUTexture(frame->Device(), target);
+ 	delete frame;
+ 	SDL_Quit();
++	ZH_CRUMB("body-end");
+ 	if (failures != 0) {
+ 		printf("sdl_gpu_frame_selfcheck: %d FAILED (gamma: %u pixels wrong; control differed in %u)\n",
+ 			failures, gamma_wrong, control);
