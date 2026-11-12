@@ -19,15 +19,18 @@ merged folder is in place.
 Separation (v1.9): the Online Mode feature of v1.7/v1.8 is deleted, and
 the injected block carries its settlement instead --
 migrateOnlineModeState runs at the head of ensureBundledReforgedData and
-lands a v1.7/v1.8 install that was left with Online Mode on (snapshot
-pref pending, bundled mod possibly switched off under it) in exactly
-the state leaving the mode would have produced: the mod returns to its
-snapshotted state through the same listMods/saveOrder mechanism the
-Mods screen uses, and both leftover prefs are removed. The block also
-carries the Reforged page's mod switch (surgery phase 1e): 
-bundledModEnabled / setBundledModEnabled read and write this same
-stored-order state, so the page and the Mods screen are two handles on
-one state, never two states.
+removes the mode's two leftover prefs; the restore it used to perform is
+moot since v1.13 (below).
+
+Baked in (v1.13, owner order 12/11/2026): the merged package stops being
+a mod. ensureBundledReforgedData forces it enabled at every launcher
+start (its stored-order entry is rewritten to enabled, pinned at the
+end of the order = highest priority, exactly the mount position it
+always had), the Reforged page's mod switch is gone (surgery v1.13
+removes the card and every caller), and bundledModEnabled /
+setBundledModEnabled are no longer generated. The mount path itself --
+mods folder, stored order, writeActiveList -- is unchanged, so the
+data fingerprint (ini_crc) is the one already proven on device.
 
 Layout: REFORGED_SRC (env) points at the MYSOREZ checkout; default is the
 parent of this repo's checkout (the CI workflow checks the overlay repo out
@@ -76,10 +79,10 @@ method = '''
     // shared paths). The first time a Zero Hour game folder is in place, copy
     // it into mods/ if it is not already installed and switch it on. End of
     // the order is the highest priority. A folder the player installed by
-    // hand is never copied over; like a bundled one it is switched on the
-    // first time this app sees it, and a switch state already recorded for
-    // it is never overridden. A folder this app itself installed is refreshed
+    // hand is never copied over. A folder this app itself installed is refreshed
     // in place when an app update ships different bundled bytes.
+    // v1.13: the package is core app data, not a mod -- it is forced enabled
+    // at every launcher start below, and no switch anywhere can turn it off.
     // Migration (v1.6): the pre-merge pair (ReforgedFixes / ReforgedBalance
     // folders) is removed once the merged folder is in place -- only the
     // exact folders this app itself installed; a hand-named folder is never
@@ -265,12 +268,14 @@ method = '''
             ctx.getSharedPreferences(SetupActivity.PREFS_NAME, Context.MODE_PRIVATE)
                     .edit().remove(PREF_LAST_ENABLED).apply();
         }
-        // GeneralsX @bugfix Zero Hour Reforged 10/11/2026 A Reforged folder is
-        // switched on only at its first sight in this app -- no entry for it
-        // in the stored order yet; a folder that already has an entry keeps
-        // the switch it records, on or off.
-        List<String> stored = readOrder(ctx);
-        boolean mergedKnown = hasOrderEntry(stored, mergedDir.getName());
+        // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.13) The merged
+        // package is core app data, not a mod: it is enabled here at every
+        // launcher start, whatever its stored entry says, and pinned at the
+        // end of the order (the highest priority -- the position it has
+        // always mounted from). No switch in the app can turn it off; the
+        // Reforged page's mod card and the Mods screen's toggle for it are
+        // gone. (Pre-v1.13 the folder was switched on only at its first
+        // sight and kept the player's recorded state after that.)
         List<Mod> mods = listMods(ctx);
         Mod mergedMod = null;
         List<Mod> rest = new java.util.ArrayList<>();
@@ -283,22 +288,10 @@ method = '''
         }
         List<Mod> ordered = new java.util.ArrayList<>(rest);
         if (mergedMod != null) {
-            if (!mergedKnown) {
-                mergedMod.enabled = true;
-            }
+            mergedMod.enabled = true;
             ordered.add(mergedMod);
         }
         saveOrder(ctx, ordered);
-    }
-
-    /** Whether the stored order already carries an entry ("1|name" / "0|name") for a folder. */
-    private static boolean hasOrderEntry(List<String> entries, String dirName) {
-        for (String entry : entries) {
-            if (entry.length() > 2 && entry.substring(2).equals(dirName)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.9) Migration:
@@ -349,52 +342,6 @@ method = '''
                 .remove(PREF_ONLINE_SNAPSHOT_MOD)
                 .remove(PREF_REFORGED_ONLINE_LEGACY)
                 .apply();
-    }
-
-    // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.9) The Reforged
-    // page's mod switch (SetupActivity, surgery phase 1e): the stored
-    // order IS the state -- these helpers only find the bundled mod in
-    // listMods and flip it through saveOrder, the exact mechanism the
-    // Mods screen uses, so the page and the Mods screen are two handles
-    // on one state. bundledModEnabled returns null when the bundled mod
-    // is not installed (yet), which the page renders honestly instead of
-    // inventing a state.
-    static Boolean bundledModEnabled(Context ctx) {
-        File root = modsRoot(ctx);
-        if (root == null) {
-            return null;
-        }
-        File bundledDir = findBundledDir(root, "reforged-v1");
-        if (bundledDir == null) {
-            return null;
-        }
-        for (Mod mod : listMods(ctx)) {
-            if (mod.dir.getName().equals(bundledDir.getName())) {
-                return mod.enabled;
-            }
-        }
-        return null;
-    }
-
-    static void setBundledModEnabled(Context ctx, boolean on) {
-        File root = modsRoot(ctx);
-        if (root == null) {
-            return;
-        }
-        File bundledDir = findBundledDir(root, "reforged-v1");
-        if (bundledDir == null) {
-            return;
-        }
-        List<Mod> mods = listMods(ctx);
-        for (Mod mod : mods) {
-            if (mod.dir.getName().equals(bundledDir.getName())) {
-                if (mod.enabled != on) {
-                    mod.enabled = on;
-                    saveOrder(ctx, mods);
-                }
-                return;
-            }
-        }
     }
 
 '''
