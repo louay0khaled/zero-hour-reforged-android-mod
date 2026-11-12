@@ -17,6 +17,13 @@ on:
           - host
           - upstream
         default: host
+      device_mode:
+        description: "How the probe creates its SDL GPU device. plain = SDL_CreateGPUDevice with SDL's defaults, which require the Vulkan depthClamp + shaderClipDistance features — failed on the owner's Mali-G52 (stage C0 record section 8). compat = the same call routed through the harness shim to SDL_CreateGPUDeviceWithProperties with those two feature properties off (SDL_gpu.h:2380-2381); the probe source stays byte-identical either way."
+        type: choice
+        options:
+          - plain
+          - compat
+        default: plain
 
 env:
   SDL_ZIP_URL: https://github.com/libsdl-org/SDL/archive/fa2c02bb6e21974a89ea9824bc53c9932abe5f9c.zip
@@ -97,6 +104,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 -DANDROID_STL=c++_shared \
             -DCMAKE_BUILD_TYPE=Release \
+            -DPROBE_DEVICE_MODE=${{ inputs.device_mode }} \
             -DSDL_SOURCE_DIR="$SDL_SOURCE_DIR"
           cmake --build probe-build -j"$(nproc)"
           find probe-build -name "*.so" -type f | sort
