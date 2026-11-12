@@ -213,11 +213,11 @@ method = '''
             return;
         }
         final String mergedIni =
-                "name = Reforged\n"
-                + "kind = gameplay\n"
-                + "version = v1\n"
-                + "author = Reforged (Olcay Seygan) - Android package\n"
-                + "description = The Reforged fixes and balance packages merged into one, bundled with Zero Hour Reforged.\n";
+                "name = Reforged\\n"
+                + "kind = gameplay\\n"
+                + "version = v1\\n"
+                + "author = Reforged (Olcay Seygan) - Android package\\n"
+                + "description = The Reforged fixes and balance packages merged into one, bundled with Zero Hour Reforged.\\n";
         File mergedDir = findBundledDir(root, "reforged-v1");
         if (mergedDir == null) {
             if (installBundled(ctx, root, BUNDLED_DIR, BUNDLED_ASSET,
