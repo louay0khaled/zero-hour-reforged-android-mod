@@ -111,6 +111,22 @@ engine's real renderer initialises on the phone — not a proxy:
   other platforms' builds are untouched. The renderer re-run uses
   the same dispatch inputs as the first run (below); PASS is the
   closing line `payload exit codes: frame 0, depth 0`.
+- Crash instrumentation (second device run, 2026-11-12): with the
+  entry fix in, the frame payload **died by SIGSEGV printing nothing**
+  — its stdout is a pipe, hence block-buffered, and a signal death
+  never flushes it, so the silence localised the crash only to
+  "somewhere before the first stdio flush". The entry patch now also
+  carries section-9 instrumentation: `zh_probe_crumb` stage
+  breadcrumbs written with `write()` to stderr (the shim tees child
+  stderr into `probe-log.txt` live) between the payload's stages —
+  entry, SDL_Init, `SdlGpuFrame::Create`'s device call, the first
+  checks — and a crash handler in the launcher TU (async-signal-safe
+  writes only) that appends the signal, the fault address, the last
+  stage reached, and a backtrace when the runtime provides one
+  (bionic: API 33+; resolved with dlsym and warmed up at startup).
+  The next renderer log therefore either shows
+  `payload exit codes: frame 0, depth 0` (PASS) or names the exact
+  stage that dies. The instrumentation stays until the PASS lands.
 - `device_mode` does **not** apply to the payloads: they create their
   device inside the engine, through the fixed call site. The log's
   harness line says so on every renderer run.
