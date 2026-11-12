@@ -18,6 +18,25 @@
  *     dies by one, and a clean exit records its code. A native crash kills
  *     the process before probe-result.txt can be written — the log is what
  *     survives, and the launcher screen falls back to showing it.
+ *
+ * Device creation has two modes, chosen at build time (CMake option
+ * PROBE_DEVICE_MODE; see CMakeLists.txt):
+ *   - plain (default): the probe calls SDL_CreateGPUDevice exactly as
+ *     upstream wrote it, with SDL's documented default requirements —
+ *     which include the Vulkan core features depthClamp and
+ *     shaderClipDistance.
+ *   - compat: the probe TU is additionally compiled with
+ *     -DSDL_CreateGPUDevice=probe_compat_create_gpu_device, so its one
+ *     creation call lands in this file instead. The forwarder below has
+ *     the plain call's exact signature, fills the same properties the
+ *     plain call fills (SDL_gpu.c's SDL_GPU_FillProperties, mirrored),
+ *     additionally sets the depth-clamping and clip-distance feature
+ *     properties to false (SDL_gpu.h:2380-2381 — SDL's documented remedy
+ *     for devices like the owner's Mali-G52, which implements neither
+ *     feature; stage-c-c0-probe.md §8), and creates the device with
+ *     SDL_CreateGPUDeviceWithProperties. The probe source file stays
+ *     byte-identical in both modes; the run header in probe-log.txt
+ *     names the mode that ran.
  */
 
 #include <SDL3/SDL.h>
@@ -35,6 +54,57 @@
 
 /* Defined by sdl_gpu_probe.cpp (its main, renamed at compile time). */
 int probe_main();
+
+#if defined(PROBE_DEVICE_COMPAT)
+/*
+ * Compat device creation (see the file header). Compiled only in compat
+ * builds; the probe TU's -D rename makes SDL's own header declare this
+ * symbol with the plain call's signature in the probe TU, and the
+ * definition here must match it exactly: same parameter types, C linkage.
+ *
+ * The property filling mirrors SDL 3.4.16's SDL_GPU_FillProperties
+ * (src/gpu/SDL_gpu.c) statement for statement — a shader-format boolean
+ * is set true for each format flag the caller passed, the debug flag and
+ * the (possibly NULL) driver name are passed through — and then the two
+ * feature properties the plain call leaves at their default true are
+ * set false. Nothing else is set: sampler anisotropy and indirect-draw
+ * first instance keep SDL's defaults, because the Mali-G52 has both
+ * (stage-c-c0-probe.md §8.4).
+ */
+extern "C" SDL_GPUDevice *probe_compat_create_gpu_device(SDL_GPUShaderFormat format_flags,
+                                                         bool debug_mode,
+                                                         const char *name)
+{
+    SDL_PropertiesID props = SDL_CreateProperties();
+    if (format_flags & SDL_GPU_SHADERFORMAT_PRIVATE) {
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_PRIVATE_BOOLEAN, true);
+    }
+    if (format_flags & SDL_GPU_SHADERFORMAT_SPIRV) {
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+    }
+    if (format_flags & SDL_GPU_SHADERFORMAT_DXBC) {
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXBC_BOOLEAN, true);
+    }
+    if (format_flags & SDL_GPU_SHADERFORMAT_DXIL) {
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXIL_BOOLEAN, true);
+    }
+    if (format_flags & SDL_GPU_SHADERFORMAT_MSL) {
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
+    }
+    if (format_flags & SDL_GPU_SHADERFORMAT_METALLIB) {
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_METALLIB_BOOLEAN, true);
+    }
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debug_mode);
+    SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, name);
+    /* The whole point of compat mode: run without the two features the
+       owner's Mali-G52 does not implement (SDL_gpu.h:2380-2381). */
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_CLIP_DISTANCE_BOOLEAN, false);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_DEPTH_CLAMPING_BOOLEAN, false);
+    SDL_GPUDevice *device = SDL_CreateGPUDeviceWithProperties(props);
+    SDL_DestroyProperties(props);
+    return device;
+}
+#endif /* PROBE_DEVICE_COMPAT */
 
 namespace {
 
@@ -309,6 +379,12 @@ void OpenLog()
                   SDL_MAJOR_VERSION, SDL_MINOR_VERSION, SDL_MICRO_VERSION,
                   linked / 1000000, (linked / 1000) % 1000, linked % 1000);
     LogText(versions);
+#if defined(PROBE_DEVICE_COMPAT)
+    LogText("[harness] device mode: compat (SDL_CreateGPUDeviceWithProperties; "
+            "feature.depth_clamping=false, feature.clip_distance=false)\n");
+#else
+    LogText("[harness] device mode: plain (SDL_CreateGPUDevice with SDL defaults)\n");
+#endif
 }
 
 } // namespace
