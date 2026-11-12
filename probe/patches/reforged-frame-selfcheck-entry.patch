@@ -1,23 +1,48 @@
 diff --git a/GeneralsMD/Code/CMakeLists.txt b/GeneralsMD/Code/CMakeLists.txt
-index 7dbbfb16..2d0fd637 100644
+index 7dbbfb16..10a1f1d6 100644
 --- a/GeneralsMD/Code/CMakeLists.txt
 +++ b/GeneralsMD/Code/CMakeLists.txt
-@@ -1487,6 +1487,23 @@ if(ZH_PLATFORM_POSIX)
+@@ -1481,12 +1481,47 @@ if(ZH_PLATFORM_POSIX)
+ 
+   # A3a's frame: a clear read back, and the gamma pass through a picture that shows any flip.  Needs a GPU
+   # but no window; exits 77 (skipped, and ctest says so) where SDL has no GPU device to give.
+-  add_executable(sdl_gpu_frame_selfcheck ${CMAKE_CURRENT_SOURCE_DIR}/Tests/test_sdl_gpu_frame.cpp)
++  if(ZH_PLATFORM_ANDROID)
++    # Stage C2 route B (plan section 10): on Android the frame selfcheck is
++    # a shared library whose SDL_main an SDLActivity subclass runs in its
++    # own process — the engine's real entry model. The bare child-process
++    # model of sections 8-9 died inside SDL_Init on the owner's device.
++    add_library(sdl_gpu_frame_selfcheck SHARED ${CMAKE_CURRENT_SOURCE_DIR}/Tests/test_sdl_gpu_frame.cpp)
++  else()
++    add_executable(sdl_gpu_frame_selfcheck ${CMAKE_CURRENT_SOURCE_DIR}/Tests/test_sdl_gpu_frame.cpp)
++  endif()
+   set_target_properties(sdl_gpu_frame_selfcheck PROPERTIES CXX_STANDARD 17)
+   target_include_directories(sdl_gpu_frame_selfcheck PRIVATE
      ${CMAKE_CURRENT_SOURCE_DIR}/GameEngineDevice/Source/PosixDevice/Render)
    target_link_libraries(sdl_gpu_frame_selfcheck PRIVATE posixd3d9 SDL3::SDL3-static)
    add_test(NAME sdl_gpu_frame_selfcheck COMMAND sdl_gpu_frame_selfcheck)
 +  if(ZH_PLATFORM_ANDROID)
-+    # Stage C2 (Android probe harness): the selfcheck runs there as a bare child process, with no
-+    # SDLActivity/JNI trampoline to mark SDL main-ready, so a plain main() is refused by SDL_Init
-+    # and the run ends as a spurious SKIP (exit 77) before any GPU code runs. The test TU is
-+    # renamed to a body function (the SDL_main.h trick, this one TU only) and
-+    # Tests/frame_selfcheck_main.cpp provides the entry, calling SDL_SetMainReady() first —
-+    # the one act of SDL's Android trampoline an offscreen test needs.
++    # Stage C2 (Android probe harness), route B (plan section 10): the
++    # library's entry is the SDL_main that SDLActivity's trampoline
++    # calls, so main-readiness, the JNI environment and the Android
++    # video driver are all in place before the body runs. The bare
++    # child-process model of sections 8-9 was first refused by SDL_Init
++    # (exit 77: no trampoline had marked SDL main-ready), then, once
++    # marked ready by hand, died inside SDL_Init itself on the owner's
++    # device (signal 11 at address 0x0, last stage init-begin) — the
++    # pre-committed section 9.8 rule moved the payload into an activity.
++    # The test TU is renamed to a body function (the SDL_main.h trick,
++    # this one TU only) and Tests/frame_selfcheck_main.cpp provides
++    # SDL_main: it redirects the body's output into frame-result.txt in
++    # the app's external files directory (an activity process's stdout
++    # is logcat, which the harness cannot read) and appends the body's
++    # return code there; the probe launcher merges the file into its
++    # log and verdict.
 +    target_sources(sdl_gpu_frame_selfcheck PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Tests/frame_selfcheck_main.cpp)
-+    # Section 9 crash instrumentation: ZH_FRAME_PROBE_CRUMBS turns the
-+    # ZH_CRUMB stage breadcrumbs on in the test TU and in
-+    # SdlGpuFrame::Create; the entry TU provides zh_probe_crumb, the
-+    # crash handler and the stderr plumbing. Stays until the PASS.
++    # Section 9 crash instrumentation, kept for route B: ZH_FRAME_PROBE_CRUMBS
++    # turns the ZH_CRUMB stage breadcrumbs on in the test TU and in
++    # SdlGpuFrame::Create; the entry TU provides zh_probe_crumb and the
++    # crash handler, both writing to the result file. Stays until the PASS.
 +    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/Tests/test_sdl_gpu_frame.cpp
 +      PROPERTIES COMPILE_DEFINITIONS "main=sdl_gpu_frame_selfcheck_body;ZH_FRAME_PROBE_CRUMBS=1")
 +    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
@@ -84,90 +109,86 @@ index cc0316a7..9a804e2f 100644
  
 diff --git a/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp b/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp
 new file mode 100644
-index 00000000..517ac713
+index 00000000..46542e6a
 --- /dev/null
 +++ b/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,272 @@
 +/*
 +**	Entry point + crash instrumentation for sdl_gpu_frame_selfcheck on
 +**	Android — added by the Android probe harness patch (Stage C, slice
 +**	C2; this file is not part of upstream). Same licence as the tree:
 +**	GNU GPL v3 or later.
 +**
-+**	Why this file exists: on Android SDL3 is built with
-+**	SDL_MAIN_NEEDED, so SDL_Init refuses to run until SDL's own entry
-+**	trampoline has marked the process main-ready — in SDL's Android
-+**	model that happens inside SDLActivity's JNI initialisation
-+**	(SDL_android.c, checkJNIReady -> SDL_SetMainReady), before
-+**	nativeRunMain calls the application's SDL_main. The selfcheck is
-+**	an offscreen test that the probe harness runs as a bare child
-+**	process: no activity, no JNI, no trampoline, so its plain main()
-+**	reached SDL_Init with the flag clear and the run ended as a
-+**	"SKIP" (exit 77) before any GPU code ran — an entry-model
-+**	verdict masquerading as a device verdict (plan section 8).
++**	Route B (plan section 10). The selfcheck is built as a shared
++**	library and this TU provides its SDL_main — the standard SDL
++**	Android arrangement: the probe app declares a FrameCheckActivity
++**	(an SDLActivity subclass in its own process, so no second SDL
++**	shares the process) whose trampoline marks SDL main-ready, sets
++**	up the JNI environment and the Android video driver, and only
++**	then calls the SDL_main defined here, which runs the body.
 +**
-+**	The fix keeps the process model and gives the payload the one
-+**	act of the trampoline it actually needs: the test TU is compiled
-+**	with its main renamed to sdl_gpu_frame_selfcheck_body() (the
-+**	SDL_main.h trick, scoped to that one TU by the CMake wiring in
-+**	this patch), and this TU provides the process entry: mark SDL
-+**	ready in this binary's own statically linked SDL instance, then
-+**	run the body. The offscreen video driver and the GPU device
-+**	need no JNI, no window and no surface.
++**	History, so the arrangement is not mistaken for ceremony: run as
++**	a bare child process (sections 8-9), the payload was first
++**	refused by SDL_Init outright (exit 77 — nothing had marked SDL
++**	main-ready), and once the entry marked readiness by hand it died
++**	inside SDL_Init itself on the owner's device: signal 11 at
++**	address 0x0, last breadcrumb init-begin. The pre-committed
++**	section 9.8 rule reads exactly that signature as "the bare
++**	process is the wall" and moves the payload here, into the entry
++**	model the real game will use.
 +**
-+**	Crash instrumentation (plan section 9): the first fixed build
-+**	reached real initialisation on the owner's phone and died by
-+**	SIGSEGV having printed nothing at all. That silence localised
-+**	almost nothing: the payload's stdout is a pipe, hence
-+**	block-buffered, and a signal death never flushes it — every
-+**	printf the body made before dying was lost with the buffer. So
-+**	this TU also carries:
++**	Output: an activity process's stdout/stderr are logcat, which
++**	the probe harness cannot read, so before running the body this
++**	TU opens frame-result.txt in the app's external files directory
++**	(SDL_GetAndroidExternalStoragePath — the same directory the
++**	harness keeps probe-log.txt in), duplicates it onto stdout and
++**	stderr with line-buffered stdio, and after the body returns
++**	appends a "[framecheck] body returned N" trailer carrying the
++**	return code SDLActivity would otherwise swallow. The probe
++**	launcher reads the file, merges it into probe-log.txt and the
++**	renderer verdict, and deletes it before each new run.
 +**
-+**	  - zh_probe_crumb(stage): breadcrumbs written with write() to
-+**	    stderr — unbuffered, and the harness tees the child's stderr
-+**	    into probe-log.txt live. The test TU and SdlGpuFrame::Create
-+**	    call it between their stages (ZH_FRAME_PROBE_CRUMBS, set by
-+**	    the same CMake wiring), so one device run names the last
-+**	    stage reached.
-+**	  - a crash handler in the C0 shim's shape — async-signal-safe
-+**	    write()s only — that appends the signal, the fault address
-+**	    and the last breadcrumb, plus a backtrace when the runtime
-+**	    provides one: bionic exports backtrace() and
-+**	    backtrace_symbols_fd() from API 33 only, and the probe
-+**	    builds at API 28 where the headers do not declare them,
-+**	    so they are resolved with dlsym and warmed up once here in
-+**	    normal context; the handler ever only calls the pre-resolved
-+**	    pointers. It then restores the default disposition and
-+**	    re-raises, so the process dies exactly as it would have
-+**	    without us and the harness still reports 128+signal.
-+**
-+**	The instrumentation stays until the renderer PASS lands
-+**	(section 9), then it can be trimmed.
++**	Crash instrumentation (plan section 9, kept): the breadcrumbs
++**	and the crash handler now write to the result file descriptor
++**	with write() — unbuffered, so a signal death still leaves the
++**	stage trail and the CRASH line in the file. If the storage path
++**	cannot be resolved or the file cannot be opened, everything
++**	falls back to stderr (logcat) and the body still runs; the
++**	launcher then reports the missing file honestly.
 +*/
 +
-+/* SDL_MAIN_HANDLED: this TU provides its own main() and calls
-+** SDL_SetMainReady() itself — the arrangement SDL_main.h's own
-+** documentation prescribes for exactly this case. (SDL_SetMainReady
-+** is declared by SDL_main.h; SDL.h does not declare it.) */
-+#define SDL_MAIN_HANDLED
 +#include <SDL3/SDL_main.h>
++#include <SDL3/SDL_system.h>
 +
 +#include <dlfcn.h>
++#include <fcntl.h>
 +#include <signal.h>
 +#include <stddef.h>
 +#include <stdint.h>
++#include <stdio.h>
 +#include <string.h>
 +#include <unistd.h>
 +
 +int sdl_gpu_frame_selfcheck_body();
 +
 +/* ------------------------------------------------------------------ */
-+/* Breadcrumbs                                                         */
++/* Result file                                                         */
 +/* ------------------------------------------------------------------ */
 +
-+static const char *volatile g_zh_last_crumb = "entry-not-reached";
++/* The frame-result.txt descriptor once SDL_main has opened it; -1
++** until then (and forever, if the open fails). Breadcrumbs, the
++** crash handler and the trailer all write here when it is set and
++** to stderr when it is not. stdout/stderr are duplicated onto the
++** same open file description, so the body's printfs and the
++** write()s below interleave in true call order. */
++static int g_zh_result_fd = -1;
 +
-+static void zh_write2(const char *s)
++static int zh_out_fd()
++{
++	return g_zh_result_fd >= 0 ? g_zh_result_fd : STDERR_FILENO;
++}
++
++static void zh_write_out(const char *s)
 +{
 +	if (s == NULL) {
 +		return;
@@ -176,15 +197,22 @@ index 00000000..517ac713
 +	while (s[len] != '\0') {
 +		++len;
 +	}
++	const int fd = zh_out_fd();
 +	size_t off = 0;
 +	while (off < len) {
-+		ssize_t w = write(STDERR_FILENO, s + off, len - off);
++		ssize_t w = write(fd, s + off, len - off);
 +		if (w <= 0) {
 +			break;
 +		}
 +		off += static_cast<size_t>(w);
 +	}
 +}
++
++/* ------------------------------------------------------------------ */
++/* Breadcrumbs                                                         */
++/* ------------------------------------------------------------------ */
++
++static const char *volatile g_zh_last_crumb = "entry-not-reached";
 +
 +/* Called between the payload's stages by the test TU and by
 +** SdlGpuFrame::Create (both under ZH_FRAME_PROBE_CRUMBS). Stage names
@@ -195,12 +223,11 @@ index 00000000..517ac713
 +		stage = "(null)";
 +	}
 +	g_zh_last_crumb = stage;
-+	zh_write2("[crumb] ");
-+	zh_write2(stage);
-+	zh_write2("\n");
-+	/* write() to a pipe is unbuffered and the harness drains it
-+	   concurrently: the stage is in probe-log.txt the moment it is
-+	   written, with no stdio buffer in between to lose. */
++	zh_write_out("[crumb] ");
++	zh_write_out(stage);
++	zh_write_out("\n");
++	/* write() is unbuffered: the stage is in frame-result.txt the
++	   moment it is written, with no stdio buffer in between to lose. */
 +}
 +
 +/* ------------------------------------------------------------------ */
@@ -261,15 +288,16 @@ index 00000000..517ac713
 +	zh_buf_append(p, "; last stage: ");
 +	zh_buf_append(p, g_zh_last_crumb ? g_zh_last_crumb : "(none)");
 +	zh_buf_append(p, "\n");
-+	ssize_t r = write(STDERR_FILENO, buf, static_cast<size_t>(p - buf));
++	const int fd = zh_out_fd();
++	ssize_t r = write(fd, buf, static_cast<size_t>(p - buf));
 +	(void)r;
 +	if (g_zh_backtrace != NULL && g_zh_backtrace_symbols_fd != NULL) {
 +		void *frames[24];
 +		int n = g_zh_backtrace(frames, 24);
 +		if (n > 0) {
-+			zh_write2("[crumb] backtrace follows (the top frames are the "
-+			          "handler itself):\n");
-+			g_zh_backtrace_symbols_fd(frames, n, STDERR_FILENO);
++			zh_write_out("[crumb] backtrace follows (the top frames are the "
++			             "handler itself):\n");
++			g_zh_backtrace_symbols_fd(frames, n, fd);
 +		}
 +	}
 +	signal(sig, SIG_DFL);
@@ -312,16 +340,49 @@ index 00000000..517ac713
 +/* Entry                                                               */
 +/* ------------------------------------------------------------------ */
 +
++/* SDL_main.h renames this main to SDL_main on Android — the symbol
++** SDLActivity's nativeRunMain calls in this library. Not
++** SDL_MAIN_HANDLED: the trampoline owns main-readiness now. */
 +int main(int argc, char *argv[])
 +{
 +	(void)argc;
 +	(void)argv;
 +	zh_install_crash_handler();
++
++	/* Open the result file BEFORE the first crumb, so the whole run
++	   — breadcrumbs, body printfs, crash lines, trailer — lands in
++	   the one file the launcher merges. O_APPEND keeps every write
++	   at the end, so the write() channel and the dup'd stdio channel
++	   can never overwrite each other. */
++	const char *ext = SDL_GetAndroidExternalStoragePath();
++	if (ext != NULL && ext[0] != '\0') {
++		char path[1024];
++		(void)snprintf(path, sizeof(path), "%s/frame-result.txt", ext);
++		g_zh_result_fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
++	}
++	if (g_zh_result_fd >= 0) {
++		(void)dup2(g_zh_result_fd, STDOUT_FILENO);
++		(void)dup2(g_zh_result_fd, STDERR_FILENO);
++		(void)setvbuf(stdout, NULL, _IOLBF, 0);
++		(void)setvbuf(stderr, NULL, _IONBF, 0);
++	}
++
 +	zh_probe_crumb("entry");
-+	SDL_SetMainReady();
-+	zh_probe_crumb("main-ready");
++	zh_probe_crumb("sdl-main");
 +	int rc = sdl_gpu_frame_selfcheck_body();
 +	zh_probe_crumb("body-returned");
++
++	/* The trailer is the exit-code channel: SDLActivity does not
++	   hand SDL_main's return value to the launcher activity, so the
++	   code travels in the file, written with write() like the rest
++	   of the forensic trail. */
++	char trailer[96];
++	(void)snprintf(trailer, sizeof(trailer),
++		"[framecheck] body returned %d\n", rc);
++	zh_write_out(trailer);
++	if (g_zh_result_fd >= 0) {
++		(void)fsync(g_zh_result_fd);
++	}
 +	return rc;
 +}
 diff --git a/GeneralsMD/Code/Tests/test_sdl_gpu_frame.cpp b/GeneralsMD/Code/Tests/test_sdl_gpu_frame.cpp
