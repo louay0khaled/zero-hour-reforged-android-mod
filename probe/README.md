@@ -94,6 +94,23 @@ engine's real renderer initialises on the phone — not a proxy:
   one process is the hazard the stage-C plan flags — and a dying payload
   cannot take the harness (and its log) down with it. Deviation from
   the §6 sketch recorded in stage-c-c1-plan.md §7.
+- Frame-entry fix (first device run, 2026-11-12): the depth payload
+  passed (exit 0) but the frame payload **skipped at startup with
+  exit 77** — `SDL_Init: Application didn't initialize properly, did
+  you include SDL_main.h…`. Cause (record: stage-c-c1-plan.md §8):
+  on Android SDL3 is built with `SDL_MAIN_NEEDED`, so `SDL_Init`
+  refuses until SDL's own entry trampoline has set the main-ready
+  flag — and the bare child process has no SDLActivity/JNI
+  trampoline. (The depth payload never initialises SDL, which is
+  why it was unaffected.) Fix: a third patch in `patches/`,
+  `reforged-frame-selfcheck-entry.patch`, applied after the C1 set —
+  it renames the test TU's `main` to a body function (that one TU
+  only) and adds a small launcher TU whose entry calls
+  `SDL_SetMainReady()` first, the one act of SDL's Android
+  trampoline an offscreen test needs. Android-guarded in CMake, so
+  other platforms' builds are untouched. The renderer re-run uses
+  the same dispatch inputs as the first run (below); PASS is the
+  closing line `payload exit codes: frame 0, depth 0`.
 - `device_mode` does **not** apply to the payloads: they create their
   device inside the engine, through the fixed call site. The log's
   harness line says so on every renderer run.
