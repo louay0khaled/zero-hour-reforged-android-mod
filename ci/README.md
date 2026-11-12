@@ -50,33 +50,42 @@ every run and applies this repo's small overlay on top:
      and the GameState save rate stamp that makes each engine refuse the
      other's saves cleanly. The workflow builds the tree twice: standard
      (libmain.so) and flipped (libmainrf60.so).
+   - `patches/step-perf.patch` — the M2 wave-7 per-step perf ports
+     (v1.6), applied after the gradle-task patch: four upstream-measured,
+     checksum-identical logic/client savings (CRC register-local fold,
+     by-template counting index, GPS Scrambler search short-circuit,
+     projectile hide/show cache) that cut the per-step cost whose excess
+     halves the 60-steps rate in dense battles.
+   - `patches/speed-pacing-fix.patch` — the M2 wave-7 pacing fix (v1.6):
+     every hard-coded retail-30 session/slider pace now keys off the
+     build's own LOGICFRAMES_PER_SECOND, so a same-rate 60-steps LAN
+     session runs at normal game speed instead of half, and the speed
+     slider stays a relative control in both engines. Value-identical in
+     the 30-steps build.
    - `patches/package-android-zh-gradle-task.patch` — lets the upstream
      packaging script run `assembleRelease` (via `GX_GRADLE_TASK`), checks
      the release output path, and adds the `GX_REFORGED60_LIB` knob that
      stages the flipped engine as `libmainrf60.so` (never `libmain60.so`).
    - `apply-surgery.py` — new applicationId `com.louay.zerohour.reforged`,
-     version 6 / "1.5", the native hardcoded data paths repointed to the
+     version 7 / "1.6", the native hardcoded data paths repointed to the
      new id, the "Zero Hour Reforged" label in all locales, the OTA
      update channel pointed at this repo (so upstream engine updates can
      never overwrite the patched build), and (phase 1e) the Reforged
      60-steps launcher switch: pref `reforged_60_steps` (default OFF)
      replacing the dead Simulation Rate card on the Graphics tab, shown
      only when Zero Hour is selected and `libmainrf60.so` is in the APK.
-   - `apply-phase2.py` — bundles the two Reforged data packages as APK
-     assets and adds the launcher code that installs + enables them as
-     mods on first run (fixes first, balance last = highest priority).
-     Both assets are sha256-verified by the script before use:
-     - fixes: `ci/assets/!ReforgedFixes-v3.big` — the *engine-native*
-       variant of the fixes package (the data-side locomotor restatements
-       removed; the patched engine carries the sets natively). **Not** the
-       same bytes as `packages/!ReforgedFixes-v3.big`, which targets the
-       *unpatched* engine.
-     - balance: `ci/assets/!ReforgedBalance-v2.big` — the *engine-native*
-       variant of the balance package (the v2 content with its data-side
-       locomotor restatement blocks removed; on the patched engine those
-       restatements throw during INI load and the game does not start).
-       **Not** the same bytes as `packages/!ReforgedBalance-v2.big`, which
-       stays byte-identical for the *unpatched* engine.
+   - `apply-phase2.py` — bundles the Reforged data as ONE merged package
+     (`ci/assets/!Reforged-v1.big`, sha256-verified by the script before
+     use) and adds the launcher code that installs + enables it as a single
+     mod on first run. The merged archive carries every path of the two
+     engine-native packages it replaces (fixes v3 + balance v2), with the
+     balance bytes winning the 102 shared paths — byte-identical per path
+     to the old two-mod stack (proof in the project record). On installs
+     that still hold the pre-merge pair, the generated code removes the
+     app-installed `ReforgedFixes` / `ReforgedBalance` folders and their
+     stored-order entries once the merged folder is in place. The pair was
+     merged because the launcher's mod analysis warned about the two mods
+     on every visit (they share INI files by design).
 3. **Build** exactly like upstream's own `build-android.yml` (same pinned
    NDK/Gradle/vcpkg/CMake preset `android-vulkan`, arm64), with the v1
    build's target list (both `libmain.so` and `libgenerals.so`) and strip
