@@ -37,11 +37,11 @@ on:
     inputs:
       version_name:
         type: string
-        description: "Override versionName (blank = build.gradle default, currently '1.13'). Bump together with version_code for a new release."
+        description: "Override versionName (blank = build.gradle default, currently '1.14'). Bump together with version_code for a new release."
         default: ""
       version_code:
         type: string
-        description: "Override versionCode (blank = build.gradle default, currently 14). Must increase between published releases."
+        description: "Override versionCode (blank = build.gradle default, currently 15). Must increase between published releases."
         default: ""
 
 env:
@@ -190,7 +190,8 @@ jobs:
             git apply --verbose ../reforged-overlay/ci/patches/package-android-zh-gradle-task.patch
             git apply --verbose ../reforged-overlay/ci/patches/step-perf.patch
             git apply --verbose ../reforged-overlay/ci/patches/speed-pacing-fix.patch
-            git apply --verbose ../reforged-overlay/ci/patches/rf60-frontend.patch )
+            git apply --verbose ../reforged-overlay/ci/patches/rf60-frontend.patch
+            git apply --verbose ../reforged-overlay/ci/patches/fall-gate.patch )
           REFORGED_SRC="${{ github.workspace }}/reforged-src" REFORGED_SURGERY_MODE=paths \
             python3 reforged-overlay/ci/apply-surgery.py
           # Verify the patches actually landed (fail loud, not silent):
