@@ -1,0 +1,106 @@
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/PhysicsUpdate.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/PhysicsUpdate.cpp
+@@ -243,6 +243,7 @@
+ 	m_flags = 0;
+ 	m_extraBounciness = 0.0f;
+ 	m_extraFriction = 0.0f;
++	m_peakHeightAboveGround = 0.0f;
+ 
+ 	m_currentOverlap = INVALID_ID;
+ 	m_previousOverlap = INVALID_ID;
+@@ -469,6 +470,7 @@
+ 	m_prevAccel.zero();
+ 	m_vel.zero();
+ 	m_velMag = 0.0f;
++	m_peakHeightAboveGround = 0.0f;
+ 	m_turning = TURN_NONE;
+ 	m_yawRate = 0;
+ 	m_rollRate = 0;
+@@ -667,6 +669,19 @@
+ 	Object*														obj = getObject();
+ 	const PhysicsBehaviorModuleData*	d = getPhysicsBehaviorModuleData();
+ 	Bool															airborneAtStart = obj->isAboveTerrain();
++	// Reforged: track how high this airborne stint actually rose above the ground,
++	// so the falling-damage check below can tell a genuine fall (cliff drop, shot-down
++	// aircraft) from a ground-level bob (a helicopter parked at a dock, whose z
++	// controller oscillates around the ground plane and trips the airborne edge
++	// without ever having fallen from anywhere).
++	if (airborneAtStart)
++	{
++		const Coord3D* pp = obj->getPosition();
++		Real h = pp->z - TheTerrainLogic->getLayerHeight(pp->x, pp->y, obj->getLayer());
++		if (h > m_peakHeightAboveGround)
++			m_peakHeightAboveGround = h;
++	}
++	// (the peak is cleared below, on any frame that ends grounded)
+ 	Real															activeVelZ = 0;
+ 	Coord3D														bounceForce;
+ 	Bool															gotBounceForce = false;
+@@ -933,7 +948,17 @@
+ 		//
+ 		Real netSpeed = -activeVelZ - d->m_minFallSpeedForDamage;
+ 
+-		if (netSpeed > 0.0f && m_pui == nullptr)
++		// Reforged: falling damage requires a genuine fall. If this airborne stint never
++		// rose above a few units over the ground (a docking helicopter bobbing on the
++		// ground plane, an object settling onto terrain), there was no fall to damage
++		// from, whatever the z controller's instantaneous downward speed says. Genuine
++		// falls (cliff drops, aircraft downed from cruise height) peak far above this.
++		// The bob's amplitude scales with the step length (measured: peaks 2.4-4.8 at
++		// 60 steps/s, 5.2-6.6 at the retail 30), so the bar is calibrated at the 60
++		// rate and scaled by the step ratio: 5.0 at 60 steps, 10.0 at 30.
++		const Real MIN_REAL_FALL_HEIGHT = 5.0f * (2.0f / (Real)LOGICFRAMES_PER_RETAIL_FRAME);
++
++		if (netSpeed > 0.0f && m_pui == nullptr && m_peakHeightAboveGround > MIN_REAL_FALL_HEIGHT)
+ 		{
+ 			// only apply force if it's a pretty steep fall, so that things
+ 			// going down hills don't injure themselves (unless the hill is really steep)
+@@ -964,6 +989,8 @@
+ 
+ 	if (!airborneAtEnd)
+ 	{
++		// the airborne stint is over; forget its peak height (Reforged fall gate)
++		m_peakHeightAboveGround = 0.0f;
+ 		// just in case.
+ 		setFlag(IS_IN_FREEFALL, false);
+ 		if (obj->isDisabledByType(DISABLED_FREEFALL))
+@@ -1940,13 +1967,14 @@
+ // ------------------------------------------------------------------------------------------------
+ /** Xfer method
+ 	* Version Info:
+-	* 1: Initial version */
++	* 1: Initial version
++	* 3: Reforged — m_peakHeightAboveGround */
+ // ------------------------------------------------------------------------------------------------
+ void PhysicsBehavior::xfer( Xfer *xfer )
+ {
+ 
+ 	// version
+-	const XferVersion currentVersion = 2;
++	const XferVersion currentVersion = 3;
+ 	XferVersion version = currentVersion;
+ 	xfer->xferVersion( &version, currentVersion );
+ 
+@@ -2015,6 +2043,12 @@
+ 	// mag of current vel
+ 	xfer->xferReal( &m_velMag );
+ 
++	// peak height above ground during the current airborne stint (Reforged, v3)
++	if (version >= 3)
++	{
++		xfer->xferReal( &m_peakHeightAboveGround );
++	}
++
+ }
+ 
+ // ------------------------------------------------------------------------------------------------
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/PhysicsUpdate.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/PhysicsUpdate.h
+@@ -277,6 +277,7 @@
+ 	UnsignedInt									m_motiveForceExpires;			///< frames at which "recent" applyMotiveForce is no longer considered
+ 	Real												m_extraBounciness;				///< modifier to ground stiffness
+ 	Real												m_extraFriction;					///< modifier to friction(s)
++	Real												m_peakHeightAboveGround;	///< highest height above the ground layer reached during the current airborne stint; gates falling damage to genuine falls (Reforged: parked/docking helicopters bobbing at ground level are not falling)
+ 	ProjectileUpdateInterface*	m_pui;
+ 	mutable Real								m_velMag;									///< magnitude of cur vel (recalced when m_vel changes)
+ 
