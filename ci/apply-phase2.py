@@ -42,7 +42,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 OVERLAY = os.path.dirname(_HERE)
 SRC = os.environ.get('REFORGED_SRC') or os.path.dirname(OVERLAY)
 JAVA = os.path.join(SRC, 'android/app/src/main/java/com/generalsx/zerohour')
-MERGED_SHA256 = 'a80534063888a5a22a3c2548d2d7a5d9a6bd7d2df1f88c22744b26668dce680a'
+MERGED_SHA256 = 'b73e4c50b2520bec35a7d7e9a554932e4fadf517cc6affd645dfeaab68f6b26c'
 
 def edit(path, old, new):
     s = open(path, encoding='utf-8').read()
