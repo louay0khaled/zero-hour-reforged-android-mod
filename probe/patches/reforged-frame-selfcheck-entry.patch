@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000..46542e6a
 --- /dev/null
 +++ b/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,700 @@
 +/*
 +**	Entry point + crash instrumentation for sdl_gpu_frame_selfcheck on
 +**	Android — added by the Android probe harness patch (Stage C, slice
@@ -159,14 +159,19 @@ index 00000000..46542e6a
 +
 +#include <SDL3/SDL_main.h>
 +#include <SDL3/SDL_system.h>
++#include <SDL3/SDL.h>
 +
++#include <dirent.h>
 +#include <dlfcn.h>
 +#include <fcntl.h>
 +#include <signal.h>
 +#include <stddef.h>
 +#include <stdint.h>
 +#include <stdio.h>
++#include <stdlib.h>
 +#include <string.h>
++#include <sys/stat.h>
++#include <time.h>
 +#include <unistd.h>
 +
 +int sdl_gpu_frame_selfcheck_body();
@@ -337,6 +342,416 @@ index 00000000..46542e6a
 +}
 +
 +/* ------------------------------------------------------------------ */
++/* Stage C3 phase (v1.15): first frame, offscreen                      */
++/* ------------------------------------------------------------------ */
++/*
++** After the C2 selfcheck body returns, this phase runs slice C3's
++** mechanism on the same device class: a windowless SDL-GPU device,
++** a bounded run of frames rendered into the device's own target
++** (never a swapchain), a capture of the final frame dumped to
++** frame-capture.bmp in the external files directory, and a content
++** probe of the installed game data. The scene is a procedural
++** "map" texture (terrain gradient, river band, grid, unit discs)
++** with a panning camera window blitted into the target each frame:
++** a genuine sampling workload through the production GPU path, and
++** the verdict lines say exactly what it is. Rendering the game's
++** own shell-map scene needs the engine's content boot, which is
++** later stage-C work; the CONTENT line below reports the data side
++** (directory readable, archive count) so the gap is measured, not
++** hidden. Every line is printed into frame-result.txt via the dup'd
++** stdio channel, and the phase never aborts the process: failures
++** land as FAIL lines with the SDL error text.
++*/
++
++static double zh_c3_now_ms(void)
++{
++	struct timespec ts;
++	(void)clock_gettime(CLOCK_MONOTONIC, &ts);
++	return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
++}
++
++static unsigned int zh_c3_hash(unsigned int x)
++{
++	x ^= x >> 16;
++	x *= 0x7feb352du;
++	x ^= x >> 15;
++	return x;
++}
++
++/* 24-bit BMP, written by hand so the byte layout is unambiguous. */
++static int zh_c3_write_bmp(const char *path, const unsigned char *rgba,
++	int w, int h, int pitch)
++{
++	FILE *f = fopen(path, "wb");
++	if (f == NULL) {
++		return -1;
++	}
++	const int rowBytes = (w * 3 + 3) & ~3;
++	const unsigned int imgSize = (unsigned int)rowBytes * (unsigned int)h;
++	const unsigned int fileSize = 54u + imgSize;
++	unsigned char hdr[54];
++	memset(hdr, 0, sizeof(hdr));
++	hdr[0] = 'B'; hdr[1] = 'M';
++	memcpy(hdr + 2, &fileSize, 4);
++	const unsigned int dataOff = 54u;
++	memcpy(hdr + 10, &dataOff, 4);
++	const unsigned int infoSize = 40u;
++	memcpy(hdr + 14, &infoSize, 4);
++	memcpy(hdr + 18, &w, 4);
++	memcpy(hdr + 22, &h, 4);
++	const unsigned short planes = 1, bpp = 24;
++	memcpy(hdr + 26, &planes, 2);
++	memcpy(hdr + 28, &bpp, 2);
++	memcpy(hdr + 34, &imgSize, 4);
++	(void)fwrite(hdr, 1, sizeof(hdr), f);
++	unsigned char *row = (unsigned char *)malloc((size_t)rowBytes);
++	if (row == NULL) {
++		(void)fclose(f);
++		return -1;
++	}
++	for (int y = h - 1; y >= 0; y--) {
++		const unsigned char *src = rgba + (size_t)y * (size_t)pitch;
++		for (int x = 0; x < w; x++) {
++			row[x * 3 + 0] = src[x * 4 + 2];
++			row[x * 3 + 1] = src[x * 4 + 1];
++			row[x * 3 + 2] = src[x * 4 + 0];
++		}
++		for (int x = w * 3; x < rowBytes; x++) {
++			row[x] = 0;
++		}
++		(void)fwrite(row, 1, (size_t)rowBytes, f);
++	}
++	free(row);
++	(void)fclose(f);
++	return 0;
++}
++
++static void zh_c3_content_probe(const char *ext)
++{
++	char marker[1024];
++	(void)snprintf(marker, sizeof(marker), "%s/zh-gamedata-path.txt", ext);
++	FILE *f = fopen(marker, "r");
++	if (f == NULL) {
++		printf("[framecheck] C3 CONTENT gamedata=not-provided (no marker file)\n");
++		fflush(stdout);
++		return;
++	}
++	char dir[1024];
++	dir[0] = '\0';
++	if (fgets(dir, sizeof(dir), f) == NULL) {
++		dir[0] = '\0';
++	}
++	(void)fclose(f);
++	size_t len = strlen(dir);
++	while (len > 0 && (dir[len - 1] == '\n' || dir[len - 1] == '\r'
++		|| dir[len - 1] == ' ')) {
++		dir[--len] = '\0';
++	}
++	if (dir[0] == '\0') {
++		printf("[framecheck] C3 CONTENT gamedata=empty-path\n");
++		fflush(stdout);
++		return;
++	}
++	DIR *d = opendir(dir);
++	if (d == NULL) {
++		printf("[framecheck] C3 CONTENT gamedata=%s readable=no\n", dir);
++		fflush(stdout);
++		return;
++	}
++	int bigs = 0;
++	long long bigBytes = 0;
++	struct dirent *ent;
++	while ((ent = readdir(d)) != NULL) {
++		const char *dot = strrchr(ent->d_name, '.');
++		if (dot != NULL && strcasecmp(dot, ".big") == 0) {
++			char full[1536];
++			(void)snprintf(full, sizeof(full), "%s/%s", dir, ent->d_name);
++			struct stat st;
++			if (stat(full, &st) == 0) {
++				bigs++;
++				bigBytes += (long long)st.st_size;
++			}
++		}
++	}
++	(void)closedir(d);
++	printf("[framecheck] C3 CONTENT gamedata=%s readable=yes bigs=%d bigBytes=%lld\n",
++		dir, bigs, bigBytes);
++	fflush(stdout);
++}
++
++static int zh_c3_offscreen_phase(const char *ext)
++{
++	const int kFrames = 120;
++	const int kMapW = 1024, kMapH = 1024;
++	const int kDstW = 960, kDstH = 540;
++	const int kWinW = 512, kWinH = 288;
++
++	if (!SDL_Init(SDL_INIT_VIDEO)) {
++		printf("[framecheck] C3 OFFSCREEN fail stage=SDL_Init error=%s\n",
++			SDL_GetError());
++		fflush(stdout);
++		return 1;
++	}
++	SDL_GPUDevice *device = SDL_CreateGPUDevice(
++		SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);
++	if (device == NULL) {
++		printf("[framecheck] C3 OFFSCREEN fail stage=CreateGPUDevice error=%s\n",
++			SDL_GetError());
++		fflush(stdout);
++		SDL_Quit();
++		return 1;
++	}
++	const char *driver = SDL_GetGPUDeviceDriver(device);
++	printf("[framecheck] C3 OFFSCREEN device driver=%s frames=%d target=%dx%d\n",
++		driver != NULL ? driver : "?", kFrames, kDstW, kDstH);
++	fflush(stdout);
++
++	int failStage = 0;
++	SDL_GPUTexture *srcTex = NULL, *dstTex = NULL;
++	SDL_GPUTransferBuffer *upBuf = NULL, *downBuf = NULL;
++	double totalMs = 0.0, maxMs = 0.0;
++	int framesDone = 0, deviceLost = 0;
++	double variance = 0.0;
++	long captureBytes = 0;
++
++	SDL_GPUTextureCreateInfo texInfo;
++	SDL_zero(texInfo);
++	texInfo.type = SDL_GPU_TEXTURETYPE_2D;
++	texInfo.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
++	texInfo.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
++	texInfo.layer_count_or_depth = 1;
++	texInfo.num_levels = 1;
++	texInfo.sample_count = SDL_GPU_SAMPLECOUNT_1;
++	texInfo.width = (Uint32)kMapW;
++	texInfo.height = (Uint32)kMapH;
++	srcTex = SDL_CreateGPUTexture(device, &texInfo);
++	texInfo.width = (Uint32)kDstW;
++	texInfo.height = (Uint32)kDstH;
++	dstTex = SDL_CreateGPUTexture(device, &texInfo);
++	if (srcTex == NULL || dstTex == NULL) {
++		failStage = 1;
++	}
++
++	/* Procedural map: terrain gradient + value noise, a river band,
++	   a 64px grid, and bright unit discs -- content varied enough
++	   that a degenerate capture cannot pass the variance gate. */
++	if (failStage == 0) {
++		SDL_GPUTransferBufferCreateInfo tbInfo;
++		SDL_zero(tbInfo);
++		tbInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
++		tbInfo.size = (Uint32)(kMapW * kMapH * 4);
++		upBuf = SDL_CreateGPUTransferBuffer(device, &tbInfo);
++		if (upBuf == NULL) {
++			failStage = 2;
++		} else {
++			unsigned char *px = (unsigned char *)SDL_MapGPUTransferBuffer(
++				device, upBuf, false);
++			if (px == NULL) {
++				failStage = 2;
++			} else {
++				for (int y = 0; y < kMapH; y++) {
++					for (int x = 0; x < kMapW; x++) {
++						unsigned char *p = px + ((size_t)y * kMapW + x) * 4;
++						unsigned int n = zh_c3_hash(
++							(unsigned int)(x >> 3) * 1973u
++							+ (unsigned int)(y >> 3) * 9277u) % 40u;
++						int r = 150 + (y * 60) / kMapH - 30 + (int)n;
++						int g = 120 + (x * 40) / kMapW - 20 + (int)n;
++						int b = 70;
++						int river = y - (kMapH / 2 + (x * x) / 4096 - 128);
++						if (river > -18 && river < 18) {
++							r = 40; g = 90; b = 180;
++						}
++						if ((x % 64) == 0 || (y % 64) == 0) {
++							r = 30; g = 30; b = 30;
++						}
++						int dx = x - 300, dy = y - 700;
++						if (dx * dx + dy * dy < 900) { r = 230; g = 60; b = 40; }
++						dx = x - 760; dy = y - 260;
++						if (dx * dx + dy * dy < 900) { r = 240; g = 200; b = 60; }
++						dx = x - 560; dy = y - 480;
++						if (dx * dx + dy * dy < 484) { r = 60; g = 220; b = 120; }
++						p[0] = (unsigned char)(r < 0 ? 0 : (r > 255 ? 255 : r));
++						p[1] = (unsigned char)(g < 0 ? 0 : (g > 255 ? 255 : g));
++						p[2] = (unsigned char)b;
++						p[3] = 255;
++					}
++				}
++				SDL_UnmapGPUTransferBuffer(device, upBuf);
++				SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
++				if (cmd == NULL) {
++					failStage = 3;
++				} else {
++					SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
++					SDL_GPUTextureRegion region;
++					SDL_zero(region);
++					region.texture = srcTex;
++					region.w = (Uint32)kMapW;
++					region.h = (Uint32)kMapH;
++					region.d = 1;
++					SDL_GPUTextureTransferInfo tinfo;
++					SDL_zero(tinfo);
++					tinfo.transfer_buffer = upBuf;
++					tinfo.pixels_per_row = (Uint32)kMapW;
++					tinfo.rows_per_layer = (Uint32)kMapH;
++					SDL_UploadToGPUTexture(copy, &tinfo, &region, false);
++					SDL_EndGPUCopyPass(copy);
++					SDL_GPUFence *fence =
++						SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
++					if (fence == NULL
++						|| !SDL_WaitForGPUFences(device, true, &fence, 1)) {
++						failStage = 3;
++					} else {
++						SDL_ReleaseGPUFence(device, fence);
++					}
++				}
++			}
++		}
++	}
++
++	/* The frame loop: an animated camera window over the map,
++	   blitted into the device's own target every frame. */
++	if (failStage == 0) {
++		for (int i = 0; i < kFrames; i++) {
++			double t0 = zh_c3_now_ms();
++			SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
++			if (cmd == NULL) {
++				deviceLost = 1;
++				break;
++			}
++			double ph = (double)i / (double)kFrames;
++			int sx = (int)((0.5 + 0.5 * SDL_sin(ph * 6.283185307)) * (kMapW - kWinW));
++			int sy = (int)((0.5 + 0.5 * SDL_cos(ph * 4.398229715)) * (kMapH - kWinH));
++			SDL_GPUBlitInfo blit;
++			SDL_zero(blit);
++			blit.source.texture = srcTex;
++			blit.source.x = (Uint32)sx;
++			blit.source.y = (Uint32)sy;
++			blit.source.w = (Uint32)kWinW;
++			blit.source.h = (Uint32)kWinH;
++			blit.destination.texture = dstTex;
++			blit.destination.w = (Uint32)kDstW;
++			blit.destination.h = (Uint32)kDstH;
++			blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
++			blit.filter = SDL_GPU_FILTER_LINEAR;
++			SDL_BlitGPUTexture(cmd, &blit);
++			SDL_GPUFence *fence =
++				SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
++			if (fence == NULL
++				|| !SDL_WaitForGPUFences(device, true, &fence, 1)) {
++				deviceLost = 1;
++				break;
++			}
++			SDL_ReleaseGPUFence(device, fence);
++			double dt = zh_c3_now_ms() - t0;
++			totalMs += dt;
++			if (dt > maxMs) {
++				maxMs = dt;
++			}
++			framesDone++;
++		}
++	}
++
++	/* Capture: download the final target, measure it, dump a BMP. */
++	if (failStage == 0 && deviceLost == 0) {
++		SDL_GPUTransferBufferCreateInfo tbInfo;
++		SDL_zero(tbInfo);
++		tbInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
++		tbInfo.size = (Uint32)(kDstW * kDstH * 4);
++		downBuf = SDL_CreateGPUTransferBuffer(device, &tbInfo);
++		if (downBuf == NULL) {
++			failStage = 4;
++		} else {
++			SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
++			if (cmd == NULL) {
++				failStage = 4;
++			} else {
++				SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
++				SDL_GPUTextureRegion region;
++				SDL_zero(region);
++				region.texture = dstTex;
++				region.w = (Uint32)kDstW;
++				region.h = (Uint32)kDstH;
++				region.d = 1;
++				SDL_GPUTextureTransferInfo tinfo;
++				SDL_zero(tinfo);
++				tinfo.transfer_buffer = downBuf;
++				tinfo.pixels_per_row = (Uint32)kDstW;
++				tinfo.rows_per_layer = (Uint32)kDstH;
++				SDL_DownloadFromGPUTexture(copy, &region, &tinfo);
++				SDL_EndGPUCopyPass(copy);
++				SDL_GPUFence *fence =
++					SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
++				if (fence == NULL
++					|| !SDL_WaitForGPUFences(device, true, &fence, 1)) {
++					failStage = 4;
++				} else {
++					SDL_ReleaseGPUFence(device, fence);
++					unsigned char *px = (unsigned char *)
++						SDL_MapGPUTransferBuffer(device, downBuf, false);
++					if (px == NULL) {
++						failStage = 4;
++					} else {
++						double mean = 0.0;
++						int samples = 0;
++						for (int i = 0; i < kDstW * kDstH; i += 97) {
++							const unsigned char *p = px + (size_t)i * 4;
++							mean += 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
++							samples++;
++						}
++						mean /= samples;
++						double acc = 0.0;
++						for (int i = 0; i < kDstW * kDstH; i += 97) {
++							const unsigned char *p = px + (size_t)i * 4;
++							double lum = 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
++							acc += (lum - mean) * (lum - mean);
++						}
++						variance = acc / samples;
++						char bmpPath[1024];
++						(void)snprintf(bmpPath, sizeof(bmpPath),
++							"%s/frame-capture.bmp", ext);
++						if (zh_c3_write_bmp(bmpPath, px, kDstW, kDstH,
++								kDstW * 4) == 0) {
++							struct stat st;
++							if (stat(bmpPath, &st) == 0) {
++								captureBytes = (long)st.st_size;
++							}
++						}
++						SDL_UnmapGPUTransferBuffer(device, downBuf);
++					}
++				}
++			}
++		}
++	}
++
++	int pass = (failStage == 0 && deviceLost == 0 && framesDone == kFrames
++		&& variance > 100.0 && captureBytes > 0) ? 1 : 0;
++	printf("[framecheck] C3 OFFSCREEN frames=%d deviceLost=%d avgMs=%.2f "
++		"maxMs=%.2f variance=%.1f captureBytes=%ld failStage=%d\n",
++		framesDone, deviceLost,
++		framesDone > 0 ? totalMs / framesDone : 0.0, maxMs,
++		variance, captureBytes, failStage);
++	printf("[framecheck] C3 OFFSCREEN-VERDICT %s\n", pass ? "PASS" : "FAIL");
++	fflush(stdout);
++
++	if (downBuf != NULL) {
++		SDL_ReleaseGPUTransferBuffer(device, downBuf);
++	}
++	if (upBuf != NULL) {
++		SDL_ReleaseGPUTransferBuffer(device, upBuf);
++	}
++	if (srcTex != NULL) {
++		SDL_ReleaseGPUTexture(device, srcTex);
++	}
++	if (dstTex != NULL) {
++		SDL_ReleaseGPUTexture(device, dstTex);
++	}
++	SDL_DestroyGPUDevice(device);
++	SDL_Quit();
++	return pass ? 0 : 1;
++}
++
++/* ------------------------------------------------------------------ */
 +/* Entry                                                               */
 +/* ------------------------------------------------------------------ */
 +
@@ -371,6 +786,19 @@ index 00000000..46542e6a
 +	zh_probe_crumb("sdl-main");
 +	int rc = sdl_gpu_frame_selfcheck_body();
 +	zh_probe_crumb("body-returned");
++
++	/* Stage C3 (v1.15): the offscreen first-frame phase + content
++	   probe, appended after the C2 body in the same result file.
++	   Guarded so a missing external path skips it with a line,
++	   never a crash. */
++	if (ext != NULL && ext[0] != '\0') {
++		zh_probe_crumb("c3-begin");
++		(void)zh_c3_offscreen_phase(ext);
++		zh_c3_content_probe(ext);
++		zh_probe_crumb("c3-done");
++	} else {
++		(void)printf("[framecheck] C3 skipped: no external storage path\n");
++	}
 +
 +	/* The trailer is the exit-code channel: SDLActivity does not
 +	   hand SDL_main's return value to the launcher activity, so the
