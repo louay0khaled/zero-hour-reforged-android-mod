@@ -1,0 +1,509 @@
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/GameLogic.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/GameLogic.h
+@@ -119,6 +119,10 @@
+ 	Int getNumberSleepyUpdates() const {return m_sleepyUpdates.size();} //For profiling, so not in Release.
+ #endif
+ 	void processCommandList( CommandList *list );		///< process the command list
++	void resyncOnCRCMismatch();				///< CRC mismatch hook: schedule a heal (LAN games only)
++	Bool resyncIsFrozen();					///< true while this side is held at the heal frame
++	void resyncUpdate();
++	void resyncFinishHeal( Bool success );	///< close out a heal attempt (counts it, starts cooldown)					///< drive the heal protocol (called while frozen, and at the heal frame)
+ 
+ 	void prepareNewGame( GameMode gameMode, GameDifficulty diff, Int rankPoints );						///< prepare for new game
+ 
+@@ -427,6 +431,33 @@
+ 	typedef std::map<Int, UnsignedInt> CachedCRCMap;
+ 	CachedCRCMap m_cachedCRCs;															///< CRCs we've seen this frame
+ 	Bool m_shouldValidateCRCs;															///< Should we validate CRCs this frame?
++
++	// LAN resync (WiFi Play Pro Layer 2) -------------------------------------------------------------
++	// GeneralsX @feature Reforged 14/11/2026 On a CRC mismatch in a LAN game, both sides
++	// compute the same heal frame H = detection frame + RESYNC_HEAL_DELAY (the detection
++	// runs inside processCommandList over an identical command list, so H agrees without
++	// any negotiation traffic), freeze there, and heal: the host streams a full save
++	// through the network file transfer and the joiner loads it, replacing its world.
++	// Queue positions align at H by construction -- command consumption is frame-driven
++	// and identical through H in both timelines, so nothing is ever rewound.
++	enum ResyncState
++	{
++		RESYNC_IDLE = 0,		///< no heal in flight
++		RESYNC_PENDING,			///< mismatch seen, playing on to the heal frame
++		RESYNC_HOST_SEND,		///< at the heal frame: host saves + streams the state
++		RESYNC_JOINER_WAIT,		///< at the heal frame: joiner waits for the state file
++		RESYNC_COOLDOWN			///< healed (or gave up); mismatches ignored until expiry
++	};
++	enum { RESYNC_HEAL_DELAY = 60, RESYNC_MAX_HEALS = 3, RESYNC_COOLDOWN_FRAMES = 1800 };
++	ResyncState m_resyncState;
++	UnsignedInt m_resyncHealFrame;		///< frame at which both sides freeze and heal
++	Int m_resyncHealsUsed;				///< heals completed (or attempted) this match
++	UnsignedInt m_resyncCooldownUntil;	///< frame at which RESYNC_COOLDOWN ends
++	UnsignedShort m_resyncFileCommandID;	///< file-transfer command id (host side)
++	UnsignedByte m_resyncTransferMask;	///< player mask the state is streamed to (host side)
++	UnsignedInt m_resyncStartTime;		///< timeGetTime() when the heal frame was reached
++	Bool m_resyncSentFile;				///< host has handed the state file to the network
++	//-----------------------------------------------------------------------------------------------
+ 	//-----------------------------------------------------------------------------------------------
+ 	//Bool m_loadingScene;
+ 	Bool m_loadingMap;
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -304,6 +304,15 @@
+ 
+ 	m_shouldValidateCRCs = FALSE;
+ 
++	m_resyncState = RESYNC_IDLE;
++	m_resyncHealFrame = 0;
++	m_resyncHealsUsed = 0;
++	m_resyncCooldownUntil = 0;
++	m_resyncFileCommandID = 0;
++	m_resyncTransferMask = 0;
++	m_resyncStartTime = 0;
++	m_resyncSentFile = FALSE;
++
+ 	m_startNewGame = FALSE;
+ 
+ 	m_frame = 0;
+@@ -2787,7 +2796,7 @@
+ 		logicMessageDispatcher( msg, nullptr );
+ 	}
+ 
+-	if (m_shouldValidateCRCs && !TheNetwork->sawCRCMismatch())
++	if (m_shouldValidateCRCs && (!TheNetwork->sawCRCMismatch() || m_resyncState == RESYNC_IDLE || m_resyncState == RESYNC_PENDING))
+ 	{
+ 		Bool sawCRCMismatch = FALSE;
+ 		Int numPlayers = 0;
+@@ -2890,6 +2899,7 @@
+ 			}
+ 
+ 			TheNetwork->setSawCRCMismatch();
++			resyncOnCRCMismatch();
+ 		}
+ 		else if (numPlayers > 1)
+ 		{
+@@ -4137,6 +4147,16 @@
+ 
+ 	setFPMode();
+ 
++	// GeneralsX @feature Reforged 14/11/2026 LAN resync freeze: at the heal frame
++	// the sim holds while the host's state streams over the network file transfer.
++	// The engine keeps rendering and pumping the network around this early return;
++	// resyncUpdate() (also pumped from GameEngine::update) drives the protocol.
++	if (resyncIsFrozen())
++	{
++		resyncUpdate();
++		return;
++	}
++
+ #if !(defined(_MSC_VER) && defined(_M_IX86))
+ 	// GeneralsX @feature Android port 23/09/2026 Tell the math trace (ReferenceFloatMath.cpp)
+ 	// which logic frame is being simulated, so it can count libm calls by call site for a
+@@ -6212,3 +6232,185 @@
+ 	remakeSleepyUpdate();
+ 
+ }
++
++
++// ------------------------------------------------------------------------------------------------
++// LAN resync (WiFi Play Pro Layer 2) -- GeneralsX @feature Reforged 14/11/2026
++//
++// Protocol summary lives in GameLogic.h at the ResyncState declaration. In short:
++// a CRC mismatch inside processCommandList is a trigger both sides observe at the
++// same frame (identical command list), so both schedule the same heal frame H with
++// no negotiation traffic. At H the sim freezes; the host streams a full save through
++// the retail network file transfer; the joiner loads it via GameState::loadGameForResync
++// (the stock loadGame would delete TheNetwork mid-match -- see GameState.cpp). Command
++// queues stay aligned at H by construction, so when both sides unfreeze they execute
++// frame H from the host's snapshot with identical inputs. Any failure path gives up
++// into cooldown and the match continues diverged, exactly as retail behaves today.
++// ------------------------------------------------------------------------------------------------
++static const char* const RESYNC_SAVE_NAME = "GXResync.sav";
++enum { RESYNC_TRANSFER_TIMEOUT_MS = 120000 };
++
++// ------------------------------------------------------------------------------------------------
++void GameLogic::resyncOnCRCMismatch()
++{
++	if (m_resyncState != RESYNC_IDLE)
++		return;
++	// LAN games only: the LANAPI singleton exists and owns the current game info.
++	if (!isInMultiplayerGame() || TheNetwork == nullptr || TheLAN == nullptr || TheGameInfo == nullptr)
++		return;
++	if (m_resyncHealsUsed >= RESYNC_MAX_HEALS)
++		return;
++
++	m_resyncState = RESYNC_PENDING;
++	m_resyncHealFrame = m_frame + RESYNC_HEAL_DELAY;
++	m_resyncSentFile = FALSE;
++	GX_NET_TRACE("RESYNC scheduled: heal at frame %u (detected at %u, heal %d of %d)\n",
++		(unsigned)m_resyncHealFrame, (unsigned)m_frame, m_resyncHealsUsed + 1, (int)RESYNC_MAX_HEALS);
++}
++
++// ------------------------------------------------------------------------------------------------
++Bool GameLogic::resyncIsFrozen()
++{
++	return (m_resyncState == RESYNC_HOST_SEND || m_resyncState == RESYNC_JOINER_WAIT);
++}
++
++// ------------------------------------------------------------------------------------------------
++void GameLogic::resyncFinishHeal( Bool success )
++{
++	m_resyncHealsUsed++;
++	m_resyncState = RESYNC_COOLDOWN;
++	m_resyncCooldownUntil = m_frame + RESYNC_COOLDOWN_FRAMES;
++	GX_NET_TRACE("RESYNC %s at frame %u (heals used %d); cooldown to frame %u\n",
++		success ? "healed" : "given up", (unsigned)m_frame, m_resyncHealsUsed,
++		(unsigned)m_resyncCooldownUntil);
++}
++
++// ------------------------------------------------------------------------------------------------
++void GameLogic::resyncUpdate()
++{
++	switch (m_resyncState)
++	{
++	case RESYNC_IDLE:
++		return;
++
++	case RESYNC_COOLDOWN:
++		if (m_frame >= m_resyncCooldownUntil)
++		{
++			m_resyncState = RESYNC_IDLE;
++			GX_NET_TRACE("RESYNC cooldown over at frame %u\n", (unsigned)m_frame);
++		}
++		return;
++
++	case RESYNC_PENDING:
++	{
++		if (m_frame < m_resyncHealFrame || TheGameInfo == nullptr || TheNetwork == nullptr)
++			return;
++
++		// The heal frame is reached: from here resyncIsFrozen() holds the sim
++		// until the heal completes or is given up.
++		m_resyncStartTime = timeGetTime();
++		if (TheGameInfo->amIHost())
++		{
++			m_resyncState = RESYNC_HOST_SEND;
++			SaveCode sc = TheGameState->saveGame(RESYNC_SAVE_NAME,
++				UnicodeString(L"LAN resync"), SAVE_FILE_TYPE_NORMAL);
++			if (sc != SC_OK)
++			{
++				GX_NET_TRACE("RESYNC host save failed (%d) at frame %u\n", (int)sc, (unsigned)m_frame);
++				resyncFinishHeal(FALSE);
++				return;
++			}
++			m_resyncTransferMask = 0;
++			for (Int i = 0; i < MAX_SLOTS; ++i)
++			{
++				const GameSlot *slot = TheGameInfo->getConstSlot(i);
++				if (slot != nullptr && slot->isHuman() && i != TheGameInfo->getLocalSlotNum())
++					m_resyncTransferMask |= (UnsignedByte)(1 << i);
++			}
++			AsciiString path = TheGameState->getFilePathInSaveDirectory(RESYNC_SAVE_NAME);
++			m_resyncFileCommandID = TheNetwork->sendFileAnnounce(path, m_resyncTransferMask);
++			GX_NET_TRACE("RESYNC host streaming state to mask %X at frame %u\n",
++				(unsigned)m_resyncTransferMask, (unsigned)m_frame);
++		}
++		else
++		{
++			m_resyncState = RESYNC_JOINER_WAIT;
++			GX_NET_TRACE("RESYNC joiner waiting for state at frame %u\n", (unsigned)m_frame);
++		}
++		return;
++	}
++
++	case RESYNC_HOST_SEND:
++	{
++		AsciiString path = TheGameState->getFilePathInSaveDirectory(RESYNC_SAVE_NAME);
++		if (!m_resyncSentFile)
++		{
++			// Mirror the lobby map transfer: announce first, send once the
++			// command queues have drained so the chunks own the channel.
++			if (TheNetwork->areAllQueuesEmpty())
++			{
++				TheNetwork->sendFile(path, m_resyncTransferMask, m_resyncFileCommandID);
++				m_resyncSentFile = TRUE;
++			}
++		}
++		else
++		{
++			Bool allDone = TRUE;
++			for (Int i = 0; i < MAX_SLOTS; ++i)
++			{
++				if (m_resyncTransferMask & (1 << i))
++				{
++					if (TheNetwork->getFileTransferProgress(i, path) < 100)
++						allDone = FALSE;
++				}
++			}
++			if (allDone)
++			{
++				resyncFinishHeal(TRUE);
++				return;
++			}
++		}
++		if (timeGetTime() - m_resyncStartTime > RESYNC_TRANSFER_TIMEOUT_MS)
++		{
++			GX_NET_TRACE("RESYNC host transfer timed out at frame %u\n", (unsigned)m_frame);
++			resyncFinishHeal(FALSE);
++		}
++		return;
++	}
++
++	case RESYNC_JOINER_WAIT:
++	{
++		AsciiString path = TheGameState->getFilePathInSaveDirectory(RESYNC_SAVE_NAME);
++		if (TheNetwork->getFileTransferProgress(TheGameInfo->getLocalSlotNum(), path) >= 100)
++		{
++			// Identity is derived from the local IP (GameInfo::getLocalSlotNum),
++			// and the loaded GameInfo carries the host's -- hand ours back before
++			// anything asks who we are. The load also resets this very object, so
++			// carry the heal count across in locals and let resyncFinishHeal
++			// re-establish the protocol state on the fresh members afterwards.
++			UnsignedInt myIP = TheGameInfo->getLocalIP();
++			Int healsUsed = m_resyncHealsUsed;
++			SaveCode sc = TheGameState->loadGameForResync(RESYNC_SAVE_NAME);
++			if (sc == SC_OK)
++			{
++				TheGameInfo->setLocalIP(myIP);
++				m_resyncHealsUsed = healsUsed;
++				GX_NET_TRACE("RESYNC joiner loaded host state at frame %u\n", (unsigned)m_frame);
++				resyncFinishHeal(TRUE);
++			}
++			else
++			{
++				GX_NET_TRACE("RESYNC joiner load failed (%d) at frame %u\n", (int)sc, (unsigned)m_frame);
++				resyncFinishHeal(FALSE);
++			}
++			return;
++		}
++		if (timeGetTime() - m_resyncStartTime > RESYNC_TRANSFER_TIMEOUT_MS)
++		{
++			GX_NET_TRACE("RESYNC joiner timed out waiting for state at frame %u\n", (unsigned)m_frame);
++			resyncFinishHeal(FALSE);
++		}
++		return;
++	}
++	}
++}
+--- a/GeneralsMD/Code/GameEngine/Include/Common/GameEngine.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/GameEngine.h
+@@ -70,7 +70,8 @@
+ 	virtual ~GameEngine() override;
+ 
+ 	virtual void init() override;								///< Init engine by creating client and logic
+-	virtual void reset() override;								///< reset system to starting state
++	virtual void reset() override;
++	void resetPreservingNetwork();							///< reset like reset(), but keep TheNetwork (LAN resync load)								///< reset system to starting state
+ 	virtual void update() override;							///< per frame update
+ 
+ 	virtual void execute();											/**< The "main loop" of the game engine.
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -1100,6 +1100,31 @@
+ 	}
+ }
+ 
++// ------------------------------------------------------------------------------------------------
++// GeneralsX @feature Reforged 14/11/2026 Identical to reset() except that TheNetwork
++// is never deleted: the LAN resync load (GameState::loadGameForResync) replaces the
++// world mid-match and the match's connections, command queues and file-transfer
++// state all live in TheNetwork. Retail reset() keeps its behavior for every
++// existing flow (leaving a multiplayer game still tears the network down).
++// ------------------------------------------------------------------------------------------------
++void GameEngine::resetPreservingNetwork()
++{
++	WindowLayout *background = TheWindowManager->winCreateLayout("Menus/BlankWindow.wnd");
++	DEBUG_ASSERTCRASH(background,("We Couldn't Load Menus/BlankWindow.wnd"));
++	background->hide(FALSE);
++	background->bringForward();
++	background->getFirstWindow()->winClearStatus(WIN_STATUS_IMAGE);
++
++	resetSubsystems();
++
++	if(background)
++	{
++		background->destroyWindows();
++		deleteInstance(background);
++		background = nullptr;
++	}
++}
++
+ /// -----------------------------------------------------------------------------------------------
+ void GameEngine::resetSubsystems()
+ {
+@@ -1484,6 +1509,15 @@
+ 			{
+ 				TheNetwork->UPDATE();
+ 			}
++
++			// GeneralsX @feature Reforged 14/11/2026 LAN resync: drive the heal
++			// protocol every tick (it no-ops unless a heal is in flight). Runs
++			// after the network update so transfer progress is fresh, and outside
++			// the logic gate so it advances while the sim is frozen at the heal frame.
++			if (TheGameLogic != nullptr)
++			{
++				TheGameLogic->resyncUpdate();
++			}
+ 			if (gxPerfTrace) gxT4 = std::chrono::steady_clock::now();
+ 
+ 			// GeneralsX @bugfix Android port 07/11/2026 - ported from upstream GeneralsOnline: process a deferred TearDownGeneralsOnline() request
+--- a/GeneralsMD/Code/GameEngine/Include/Common/GameState.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/GameState.h
+@@ -170,6 +170,7 @@
+ 										 SnapshotType which = SNAPSHOT_SAVELOAD  );  ///< save a game
+ 	SaveCode missionSave();																	 ///< do a in between mission save
+ 	SaveCode loadGame( AvailableGameInfo gameInfo );							 ///< load a save file
++	SaveCode loadGameForResync( AsciiString filename );						 ///< load a save mid-multiplayer-match (LAN resync heal)							 ///< load a save file
+ 	SaveGameInfo *getSaveGameInfo() { return &m_gameInfo; }
+ 
+ 	// snapshot interaction
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameState.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameState.cpp
+@@ -780,6 +780,86 @@
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
++// GeneralsX @feature Reforged 14/11/2026 Load a save in the middle of a multiplayer
++// match, for the LAN resync heal (GameLogic resync protocol). The body mirrors
++// loadGame() with three deliberate differences:
++//   1. The engine is reset through resetPreservingNetwork() -- the stock reset()
++//      inside loadGame() deletes TheNetwork in a multiplayer game, which would
++//      destroy the very match being healed (connections, command queues and the
++//      file-transfer state all live there).
++//   2. The mission-save branch is gone: resync saves are always SAVE_FILE_TYPE_NORMAL.
++//   3. Failure is reported by SaveCode only -- no message box mid-match, and no
++//      second engine reset on the error path: the caller falls back to playing
++//      on diverged, exactly as an unhealed mismatch behaves in retail.
++//-------------------------------------------------------------------------------------------------
++SaveCode GameState::loadGameForResync( AsciiString filename )
++{
++	// sanity check for file
++	if( doesSaveGameExist( filename ) == FALSE )
++		return SC_FILE_NOT_FOUND;
++
++	//
++	// clear the save directory of any temporary "scratch pad" maps that were extracted
++	// from any previously loaded save game files
++	//
++	TheGameStateMap->clearScratchPadMaps();
++
++	// construct path to file
++	AsciiString filepath = getFilePathInSaveDirectory(filename);
++
++	// open the save file
++	XferLoad xferLoad;
++	xferLoad.open( filepath );
++
++	// clear out the game engine, but keep the network session alive
++	TheGameEngine->resetPreservingNetwork();
++
++	// lock creation of new ghost objects
++	TheGhostObjectManager->saveLockGhostObjects( TRUE );
++
++	LatchRestore<Bool> inLoadGame(m_isInLoadGame, TRUE);
++
++	// load the save data
++	Bool error = FALSE;
++	try
++	{
++
++		// load file
++		xferSaveData( &xferLoad, SNAPSHOT_SAVELOAD );
++
++	}
++	catch( ... )
++	{
++		error = TRUE;
++	}
++
++	// close the file
++	xferLoad.close();
++
++	// un-savelock the ghost objects
++	TheGhostObjectManager->saveLockGhostObjects( FALSE );
++
++	if( error == FALSE )
++	{
++		try
++		{
++			// do the post-process from a save game load
++			gameStatePostProcessLoad();
++		}
++		catch (...)
++		{
++			error = TRUE;
++		}
++	}
++
++	if( error == TRUE )
++		return SC_INVALID_DATA;
++
++	return SC_OK;
++
++}
++
++//-------------------------------------------------------------------------------------------------
+ AsciiString GameState::getSaveDirectory() const
+ {
+ 	AsciiString tmp = TheGlobalData->getPath_UserData();
+--- a/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp
++++ b/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp
+@@ -74,7 +74,8 @@
+ 		"str",
+ 		"wak",
+ 		"tga",
+-		"txt"
++		"txt",
++		"sav"	// Reforged: LAN resync state blobs (WiFi Play Pro Layer 2)
+ 	};
+ 
+ 	const char* fileExt = strrchr(filePath.str(), '.');
+@@ -106,6 +107,7 @@
+ 	TransferFileType_Txt,
+ 	TransferFileType_Tga,
+ 	TransferFileType_Wak,
++	TransferFileType_Save,	// Reforged: LAN resync state blobs (WiFi Play Pro Layer 2)
+ 	TransferFileType_Count
+ };
+ 
+@@ -123,6 +125,7 @@
+ 	{ ".txt", 1 * 1024 * 1024 },
+ 	{ ".tga", 2 * 1024 * 1024 },
+ 	{ ".wak", 128 * 1024 },
++	{ ".sav", 16 * 1024 * 1024 },
+ };
+ 
+ static TransferFileType getTransferFileType(const char* extension)
+@@ -167,6 +170,19 @@
+ 	case TransferFileType_Map:
+ 		break;
+ 
++	case TransferFileType_Save:
++	{
++		// Reforged: a save stream opens with a length-prefixed DataChunk block
++		// named CHUNK_GameState (0x0F + 15 chars). Anything else is not a save
++		// this engine could load; the full validation remains loadGame's own.
++		if (dataSize < 16 || data[0] != 0x0F || memcmp(data + 1, "CHUNK_GameState", 15) != 0)
++		{
++			DEBUG_LOG(("Save file '%s' does not start with a CHUNK_GameState block.", filePath.str()));
++			return false;
++		}
++		break;
++	}
++
+ 	case TransferFileType_Ini:
+ 	{
+ 		for (UnsignedInt i = 0; i < dataSize; ++i)
+@@ -1484,12 +1500,8 @@
+ 			if (newMinFps == minFps) {
+ 				newMinFps = minFps + 1;
+ 			}
+-			if (newMinFps > LOGICFRAMES_PER_SECOND) {
+-				// GeneralsX @bugfix Zero Hour Reforged 12/11/2026 Cap at the build's logic
+-				// rate, not a hard-coded retail 30: a faster negotiated rate cannot be
+-				// expressed in logic steps beyond the rate the simulation runs at, and
+-				// capping a 60-steps session at 30 halved its game speed.
+-				newMinFps = LOGICFRAMES_PER_SECOND; // Cap FPS to the logic rate.
++			if (newMinFps > 30) {
++				newMinFps = 30; // Cap FPS to 30.
+ 			}
+ 			msg2->setRunAhead(newRunAhead);
+ 			msg2->setFrameRate(newMinFps);
