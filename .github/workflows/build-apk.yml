@@ -49,6 +49,8 @@ env:
   # Pinned upstream commit the overlay was extracted and verified against
   # (the v1 local build tree). Bump only with a re-extracted overlay.
   MYSOREZ_REF: a520ed1b693f18fd1404d2cc85b33ba041b52523
+  REFORGED_REPO: olcayseygan/cncgeneralszh-reforged
+  REFORGED_PIN: 61dbc593fb4eecb7af891b80c4c491c3ad2b791d
   # Toolchain pins, identical to upstream's own build-android.yml.
   NDK_VERSION: "27.2.12479018"
   GRADLE_VERSION: "8.9"
@@ -74,6 +76,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: reforged-overlay
+
+      - name: Checkout Reforged engine (pinned, C3 payload)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REFORGED_REPO }}
+          ref: ${{ env.REFORGED_PIN }}
+          path: reforged-engine
 
       - name: Checkout DXVK fork submodule
         run: |
@@ -128,6 +137,7 @@ jobs:
           # the MYSOREZ tree as the parent of the overlay checkout).
           python3 reforged-overlay/ci/apply-surgery.py
           python3 reforged-overlay/ci/apply-phase2.py
+          python3 reforged-overlay/ci/apply-phase3.py
           # Verify the overlay actually landed (fail loud, not silent):
           grep -q "applicationId 'com.louay.zerohour.reforged'" android/app/build.gradle
           grep -q "reforged_60_steps" android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java
@@ -589,6 +599,40 @@ jobs:
       # Strip list is the v1 local build's (build-apk.sh): upstream's list
       # plus libgenerals.so. DXVK libraries are deliberately NOT stripped
       # (see android/app/build.gradle keepDebugSymbols).
+      # v1.15: the Stage C3 test payload -- the upstream Reforged
+      # engine's frame selfcheck + offscreen phase, built exactly the
+      # C1/C2-proven way (probe workflow's renderer route) and shipped
+      # as libmainrfx.so. Only the launcher's tests page loads it, in
+      # its own process; the game never does.
+      - name: Build Reforged C3 test payload (libmainrfx.so)
+        run: |
+          set -euo pipefail
+          SRC="$PWD/reforged-engine"
+          git -C "$SRC" apply --check "$PWD/reforged-overlay/probe/patches/reforged-c1-android.patch"
+          git -C "$SRC" apply "$PWD/reforged-overlay/probe/patches/reforged-c1-android.patch"
+          git -C "$SRC" apply --check "$PWD/reforged-overlay/probe/patches/reforged-frame-selfcheck-entry.patch"
+          git -C "$SRC" apply "$PWD/reforged-overlay/probe/patches/reforged-frame-selfcheck-entry.patch"
+          test -f "$SRC/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp"
+          grep -q "C3 OFFSCREEN-VERDICT" "$SRC/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp"
+          bash "$SRC/GeneralsMD/Code/Tools/vendor.sh"
+          GS="$SRC/GeneralsMD/Code/Libraries/Source/GameSpy"
+          test -f "$GS/src/common/linux/gsthreadlinux.c"
+          GIT_CEILING_DIRECTORIES="$SRC/GeneralsMD/Code/Libraries/Source" git -C "$GS" -c core.autocrlf=false apply "$PWD/reforged-overlay/probe/patches/gamespy-android-pthread.patch"
+          grep -q "bionic has no pthread_cancel" "$GS/src/common/linux/gsthreadlinux.c"
+          mkdir -p "$PWD/host-tools"
+          c++ -O2 -std=c++17 "$SRC/GeneralsMD/Code/Tools/fingerprint/build_fingerprint.cpp" -o "$PWD/host-tools/build_fingerprint"
+          export PATH="$PWD/host-tools:$PATH"
+          cmake -S "$SRC/GeneralsMD/Code" -B "$PWD/rfx-build" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$PWD/rfx-build" --target sdl_gpu_frame_selfcheck -j"$(nproc)"
+          cp "$PWD/rfx-build/libsdl_gpu_frame_selfcheck.so" "${GITHUB_WORKSPACE}/libmainrfx.so"
+          NM="$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-nm | head -1)"
+          "$NM" -D "${GITHUB_WORKSPACE}/libmainrfx.so" > "${RUNNER_TEMP}/rfx-dynsym.txt"
+          grep -q " T SDL_main" "${RUNNER_TEMP}/rfx-dynsym.txt"
+          strings "${GITHUB_WORKSPACE}/libmainrfx.so" > "${RUNNER_TEMP}/rfx-strings.txt"
+          grep -q "C3 OFFSCREEN-VERDICT" "${RUNNER_TEMP}/rfx-strings.txt"
+          grep -q "frame-capture.bmp" "${RUNNER_TEMP}/rfx-strings.txt"
+          ls -la "${GITHUB_WORKSPACE}/libmainrfx.so"
+
       - name: Strip debug symbols
         run: |
           STRIP="$(ls "${ANDROID_NDK_HOME}"/toolchains/llvm/prebuilt/*/bin/llvm-strip | head -1)"
@@ -614,6 +658,9 @@ jobs:
           # The standard engine's packaged copy, same discipline.
           [ -f "${GITHUB_WORKSPACE}/libmainrf.so" ] || { echo "::error::libmainrf.so missing at strip time (Reforged-tree standard staging lost)"; exit 1; }
           "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainrf.so"
+          # The C3 test payload's packaged copy, same discipline.
+          [ -f "${GITHUB_WORKSPACE}/libmainrfx.so" ] || { echo "::error::libmainrfx.so missing at strip time (C3 payload staging lost)"; exit 1; }
+          "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainrfx.so"
 
       # GX_GRADLE_TASK is the overlay patch's knob: the packaging script
       # stages jniLibs/assets, then runs assembleRelease instead of its
@@ -627,6 +674,7 @@ jobs:
           GX_GRADLE_TASK: assembleRelease
           GX_REFORGED60_LIB: ${{ github.workspace }}/libmainrf60.so
           GX_REFORGED_LIB: ${{ github.workspace }}/libmainrf.so
+          GX_REFORGEDX_LIB: ${{ github.workspace }}/libmainrfx.so
           # v1.13: the host's engines are NOT packaged. The packaging
           # script still stages the shared libraries from the base tree,
           # but this knob (our gradle-task patch) keeps libmain.so and
@@ -664,7 +712,7 @@ jobs:
           # host's four libraries are forbidden outright -- any one of
           # them in the APK fails the build -- and the *60.so set is
           # exactly {libmainrf60.so} (ls sorts).
-          for required in libmainrf60.so libmainrf.so; do
+          for required in libmainrf60.so libmainrf.so libmainrfx.so; do
             if [ ! -f "${WORKDIR}/lib/arm64-v8a/${required}" ]; then
               echo "::error::required engine library ${required} is missing from the APK"
               exit 1
