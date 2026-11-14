@@ -615,6 +615,9 @@ jobs:
           test -f "$SRC/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp"
           grep -q "C3 OFFSCREEN-VERDICT" "$SRC/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp"
           bash "$SRC/GeneralsMD/Code/Tools/vendor.sh"
+          git -C "$SRC" apply --check "$PWD/reforged-overlay/probe/patches/reforged-rfx-jni-prefix.patch"
+          git -C "$SRC" apply "$PWD/reforged-overlay/probe/patches/reforged-rfx-jni-prefix.patch"
+          grep -q "org_libsdl_apprfx" "$SRC/GeneralsMD/Code/Libraries/Source/SDL3/src/core/android/SDL_android.c"
           GS="$SRC/GeneralsMD/Code/Libraries/Source/GameSpy"
           test -f "$GS/src/common/linux/gsthreadlinux.c"
           GIT_CEILING_DIRECTORIES="$SRC/GeneralsMD/Code/Libraries/Source" git -C "$GS" -c core.autocrlf=false apply "$PWD/reforged-overlay/probe/patches/gamespy-android-pthread.patch"
@@ -631,7 +634,23 @@ jobs:
           strings "${GITHUB_WORKSPACE}/libmainrfx.so" > "${RUNNER_TEMP}/rfx-strings.txt"
           grep -q "C3 OFFSCREEN-VERDICT" "${RUNNER_TEMP}/rfx-strings.txt"
           grep -q "frame-capture.bmp" "${RUNNER_TEMP}/rfx-strings.txt"
+          grep -q "org/libsdl/apprfx/SDLActivity" "${RUNNER_TEMP}/rfx-strings.txt"
+          ! grep -q "org/libsdl/app/SDLActivity" "${RUNNER_TEMP}/rfx-strings.txt"
           ls -la "${GITHUB_WORKSPACE}/libmainrfx.so"
+
+      # v1.15.2: stage the payload's own SDL 3.4.16 Java layer under
+      # the renamed package org.libsdl.apprfx (see ci/stage-rfx-glue.py
+      # for why the host's 3.4.2 layer must never run the payload).
+      # Runs after the payload build because the glue source is the
+      # vendored SDL tree vendor.sh produced inside reforged-engine.
+      - name: Stage RFX SDL glue (isolated 3.4.16 Java layer)
+        run: |
+          set -euo pipefail
+          GX_GLUE_SRC="$PWD/reforged-engine/GeneralsMD/Code/Libraries/Source/SDL3/android-project/app/src/main/java/org/libsdl/app" \
+          GX_APP_JAVA="$PWD/android/app/src/main/java" \
+            python3 reforged-overlay/ci/stage-rfx-glue.py
+          test -f android/app/src/main/java/org/libsdl/apprfx/SDLActivity.java
+          grep -q "package org.libsdl.apprfx;" android/app/src/main/java/org/libsdl/apprfx/SDLActivity.java
 
       - name: Strip debug symbols
         run: |
