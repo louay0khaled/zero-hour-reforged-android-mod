@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000..46542e6a
 --- /dev/null
 +++ b/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp
-@@ -0,0 +1,700 @@
+@@ -0,0 +1,707 @@
 +/*
 +**	Entry point + crash instrumentation for sdl_gpu_frame_selfcheck on
 +**	Android — added by the Android probe harness patch (Stage C, slice
@@ -345,8 +345,13 @@ index 00000000..46542e6a
 +/* Stage C3 phase (v1.15): first frame, offscreen                      */
 +/* ------------------------------------------------------------------ */
 +/*
-+** After the C2 selfcheck body returns, this phase runs slice C3's
-+** mechanism on the same device class: a windowless SDL-GPU device,
++** This phase runs slice C3's mechanism on the same device class --
++** FIRST, before the C2 selfcheck body (v1.15.1 reorder: on the
++** owner's phone the system reaped the test process during the long
++** C2 suite, so a C3 phase appended after the body never landed;
++** the bounded C3 phase now completes within seconds and its
++** verdict is on disk whatever happens to the body afterwards).
++** A windowless SDL-GPU device,
 +** a bounded run of frames rendered into the device's own target
 +** (never a swapchain), a capture of the final frame dumped to
 +** frame-capture.bmp in the external files directory, and a content
@@ -784,13 +789,12 @@ index 00000000..46542e6a
 +
 +	zh_probe_crumb("entry");
 +	zh_probe_crumb("sdl-main");
-+	int rc = sdl_gpu_frame_selfcheck_body();
-+	zh_probe_crumb("body-returned");
 +
-+	/* Stage C3 (v1.15): the offscreen first-frame phase + content
-+	   probe, appended after the C2 body in the same result file.
-+	   Guarded so a missing external path skips it with a line,
-+	   never a crash. */
++	/* Stage C3 FIRST (v1.15.1): the offscreen first-frame phase +
++	   content probe run before the long C2 body, in the same result
++	   file. Guarded so a missing external path skips it with a
++	   line, never a crash. */
++	int rc = 0;
 +	if (ext != NULL && ext[0] != '\0') {
 +		zh_probe_crumb("c3-begin");
 +		(void)zh_c3_offscreen_phase(ext);
@@ -799,6 +803,9 @@ index 00000000..46542e6a
 +	} else {
 +		(void)printf("[framecheck] C3 skipped: no external storage path\n");
 +	}
++
++	rc = sdl_gpu_frame_selfcheck_body();
++	zh_probe_crumb("body-returned");
 +
 +	/* The trailer is the exit-code channel: SDLActivity does not
 +	   hand SDL_main's return value to the launcher activity, so the
