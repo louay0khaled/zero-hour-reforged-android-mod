@@ -1,0 +1,20 @@
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/PhysicsUpdate.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/PhysicsUpdate.cpp
+@@ -958,7 +958,16 @@
+ 		// rate and scaled by the step ratio: 5.0 at 60 steps, 10.0 at 30.
+ 		const Real MIN_REAL_FALL_HEIGHT = 5.0f * (2.0f / (Real)LOGICFRAMES_PER_RETAIL_FRAME);
+ 
+-		if (netSpeed > 0.0f && m_pui == nullptr && m_peakHeightAboveGround > MIN_REAL_FALL_HEIGHT)
++		// Reforged (owner ruling 14/11/2026): powered flight never takes fall
++		// damage. An aircraft or drone that is alive and flying itself -- under
++		// player orders or its own AI -- lands as hard as its approach dictates
++		// and takes nothing; falling damage is reserved for a craft the enemy
++		// has already destroyed (or disabled out of the sky) that comes down
++		// uncontrolled. Ground objects keep the retail rule plus the gate above.
++		const Bool poweredFlight = (obj->isKindOf(KINDOF_AIRCRAFT) || obj->isKindOf(KINDOF_DRONE))
++			&& !obj->isEffectivelyDead()
++			&& !obj->isDisabledByType(DISABLED_UNMANNED);
++		if (netSpeed > 0.0f && m_pui == nullptr && !poweredFlight && m_peakHeightAboveGround > MIN_REAL_FALL_HEIGHT)
+ 		{
+ 			// only apply force if it's a pretty steep fall, so that things
+ 			// going down hills don't injure themselves (unless the hill is really steep)
