@@ -183,6 +183,9 @@ edit(SETUP, [
     // FrameCheckActivity and renders the verdict file it leaves behind.
     // The shipped engines are never loaded by any of this.
     private static final String PREF_RFX_TESTS_RUNNING = "rfx_tests_running";
+    private static final String PREF_RFX_TESTS_STARTED_AT = "rfx_tests_started_at";
+    private static final String RFX_LOG_FILE = "test-log.txt";
+    private String mRfxLogShown;
     private static final String RFX_RESULT_FILE = "frame-result.txt";
     private static final String RFX_CAPTURE_FILE = "frame-capture.bmp";
     private static final String RFX_GAMEDATA_MARKER = "zh-gamedata-path.txt";
@@ -206,13 +209,17 @@ edit(SETUP, [
         new java.io.File(dir, RFX_RESULT_FILE).delete();
         new java.io.File(dir, RFX_CAPTURE_FILE).delete();
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putBoolean(PREF_RFX_TESTS_RUNNING, true).apply();
+            .putBoolean(PREF_RFX_TESTS_RUNNING, true)
+            .putLong(PREF_RFX_TESTS_STARTED_AT,
+                System.currentTimeMillis()).apply();
+        mRfxLogShown = null;
         startActivity(new android.content.Intent(this, FrameCheckActivity.class));
     }
 
     private void maybeRefreshTestsPage() {
-        if (!getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getBoolean(PREF_RFX_TESTS_RUNNING, false)) {
+        android.content.SharedPreferences prefs =
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        if (!prefs.getBoolean(PREF_RFX_TESTS_RUNNING, false)) {
             return;
         }
         java.io.File dir = getExternalFilesDir(null);
@@ -220,13 +227,26 @@ edit(SETUP, [
             return;
         }
         java.io.File result = new java.io.File(dir, RFX_RESULT_FILE);
-        if (!result.isFile() || result.length() == 0) {
-            return;  // still running (or died without a file)
+        if (result.isFile() && result.length() > 0) {
+            prefs.edit().putBoolean(PREF_RFX_TESTS_RUNNING, false)
+                .apply();
+            if (currentTab == TAB_TESTS && contentHost != null) {
+                showTab(TAB_TESTS);
+            }
+            return;
         }
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putBoolean(PREF_RFX_TESTS_RUNNING, false).apply();
-        if (currentTab == TAB_TESTS && contentHost != null) {
-            showTab(TAB_TESTS);
+        // No result file: if the system recorded the framecheck
+        // process exiting after this run started, the run is over --
+        // it died without writing. Clear the flag so the page can
+        // say so (and point at the logs) instead of showing
+        // "running" forever, which is what v1.15 did.
+        long startedAt = prefs.getLong(PREF_RFX_TESTS_STARTED_AT, 0);
+        if (startedAt > 0 && rfxFramecheckExitAfter(startedAt) != null) {
+            prefs.edit().putBoolean(PREF_RFX_TESTS_RUNNING, false)
+                .apply();
+            if (currentTab == TAB_TESTS && contentHost != null) {
+                showTab(TAB_TESTS);
+            }
         }
     }
 
@@ -243,10 +263,15 @@ edit(SETUP, [
             && result.length() > 0;
         boolean running = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getBoolean(PREF_RFX_TESTS_RUNNING, false);
+        long rfxStartedAt = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getLong(PREF_RFX_TESTS_STARTED_AT, 0);
+        boolean died = !running && !haveResult && rfxStartedAt > 0
+            && rfxFramecheckExitAfter(rfxStartedAt) != null;
 
         LinearLayout run = UiKit.card(page);
-        UiKit.supporting(run, getString(running
-            ? R.string.setup_tests_running
+        UiKit.supporting(run, getString(died
+            ? R.string.setup_tests_died
+            : running ? R.string.setup_tests_running
             : haveResult ? R.string.setup_tests_done
                          : R.string.setup_tests_no_results));
         UiKit.button(run, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_chip,
@@ -278,6 +303,202 @@ edit(SETUP, [
                 }
             }
         }
+
+        // The dedicated logs card (v1.15.1, the owner's request):
+        // one place that shows WHY a run ended -- the result file
+        // plus the system's own exit record for the test process --
+        // and shares it in one tap.
+        LinearLayout logs = UiKit.card(page);
+        UiKit.sectionHeader(logs, R.drawable.ic_gzh_chip,
+            getString(R.string.setup_tests_logs_title), true);
+        UiKit.supporting(logs, getString(R.string.setup_tests_logs_desc));
+        UiKit.button(logs, UiKit.BTN_TONAL, R.drawable.ic_gzh_chip,
+            getString(R.string.setup_tests_logs_show), this::onShowRfxLogs);
+        UiKit.button(logs, UiKit.BTN_OUTLINE, R.drawable.ic_gzh_chip,
+            getString(R.string.setup_tests_logs_share),
+            this::onShareRfxLog);
+        UiKit.button(logs, UiKit.BTN_OUTLINE, R.drawable.ic_gzh_chip,
+            getString(R.string.setup_tests_logs_copy), this::onCopyRfxLog);
+        if (mRfxLogShown != null) {
+            android.widget.TextView lv = new android.widget.TextView(this);
+            lv.setText(mRfxLogShown);
+            lv.setTextSize(11);
+            lv.setTypeface(android.graphics.Typeface.MONOSPACE);
+            lv.setTextIsSelectable(true);
+            logs.addView(lv);
+        }
+    }
+
+    // The system's own record of how the :framecheck process last
+    // exited at or after the given time -- the difference between
+    // "still running" and "the system closed it", straight from
+    // ActivityManager (API 30+; null on older systems).
+    private android.app.ApplicationExitInfo rfxFramecheckExitAfter(
+            long startedAt) {
+        if (android.os.Build.VERSION.SDK_INT < 30) {
+            return null;
+        }
+        try {
+            android.app.ActivityManager am =
+                (android.app.ActivityManager)
+                    getSystemService(ACTIVITY_SERVICE);
+            java.util.List<android.app.ApplicationExitInfo> exits =
+                am.getHistoricalProcessExitReasons(
+                    getPackageName(), 0, 10);
+            for (android.app.ApplicationExitInfo e : exits) {
+                if (e.getProcessName() != null
+                        && e.getProcessName().endsWith(":framecheck")
+                        && e.getTimestamp() >= startedAt) {
+                    return e;
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private static String rfxExitReasonName(int reason) {
+        switch (reason) {
+            case 1: return "EXIT_SELF";
+            case 2: return "SIGNALED";
+            case 3: return "LOW_MEMORY";
+            case 4: return "CRASH";
+            case 5: return "CRASH_NATIVE";
+            case 6: return "ANR";
+            case 7: return "INITIALIZATION_FAILURE";
+            case 9: return "EXCESSIVE_RESOURCE_USAGE";
+            case 10: return "USER_REQUESTED";
+            case 11: return "USER_STOPPED";
+            default: return "REASON_" + reason;
+        }
+    }
+
+    private static String rfxTime(long ms) {
+        return new java.text.SimpleDateFormat("yyyy/MM/dd HH:mm:ss",
+            java.util.Locale.US).format(new java.util.Date(ms));
+    }
+
+    private String buildRfxTestLog() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Zero Hour Reforged -- test log\\n");
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager()
+                .getPackageInfo(getPackageName(), 0);
+            sb.append("app: ").append(pi.versionName).append(" (")
+              .append(pi.getLongVersionCode()).append(")\\n");
+        } catch (Exception ignored) {}
+        sb.append("device: ").append(android.os.Build.MANUFACTURER)
+          .append(' ').append(android.os.Build.MODEL)
+          .append(", Android ").append(android.os.Build.VERSION.RELEASE)
+          .append(" (SDK ").append(android.os.Build.VERSION.SDK_INT)
+          .append(")\\n");
+        sb.append("now: ").append(rfxTime(System.currentTimeMillis()))
+          .append("\\n");
+        android.content.SharedPreferences prefs =
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        long startedAt = prefs.getLong(PREF_RFX_TESTS_STARTED_AT, 0);
+        sb.append("run state: running=")
+          .append(prefs.getBoolean(PREF_RFX_TESTS_RUNNING, false))
+          .append(", started=")
+          .append(startedAt > 0 ? rfxTime(startedAt) : "-").append("\\n");
+        java.io.File dir = getExternalFilesDir(null);
+        if (dir == null) {
+            sb.append("external files dir: unavailable\\n");
+            return sb.toString();
+        }
+        java.io.File result = new java.io.File(dir, RFX_RESULT_FILE);
+        if (result.isFile()) {
+            sb.append("frame-result.txt: ").append(result.length())
+              .append(" bytes, modified ")
+              .append(rfxTime(result.lastModified())).append("\\n");
+            sb.append("---- frame-result.txt ----\\n");
+            sb.append(readTextFileQuietly(result));
+            sb.append("\\n---- end frame-result.txt ----\\n");
+        } else {
+            sb.append("frame-result.txt: MISSING\\n");
+        }
+        java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);
+        sb.append("frame-capture.bmp: ");
+        if (capture.isFile()) {
+            sb.append(capture.length()).append(" bytes, modified ")
+              .append(rfxTime(capture.lastModified())).append("\\n");
+        } else {
+            sb.append("MISSING\\n");
+        }
+        sb.append("---- process exits (system record) ----\\n");
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            try {
+                android.app.ActivityManager am =
+                    (android.app.ActivityManager)
+                        getSystemService(ACTIVITY_SERVICE);
+                java.util.List<android.app.ApplicationExitInfo> exits =
+                    am.getHistoricalProcessExitReasons(
+                        getPackageName(), 0, 10);
+                if (exits.isEmpty()) {
+                    sb.append("(none recorded)\\n");
+                }
+                for (android.app.ApplicationExitInfo e : exits) {
+                    sb.append(rfxTime(e.getTimestamp())).append(' ')
+                      .append(e.getProcessName()).append(' ')
+                      .append(rfxExitReasonName(e.getReason()));
+                    if (e.getDescription() != null) {
+                        sb.append(" -- ").append(e.getDescription());
+                    }
+                    sb.append("\\n");
+                }
+            } catch (Exception ex) {
+                sb.append("(unavailable: ").append(ex).append(")\\n");
+            }
+        } else {
+            sb.append("(needs Android 11+)\\n");
+        }
+        return sb.toString();
+    }
+
+    private void onShowRfxLogs() {
+        mRfxLogShown = buildRfxTestLog();
+        java.io.File dir = getExternalFilesDir(null);
+        if (dir != null) {
+            writeTextFileQuietly(new java.io.File(dir, RFX_LOG_FILE),
+                mRfxLogShown);
+        }
+        showTab(TAB_TESTS);
+    }
+
+    private void onShareRfxLog() {
+        String log = buildRfxTestLog();
+        java.io.File dir = getExternalFilesDir(null);
+        if (dir != null) {
+            writeTextFileQuietly(new java.io.File(dir, RFX_LOG_FILE),
+                log);
+        }
+        android.content.Intent send = new android.content.Intent(
+            android.content.Intent.ACTION_SEND);
+        send.setType("text/plain");
+        send.putExtra(android.content.Intent.EXTRA_TEXT, log);
+        startActivity(android.content.Intent.createChooser(send,
+            getString(R.string.setup_tests_logs_title)));
+    }
+
+    private void onCopyRfxLog() {
+        android.content.ClipboardManager cm =
+            (android.content.ClipboardManager)
+                getSystemService(CLIPBOARD_SERVICE);
+        if (cm != null) {
+            cm.setPrimaryClip(android.content.ClipData.newPlainText(
+                "rfx-test-log", buildRfxTestLog()));
+        }
+        Toast.makeText(this, R.string.setup_tests_logs_copied,
+            Toast.LENGTH_SHORT).show();
+    }
+
+    private static void writeTextFileQuietly(java.io.File f,
+            String text) {
+        try {
+            java.io.FileOutputStream out =
+                new java.io.FileOutputStream(f);
+            out.write(text.getBytes("UTF-8"));
+            out.close();
+        } catch (Exception ignored) {}
     }
 
     private static String readTextFileQuietly(java.io.File f) {
@@ -330,6 +551,13 @@ STRINGS_EN = [
     ('setup_tests_no_results', 'No results yet -- run the tests first.'),
     ('setup_tests_results_title', 'Results'),
     ('setup_tests_capture_title', 'The captured offscreen frame:'),
+    ('setup_tests_logs_title', 'Test logs'),
+    ('setup_tests_logs_desc', 'The full record of a test run: the result file, and the system note of why the test process exited (a crash, or the memory killer), ready to share.'),
+    ('setup_tests_logs_show', 'Show the logs'),
+    ('setup_tests_logs_share', 'Share the log'),
+    ('setup_tests_logs_copy', 'Copy the log'),
+    ('setup_tests_logs_copied', 'Log copied'),
+    ('setup_tests_died', 'The test process ended with no result -- the system closed it. Open the test logs below to see why, and share them.'),
 ]
 STRINGS_AR = [
     ('nav_tab_tests', 'اختبارات ريفورجيد'),
@@ -342,6 +570,13 @@ STRINGS_AR = [
     ('setup_tests_no_results', 'لا نتائج بعد -- شغّل الاختبارات أولًا.'),
     ('setup_tests_results_title', 'النتائج'),
     ('setup_tests_capture_title', 'الفريم الملتقط دون شاشة:'),
+    ('setup_tests_logs_title', 'سجلات الاختبارات'),
+    ('setup_tests_logs_desc', 'سجل كامل لتشغيل الاختبار: ملف النتيجة، وملاحظة النظام نفسه عن سبب خروج عملية الاختبار (انهيار، أو قتل بسبب الذاكرة)، جاهز للمشاركة.'),
+    ('setup_tests_logs_show', 'عرض السجلات'),
+    ('setup_tests_logs_share', 'مشاركة السجل'),
+    ('setup_tests_logs_copy', 'نسخ السجل'),
+    ('setup_tests_logs_copied', 'نُسخ السجل'),
+    ('setup_tests_died', 'انتهت عملية الاختبار دون أي نتيجة -- النظام أغلقها. افتح سجلات الاختبارات بالأسفل لمعرفة السبب ومشاركتها.'),
 ]
 
 
