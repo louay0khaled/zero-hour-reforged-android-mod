@@ -72,7 +72,9 @@ print('phase3 target tree:', SRC)
 # ---------------- 1) FrameCheckActivity.java (new file) ----------------
 FRAMECHECK_JAVA = '''package com.generalsx.zerohour;
 
-import org.libsdl.app.SDLActivity;
+import org.libsdl.apprfx.SDLActivity;
+
+import android.os.Bundle;
 
 /**
  * Stage C3 tests (v1.15): the activity that runs the Reforged
@@ -108,6 +110,37 @@ public class FrameCheckActivity extends SDLActivity {
     @Override
     protected String[] getLibraries() {
         return new String[] { "mainrfx" };
+    }
+
+    // v1.15.2 stage markers: the Java side of the tests process
+    // leaves a trail in frame-result.txt BEFORE any native code
+    // runs, so a death before SDL_main (the v1.15 failure: native
+    // crash ~1 s in, no result file at all) is bisectable from the
+    // log alone. The payload's entry truncates the file when
+    // SDL_main starts, so surviving markers mean main never ran.
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        markJavaStage("oncreate-enter");
+        super.onCreate(savedInstanceState);
+        markJavaStage("oncreate-done");
+    }
+
+    @Override
+    public void loadLibraries() {
+        markJavaStage("load-enter");
+        super.loadLibraries();
+        markJavaStage("load-done");
+    }
+
+    private void markJavaStage(String stage) {
+        try {
+            java.io.File dir = getExternalFilesDir(null);
+            if (dir == null) return;
+            java.io.FileWriter w = new java.io.FileWriter(
+                new java.io.File(dir, "frame-result.txt"), true);
+            w.write("[javastage] " + stage + "\\n");
+            w.close();
+        } catch (Exception ignored) {}
     }
 }
 '''
@@ -444,6 +477,33 @@ edit(SETUP, [
                         sb.append(" -- ").append(e.getDescription());
                     }
                     sb.append("\\n");
+                }
+                int traces = 0;
+                for (android.app.ApplicationExitInfo e : exits) {
+                    if (traces >= 2) break;
+                    if (!e.getProcessName().endsWith(":framecheck")) {
+                        continue;
+                    }
+                    try {
+                        java.io.InputStream tin = e.getTraceInputStream();
+                        if (tin == null) continue;
+                        java.io.ByteArrayOutputStream bos =
+                            new java.io.ByteArrayOutputStream();
+                        byte[] buf = new byte[4096];
+                        int total = 0;
+                        int n;
+                        while (total < 8192
+                                && (n = tin.read(buf)) > 0) {
+                            bos.write(buf, 0, n);
+                            total += n;
+                        }
+                        tin.close();
+                        sb.append("---- tombstone for ")
+                          .append(rfxTime(e.getTimestamp()))
+                          .append(" ----\\n");
+                        sb.append(bos.toString("UTF-8")).append("\\n");
+                        traces++;
+                    } catch (Exception ignored) {}
                 }
             } catch (Exception ex) {
                 sb.append("(unavailable: ").append(ex).append(")\\n");
