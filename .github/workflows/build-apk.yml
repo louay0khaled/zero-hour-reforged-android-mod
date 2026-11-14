@@ -191,7 +191,9 @@ jobs:
             git apply --verbose ../reforged-overlay/ci/patches/step-perf.patch
             git apply --verbose ../reforged-overlay/ci/patches/speed-pacing-fix.patch
             git apply --verbose ../reforged-overlay/ci/patches/rf60-frontend.patch
-            git apply --verbose ../reforged-overlay/ci/patches/fall-gate.patch )
+            git apply --verbose ../reforged-overlay/ci/patches/fall-gate.patch
+            git apply --verbose ../reforged-overlay/ci/patches/fall-gate-v2.patch
+            git apply --verbose ../reforged-overlay/ci/patches/resync.patch )
           REFORGED_SRC="${{ github.workspace }}/reforged-src" REFORGED_SURGERY_MODE=paths \
             python3 reforged-overlay/ci/apply-surgery.py
           # Verify the patches actually landed (fail loud, not silent):
