@@ -95,8 +95,8 @@ print('surgery target tree:', SRC, '| mode:', MODE)
 if MODE == 'full':
     edit('android/app/build.gradle', [
         ("applicationId 'com.generalsx.zerohour'", f"applicationId '{NEW_ID}'"),
-        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 17)'),
-        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.15.1')"),
+        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 18)'),
+        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.15.2')"),
     ])
 
 # ---------------- Phase 1b: native hardcoded data paths ----------------
