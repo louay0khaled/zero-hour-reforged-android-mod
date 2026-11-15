@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000..46542e6a
 --- /dev/null
 +++ b/GeneralsMD/Code/Tests/frame_selfcheck_main.cpp
-@@ -0,0 +1,707 @@
+@@ -0,0 +1,713 @@
 +/*
 +**	Entry point + crash instrumentation for sdl_gpu_frame_selfcheck on
 +**	Android — added by the Android probe harness patch (Stage C, slice
@@ -497,8 +497,14 @@ index 00000000..46542e6a
 +		fflush(stdout);
 +		return 1;
 +	}
-+	SDL_GPUDevice *device = SDL_CreateGPUDevice(
-+		SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);
++	SDL_PropertiesID c3props = SDL_CreateProperties();
++	SDL_SetBooleanProperty(c3props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
++	SDL_SetBooleanProperty(c3props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);
++	SDL_SetStringProperty(c3props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, NULL);
++	SDL_SetBooleanProperty(c3props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_DEPTH_CLAMPING_BOOLEAN, false);
++	SDL_SetBooleanProperty(c3props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_CLIP_DISTANCE_BOOLEAN, false);
++	SDL_GPUDevice *device = SDL_CreateGPUDeviceWithProperties(c3props);
++	SDL_DestroyProperties(c3props);
 +	if (device == NULL) {
 +		printf("[framecheck] C3 OFFSCREEN fail stage=CreateGPUDevice error=%s\n",
 +			SDL_GetError());
