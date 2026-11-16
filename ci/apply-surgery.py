@@ -95,8 +95,8 @@ print('surgery target tree:', SRC, '| mode:', MODE)
 if MODE == 'full':
     edit('android/app/build.gradle', [
         ("applicationId 'com.generalsx.zerohour'", f"applicationId '{NEW_ID}'"),
-        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 19)'),
-        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.15.3')"),
+        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 20)'),
+        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.15.4')"),
     ])
 
 # ---------------- Phase 1b: native hardcoded data paths ----------------
@@ -305,8 +305,9 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
         // can: the patch is a file in the game folder, and the folder
         // is the launcher's own.
         String patchState = getString(R.string.setup_reforged_wifi_patch_off);
-        java.io.File[] folderFiles = new java.io.File(
-            getSavedGamePath(this, GAME_ZERO_HOUR)).listFiles();
+        String gameFolderPath = getSavedGamePath(this, GAME_ZERO_HOUR);
+        java.io.File[] folderFiles = gameFolderPath == null ? null
+            : new java.io.File(gameFolderPath).listFiles();
         if (folderFiles != null) {
             for (java.io.File f : folderFiles) {
                 if (f.getName().toLowerCase(java.util.Locale.US)
