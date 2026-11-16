@@ -1,0 +1,22 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index d9eb86e..dbd0ef4 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -100,7 +100,7 @@ GlobalData* GlobalData::m_theOriginal = nullptr;
+ 	{ "UseTrees",									INI::parseBool,				nullptr,			offsetof( GlobalData, m_useTrees ) },
+ 	{ "UseFPSLimit",							INI::parseBool,				nullptr,			offsetof( GlobalData, m_useFpsLimit ) },
+ 	{ "DumpAssetUsage",						INI::parseBool,				nullptr,			offsetof( GlobalData, m_dumpAssetUsage ) },
+-	{ "FramesPerSecondLimit",			INI::parseInt,				nullptr,			offsetof( GlobalData, m_framesPerSecondLimit ) },
++	{ "FramesPerSecondLimit",			INI::parseRetailFramesInt,				nullptr,			offsetof( GlobalData, m_framesPerSecondLimit ) },
+ 	{ "ChipsetType",							INI::parseInt,				nullptr,			offsetof( GlobalData, m_chipSetType ) },
+ 	{ "MaxShellScreens",					INI::parseInt,				nullptr,			offsetof( GlobalData, m_maxShellScreens ) },
+ 	{ "UseCloudMap",							INI::parseBool,				nullptr,			offsetof( GlobalData, m_useCloudMap ) },
+@@ -1017,7 +1017,7 @@ GlobalData::GlobalData()
+ 
+ 	// By default, show all asserts.
+ 
+-	m_unlookPersistDuration		= 30;
++	m_unlookPersistDuration		= ConvertRetailFrames(30);
+ 
+ 	//-----------------------------------------------------------------------------------------------
+ 

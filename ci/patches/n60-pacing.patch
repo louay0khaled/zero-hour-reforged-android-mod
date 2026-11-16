@@ -1,0 +1,194 @@
+diff --git a/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp b/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp
+index 7145f4a..f0fe7b8 100644
+--- a/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp
++++ b/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp
+@@ -1004,6 +1004,15 @@ bool GameLogic::onNewGame(MAYBE_UNUSED GameMessage *msg)
+ 			// frames per retail one, so the same speed needs twice the frame rate there;
+ 			// unscaled, "normal" would play at half speed.
+ 			maxFPS *= GENERALS_ONLINE_HIGH_FPS_FRAME_MULTIPLIER;
++#endif
++#if defined(REFORGED_60_STEPS) && !defined(GENERALS_ONLINE_HIGH_FPS_SERVER)
++			// GeneralsX @bugfix Zero Hour Reforged 12/11/2026 The Reforged 60-steps engine
++			// (libmainrf60.so) is not the GeneralsOnline 60 Hz engine: SAGE_HIGH_FPS_SIM is
++			// OFF in this build, so the multiplier above is 1 and the slider's retail value
++			// (30 = normal speed) would cap the render at 30 fps, advancing the 60-steps
++			// simulation at half game speed. Scale by the build's own logic-rate ratio
++			// instead, so every slider position means the same game speed in both engines.
++			maxFPS *= LOGICFRAMES_PER_RETAIL_FRAME;
+ #endif
+ 		}
+ 		DEBUG_LOG(("Setting max FPS limit to %d FPS", maxFPS));
+diff --git a/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp b/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp
+index 13ef16d..4c5b34e 100644
+--- a/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp
++++ b/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp
+@@ -1484,8 +1484,12 @@ void ConnectionManager::updateRunAhead(Int oldRunAhead, Int frameRate, Bool didS
+ 			if (newMinFps == minFps) {
+ 				newMinFps = minFps + 1;
+ 			}
+-			if (newMinFps > 30) {
+-				newMinFps = 30; // Cap FPS to 30.
++			if (newMinFps > LOGICFRAMES_PER_SECOND) {
++				// GeneralsX @bugfix Zero Hour Reforged 12/11/2026 Cap at the build's logic
++				// rate, not a hard-coded retail 30: a faster negotiated rate cannot be
++				// expressed in logic steps beyond the rate the simulation runs at, and
++				// capping a 60-steps session at 30 halved its game speed.
++				newMinFps = LOGICFRAMES_PER_SECOND; // Cap FPS to the logic rate.
+ 			}
+ 			msg2->setRunAhead(newRunAhead);
+ 			msg2->setFrameRate(newMinFps);
+diff --git a/Core/GameEngine/Source/GameNetwork/FrameMetrics.cpp b/Core/GameEngine/Source/GameNetwork/FrameMetrics.cpp
+index 32373b6..3e33e71 100644
+--- a/Core/GameEngine/Source/GameNetwork/FrameMetrics.cpp
++++ b/Core/GameEngine/Source/GameNetwork/FrameMetrics.cpp
+@@ -29,6 +29,7 @@
+ #include <numeric>
+ 
+ #include "GameNetwork/FrameMetrics.h"
++#include "Common/GameCommon.h" // LOGICFRAMES_PER_SECOND for the seed rate below
+ #include "GameClient/Display.h"
+ #include "GameNetwork/networkutil.h"
+ 
+@@ -63,7 +64,10 @@ void FrameMetrics::init() {
+ #if defined(GENERALS_ONLINE_HIGH_FPS_SERVER)
+ 	m_averageFps = GENERALS_ONLINE_HIGH_FPS_LIMIT;
+ #else
+-	m_averageFps = 30;
++	// GeneralsX @bugfix Zero Hour Reforged 12/11/2026 Seed at the build's logic rate:
++	// these averages feed the packet router's negotiated frame rate, and a retail-30
++	// seed drags a 60-steps session's opening negotiation toward half speed.
++	m_averageFps = LOGICFRAMES_PER_SECOND;
+ #endif
+ 	m_averageLatency = (Real)0.2;
+ 	m_minimumCushion = -1;
+@@ -73,7 +77,7 @@ void FrameMetrics::init() {
+ #if defined(GENERALS_ONLINE_HIGH_FPS_SERVER)
+ 		m_fpsList[i] = GENERALS_ONLINE_HIGH_FPS_LIMIT;
+ #else
+-		m_fpsList[i] = 30.0;
++		m_fpsList[i] = (Real)LOGICFRAMES_PER_SECOND;
+ #endif
+ 	}
+ 	m_fpsListIndex = 0;
+diff --git a/Core/GameEngine/Source/GameNetwork/NetCommandMsg.cpp b/Core/GameEngine/Source/GameNetwork/NetCommandMsg.cpp
+index 9bf23f6..39a7581 100644
+--- a/Core/GameEngine/Source/GameNetwork/NetCommandMsg.cpp
++++ b/Core/GameEngine/Source/GameNetwork/NetCommandMsg.cpp
+@@ -475,7 +475,10 @@ NetCommandMsg::Select NetRunAheadMetricsCommandMsg::getSmallNetPacketSelect() co
+ //-------------------------
+ NetRunAheadCommandMsg::NetRunAheadCommandMsg() {
+ 	m_runAhead = min(max(ConvertRetailFrames(20), MIN_RUNAHEAD), MAX_FRAMES_AHEAD/2);
+-	m_frameRate = 30;
++	// GeneralsX @bugfix Zero Hour Reforged 12/11/2026 Default to the build's logic rate,
++	// like the run-ahead above is already retail-converted; the packet router overwrites
++	// this with the negotiated rate before sending.
++	m_frameRate = LOGICFRAMES_PER_SECOND;
+ 	m_commandType = NETCOMMANDTYPE_RUNAHEAD;
+ }
+ 
+diff --git a/Core/GameEngine/Source/GameNetwork/Network.cpp b/Core/GameEngine/Source/GameNetwork/Network.cpp
+index da9e9e6..987c489 100644
+--- a/Core/GameEngine/Source/GameNetwork/Network.cpp
++++ b/Core/GameEngine/Source/GameNetwork/Network.cpp
+@@ -334,7 +334,11 @@ void Network::init()
+ 
+ 	m_lastFrame = 0;
+ 	m_runAhead = min(max(30, MIN_RUNAHEAD), MAX_FRAMES_AHEAD/2); ///< @todo: don't hard-code the run-ahead.
+-	m_frameRate = 30;
++	// GeneralsX @bugfix Zero Hour Reforged 12/11/2026 The session pace is the build's own
++	// logic rate: a logic step is 1/LOGICFRAMES_PER_SECOND of game time, so pacing the
++	// session at any other rate changes the game speed. Both ends of a same-rate session
++	// run the same build, so they agree on this value by construction.
++	m_frameRate = LOGICFRAMES_PER_SECOND;
+ 	m_lastExecutionFrame = m_runAhead - 1; // subtract 1 since we're starting on frame 0
+ 	m_lastFrameCompleted = m_runAhead - 1; // subtract 1 since we're starting on frame 0
+ 	m_frameDataReady = FALSE;
+@@ -726,7 +730,13 @@ void Network::update()
+ #if defined(GENERALS_ONLINE_HIGH_FPS_SERVER)
+ 			m_frameRate = GENERALS_ONLINE_HIGH_FPS_LIMIT;
+ #else
+-			m_frameRate = 30;
++			// GeneralsX @bugfix Zero Hour Reforged 12/11/2026 This per-frame assignment is
++			// what actually paces the session: timeForNewFrame() derives the wall-clock
++			// step interval from m_frameRate, and it runs after any run-ahead command
++			// value has been overwritten here. It must be the build's logic rate, not a
++			// hard-coded retail 30 -- at 30 the Reforged 60-steps engine (whose step is
++			// half a retail step of game time) advanced at half game speed in LAN games.
++			m_frameRate = LOGICFRAMES_PER_SECOND;
+ #endif
+ 			m_conMgr->updateRunAhead(m_runAhead, m_frameRate, m_didSelfSlug, getExecutionFrame());
+ 			m_didSelfSlug = FALSE;
+diff --git a/Generals/Code/GameEngine/Source/Common/GameEngine.cpp b/Generals/Code/GameEngine/Source/Common/GameEngine.cpp
+index b876a83..eec1d4f 100644
+--- a/Generals/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/Generals/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -786,7 +786,13 @@ void GameEngine::init()
+ 		// GeneralsX @bugfix Copilot 11/05/2026 Prevent uncapped render when FPS limiter is enabled but no valid limit value was loaded.
+ 		if (TheGlobalData->m_useFpsLimit && TheGlobalData->m_framesPerSecondLimit <= 0)
+ 		{
+-			TheWritableGlobalData->m_framesPerSecondLimit = BaseFps;
++			// GeneralsX @bugfix Zero Hour Reforged 12/11/2026 The fallback limit is in
++			// logic frames per second (it also ceilings the network run-ahead
++			// negotiation in ConnectionManager::updateRunAhead), so it is the build's
++			// logic rate, not the retail BaseFps: every other writer of this value in
++			// the Zero Hour tree is already retail-converted (INI parseRetailFramesInt,
++			// command-line ConvertRetailFrames).
++			TheWritableGlobalData->m_framesPerSecondLimit = LOGICFRAMES_PER_SECOND;
+ 		}
+ 
+ 		TheFramePacer->setFramesPerSecondLimit(TheGlobalData->m_framesPerSecondLimit);
+diff --git a/Generals/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/QuitMenu.cpp b/Generals/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/QuitMenu.cpp
+index 3351cfd..0ea1743 100644
+--- a/Generals/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/QuitMenu.cpp
++++ b/Generals/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/QuitMenu.cpp
+@@ -203,6 +203,13 @@ static void restartMissionMenu()
+ 	// multiplied, so every Restart doubled the game speed again (issue #58).
+ 	fps /= GENERALS_ONLINE_HIGH_FPS_FRAME_MULTIPLIER;
+ #endif
++#if defined(REFORGED_60_STEPS) && !defined(GENERALS_ONLINE_HIGH_FPS_SERVER)
++	// GeneralsX @bugfix Zero Hour Reforged 12/11/2026 Mirror of the onNewGame scaling for the
++	// Reforged 60-steps engine: the limit read back here was scaled by
++	// LOGICFRAMES_PER_RETAIL_FRAME there (the GeneralsOnline multiplier is 1 in this
++	// build), so divide it back out or a Restart would double the game speed.
++	fps /= LOGICFRAMES_PER_RETAIL_FRAME;
++#endif
+ 
+ 	TheGameLogic->clearGameData(FALSE);
+ 	TheGameEngine->setQuitting(FALSE);
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+index 3a7694f..fe1f373 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -942,7 +942,13 @@ void GameEngine::init()
+ 		// GeneralsX @bugfix Copilot 11/05/2026 Prevent uncapped render when FPS limiter is enabled but no valid limit value was loaded.
+ 		if (TheGlobalData->m_useFpsLimit && TheGlobalData->m_framesPerSecondLimit <= 0)
+ 		{
+-			TheWritableGlobalData->m_framesPerSecondLimit = BaseFps;
++			// GeneralsX @bugfix Zero Hour Reforged 12/11/2026 The fallback limit is in
++			// logic frames per second (it also ceilings the network run-ahead
++			// negotiation in ConnectionManager::updateRunAhead), so it is the build's
++			// logic rate, not the retail BaseFps: every other writer of this value in
++			// the Zero Hour tree is already retail-converted (INI parseRetailFramesInt,
++			// command-line ConvertRetailFrames).
++			TheWritableGlobalData->m_framesPerSecondLimit = LOGICFRAMES_PER_SECOND;
+ 		}
+ 
+ 		TheFramePacer->setFramesPerSecondLimit(TheGlobalData->m_framesPerSecondLimit);
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/QuitMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/QuitMenu.cpp
+index 19801af..5e0f2a2 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/QuitMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/QuitMenu.cpp
+@@ -203,6 +203,13 @@ static void restartMissionMenu()
+ 	// multiplied, so every Restart doubled the game speed again (issue #58).
+ 	fps /= GENERALS_ONLINE_HIGH_FPS_FRAME_MULTIPLIER;
+ #endif
++#if defined(REFORGED_60_STEPS) && !defined(GENERALS_ONLINE_HIGH_FPS_SERVER)
++	// GeneralsX @bugfix Zero Hour Reforged 12/11/2026 Mirror of the onNewGame scaling for the
++	// Reforged 60-steps engine: the limit read back here was scaled by
++	// LOGICFRAMES_PER_RETAIL_FRAME there (the GeneralsOnline multiplier is 1 in this
++	// build), so divide it back out or a Restart would double the game speed.
++	fps /= LOGICFRAMES_PER_RETAIL_FRAME;
++#endif
+ 
+ 	TheGameLogic->clearGameData(FALSE);
+ 	TheGameEngine->setQuitting(FALSE);

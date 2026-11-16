@@ -1,16 +1,16 @@
 diff --git a/scripts/build/android/package-android-zh.sh b/scripts/build/android/package-android-zh.sh
-index 075ff87..cb9454a 100755
+index 075ff87..ea3c5e5 100755
 --- a/scripts/build/android/package-android-zh.sh
 +++ b/scripts/build/android/package-android-zh.sh
 @@ -38,15 +38,24 @@ DEFAULT_DRIVER_ASSETS="${ANDROID_DIR}/app/src/main/assets/default_driver"
  STAGING="${GX_ANDROID_STAGING:-${HOME}/GeneralsX/android-staging}"
  
  # --- 1. native libraries -----------------------------------------------------
-+# GeneralsX @feature Zero Hour Reforged 13/11/2026 (v1.13) The host's own
-+# engines no longer ship. With GX_OMIT_HOST_ENGINES set, libmain.so is
-+# still built -- the dependency staging further down reads its build
-+# tree -- but it is NOT copied into the APK; the only engines packaged
-+# are the Reforged ones (GX_REFORGED_LIB / GX_REFORGED60_LIB below).
++# GeneralsX @feature Zero Hour Reforged 13/11/2026 (v1.13; v1.16) The
++# host's own engines no longer ship. With GX_OMIT_HOST_ENGINES set,
++# libmain.so is still built -- the dependency staging further down
++# reads its build tree -- but it is NOT copied into the APK; the only
++# play engine packaged is the pure 60-steps one (GX_ENGINE_LIB below).
 +if [[ -z "${GX_OMIT_HOST_ENGINES:-}" ]]; then
  GAME_LIB="$(find "${BUILD_DIR}" -name libmain.so -not -path "*/_deps/*" 2>/dev/null | head -1)"
  if [[ -z "${GAME_LIB}" ]]; then
@@ -27,39 +27,24 @@ index 075ff87..cb9454a 100755
  
  # GeneralsX @feature Android port 15/09/2026 Optional second engine build.
  #
-@@ -64,11 +73,42 @@ if [[ -n "${GX_SECOND_GAME_LIB:-}" ]]; then
+@@ -64,11 +73,27 @@ if [[ -n "${GX_SECOND_GAME_LIB:-}" ]]; then
      echo "Packaging a second engine: libmain60.so ($(du -h "${GX_SECOND_GAME_LIB}" | cut -f1))"
  fi
  
 +
-+# GeneralsX @feature Zero Hour Reforged 11/11/2026 The Reforged 60-steps
-+# engine (Zero Hour only): a second build of z_generals with
-+# REFORGED_60_STEPS=ON, packaged under its own name -- NOT libmain60.so,
-+# which names the GeneralsOnline crossplay engine and trips its OTA and
-+# clientId handling. The launcher loads it only when the player turns the
-+# Reforged 60-steps switch on (SetupActivity.getReforged60()).
-+if [[ -n "${GX_REFORGED60_LIB:-}" ]]; then
-+    if [[ ! -f "${GX_REFORGED60_LIB}" ]]; then
-+        echo "ERROR: GX_REFORGED60_LIB points at a file that does not exist: ${GX_REFORGED60_LIB}"
++# GeneralsX @feature Zero Hour Reforged 17/11/2026 (v1.16) The one play
++# engine of this app: the pure 60-steps build of the stock tree
++# (REFORGED_60_STEPS=ON on pristine sources + the n60 patch set),
++# packaged as libmainz60.so. The launcher names it directly -- there
++# is no engine switch and no second engine. (v1.13-v1.15 shipped two
++# Reforged engines behind a pref switch; both are removed.)
++if [[ -n "${GX_ENGINE_LIB:-}" ]]; then
++    if [[ ! -f "${GX_ENGINE_LIB}" ]]; then
++        echo "ERROR: GX_ENGINE_LIB points at a file that does not exist: ${GX_ENGINE_LIB}"
 +        exit 1
 +    fi
-+    cp "${GX_REFORGED60_LIB}" "${JNILIBS}/libmainrf60.so"
-+    echo "Packaging the Reforged 60-steps engine: libmainrf60.so ($(du -h "${GX_REFORGED60_LIB}" | cut -f1))"
-+fi
-+
-+# GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.10) The Reforged enhanced standard
-+# engine (Zero Hour only): the same patched tree built WITHOUT the flip
-+# (REFORGED_60_STEPS=OFF) -- the engine that shipped as this build's standard library in
-+# v1.0-v1.8, under its own name since v1.10 so the base tree's libmain.so stays the host's
-+# own in v1.10-v1.12. Since v1.13 it is the standard engine: the launcher
-+# loads it whenever the Reforged 60-steps switch is off.
-+if [[ -n "${GX_REFORGED_LIB:-}" ]]; then
-+    if [[ ! -f "${GX_REFORGED_LIB}" ]]; then
-+        echo "ERROR: GX_REFORGED_LIB points at a file that does not exist: ${GX_REFORGED_LIB}"
-+        exit 1
-+    fi
-+    cp "${GX_REFORGED_LIB}" "${JNILIBS}/libmainrf.so"
-+    echo "Packaging the Reforged enhanced standard engine: libmainrf.so ($(du -h "${GX_REFORGED_LIB}" | cut -f1))"
++    cp "${GX_ENGINE_LIB}" "${JNILIBS}/libmainz60.so"
++    echo "Packaging the pure 60-steps engine: libmainz60.so ($(du -h "${GX_ENGINE_LIB}" | cut -f1))"
 +fi
 +
  # GeneralsX @feature Android port 04/10/2026 The base game, Command & Conquer Generals, in the
@@ -71,7 +56,7 @@ index 075ff87..cb9454a 100755
      cp "${BASE_GAME_LIB}" "${JNILIBS}/libgenerals.so"
      echo "Packaging the base game: libgenerals.so ($(du -h "${BASE_GAME_LIB}" | cut -f1))"
  fi
-@@ -367,10 +407,14 @@ if [[ -n "${GX_ANDROID_VERSION_NAME:-}" ]]; then
+@@ -367,10 +392,14 @@ if [[ -n "${GX_ANDROID_VERSION_NAME:-}" ]]; then
      GRADLE_VERSION_ARG="${GRADLE_VERSION_ARG} -PandroidVersionName=${GX_ANDROID_VERSION_NAME}"
  fi
  

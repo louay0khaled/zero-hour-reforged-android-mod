@@ -1,0 +1,78 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameState.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameState.cpp
+index 5110c11..9902946 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameState.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameState.cpp
+@@ -1645,9 +1645,9 @@ void GameState::gameStatePostProcessLoad()
+ 	* Version Info:
+ 	* 1: Initial version
+ 	* 2: Added save file type and mission map name (regular save vs automatic mission save)
+-	* 3: Added the writing build's version number -- the rate stamp (wave 6): the
+-	*    60-steps build's number carries the RF60 marker, so its saves are
+-	*    refused by the 30-steps engine and vice versa */
++	* 3: Added the writing build's version number -- the rate stamp: the
++	*    n60 pure-60 engine's number carries its own derived marker, so its
++	*    saves are refused by every other engine and vice versa */
+ // ------------------------------------------------------------------------------------------------
+ void GameState::xfer( Xfer *xfer )
+ {
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/version.cpp b/GeneralsMD/Code/GameEngine/Source/Common/version.cpp
+index 9f321a5..8e3adeb 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/version.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/version.cpp
+@@ -74,14 +74,17 @@ void Version::setVersion(Int major, Int minor, Int buildNum,
+ 
+ UnsignedInt Version::getVersionNumber() const
+ {
+-	// GeneralsX @feature Zero Hour Reforged 11/11/2026 The 60-steps build
+-	// (libmainrf60.so) stamps its version number with the RF60 marker, so a
+-	// replay or save written at 60 steps never matches the 30-steps build's
+-	// version check (RecorderClass::replayMatchesGameVersion, and the
+-	// GameState xfer stamp) and is refused as a different version instead of
+-	// desyncing or loading corrupt. The 30-steps build is unchanged.
++	// n60 pure-60 engine (libmainz60.so): the version number is stamped
++	// with a marker derived from the compiled logic rate itself, so a
++	// replay or save written by this engine never matches any other
++	// build's version check (RecorderClass::replayMatchesGameVersion,
++	// the GameState xfer stamp, and the exeCRC folded into the LAN join
++	// gate) and is refused as a different version instead of desyncing
++	// or loading corrupt. The marker is computed from
++	// LOGICFRAMES_PER_SECOND, never typed by hand, so the identity can
++	// never drift from the rate the binary actually runs.
+ #if defined(REFORGED_60_STEPS)
+-	return (m_major << 16 | m_minor) ^ 0x52463630;	// "RF60"
++	return (m_major << 16 | m_minor) ^ (0x5A300000u | ((UnsignedInt)LOGICFRAMES_PER_SECOND << 8));	// "Z0" + rate
+ #else
+ 	return m_major << 16 | m_minor;
+ #endif
+@@ -113,11 +116,11 @@ AsciiString Version::getAsciiVersion() const
+ 		version.format("%d.%d", m_major, m_minor);
+ 	}
+ 
+-	// GeneralsX @feature Zero Hour Reforged 11/11/2026 RF60 stamp (see
+-	// getVersionNumber): the 60-steps build's version string carries the
+-	// marker, so cross-rate replays/saves differ in the string check too.
++	// n60 pure-60 stamp (see getVersionNumber): this engine's version
++	// string carries its own marker, so cross-engine replays/saves
++	// differ in the string check too.
+ #if defined(REFORGED_60_STEPS)
+-	version.concat(" RF60");
++	version.concat(" Z60");
+ #endif
+ 
+ #ifdef RTS_DEBUG
+@@ -153,11 +156,11 @@ UnicodeString Version::getUnicodeVersion() const
+ 		version.format(TheGameText->fetch("Version:Format2").str(), m_major, m_minor);
+ 	}
+ 
+-	// GeneralsX @feature Zero Hour Reforged 11/11/2026 RF60 stamp (see
+-	// getVersionNumber): the 60-steps build's version string carries the
+-	// marker, so cross-rate replays/saves differ in the string check too.
++	// n60 pure-60 stamp (see getVersionNumber): this engine's version
++	// string carries its own marker, so cross-engine replays/saves
++	// differ in the string check too.
+ #if defined(REFORGED_60_STEPS)
+-	version.concat(L" RF60");
++	version.concat(L" Z60");
+ #endif
+ 
+ #ifdef RTS_DEBUG
