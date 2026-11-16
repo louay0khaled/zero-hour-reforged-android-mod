@@ -578,11 +578,11 @@ edit(SETUP, [
 
 # ---------------- 4) Packaging knob for libmainrfx.so ----------------
 edit(PACKAGE_SH, [(
-    '''    cp "${GX_REFORGED_LIB}" "${JNILIBS}/libmainrf.so"
-    echo "Packaging the Reforged enhanced standard engine: libmainrf.so ($(du -h "${GX_REFORGED_LIB}" | cut -f1))"
+    '''    cp "${GX_ENGINE_LIB}" "${JNILIBS}/libmainz60.so"
+    echo "Packaging the pure 60-steps engine: libmainz60.so ($(du -h "${GX_ENGINE_LIB}" | cut -f1))"
 fi''',
-    '''    cp "${GX_REFORGED_LIB}" "${JNILIBS}/libmainrf.so"
-    echo "Packaging the Reforged enhanced standard engine: libmainrf.so ($(du -h "${GX_REFORGED_LIB}" | cut -f1))"
+    '''    cp "${GX_ENGINE_LIB}" "${JNILIBS}/libmainz60.so"
+    echo "Packaging the pure 60-steps engine: libmainz60.so ($(du -h "${GX_ENGINE_LIB}" | cut -f1))"
 fi
 
 # GeneralsX @feature Zero Hour Reforged 14/11/2026 (v1.15) The Stage C3 test
