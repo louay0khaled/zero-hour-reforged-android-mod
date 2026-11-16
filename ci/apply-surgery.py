@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Zero Hour Reforged — package-id surgery on a pristine MYSOREZ checkout.
-CI version of the v1 local apply-surgery.py. Since v1.13 the build is
-OURS ALONE (owner order 2026-11-12, superseding the v1.9 separation):
-the host's engines no longer ship -- the APK carries only the two
-Reforged engines (libmainrf.so, libmainrf60.so) -- and the bundled
-Reforged data is core app data, always on (phase 2 forces it; there is
-no mod switch anywhere). The launcher shell is still the host's, with
+CI version of the v1 local apply-surgery.py. Since v1.16 (owner
+orders 2026-11-17) the build is PURE AND SINGLE-ENGINED: the APK
+carries exactly one play engine, libmainz60.so -- a true 60-steps
+build of the stock MYSOREZ engine (pristine tree + the n60 patch
+set: foundations, flip, stamp, pacing) -- plus the Stage C test
+payload libmainrfx.so. No Reforged data is bundled (phase 2 no
+longer runs; the user's game folder is played exactly as it is),
+the two Reforged play engines of v1.13-v1.15 are removed, and
+there is no engine switch anywhere: GeneralsZHActivity names the
+one library directly. The launcher shell is still the host's, with
 our page in it. The phases are:
   1a applicationId + version defaults in android/app/build.gradle
   1b native hardcoded /data/user/<uid>/<old id>/files/ paths (7 files) --
      app identity for EVERY engine binary this APK ships, so it runs in
-     both modes below (base tree and Reforged-engine tree alike)
+     both modes below (base tree and engine tree alike)
   1c app_name label in every locale's strings.xml
   1d UpdateManager update channel repointed at this repo (no OTA overwrite)
   1e the Reforged page (v1.9; entry moved in v1.11): our own launcher
@@ -18,38 +22,31 @@ our page in it. The phases are:
      BottomNavigationView accepts at most five items, and the sixth
      bottom-navigation item v1.9/v1.10 added threw at inflation and
      took the whole settings interface down with it (v1.10 device
-     verdict). Their five nav items are untouched. The page carries
-     the engine choice (v1.13: the 60-steps switch, pref
-     reforged_60_steps, default OFF; OFF means the standard Reforged
-     engine -- there is no separate enhanced-30 switch anymore,
-     because the standard engine is simply ours now) and the WiFi-play
-     card (v1.12). Phase 1e also settles the shell around the removed
+     verdict). Their five nav items are untouched. Since v1.16 the
+     page carries only the WiFi-play status card (no engine choice
+     exists). Phase 1e also settles the shell around the removed
      engines: getSelectedGame always answers Zero Hour (no Generals
      library ships), the Simulation Rate section is not built (it
      chose between the host's engines), GeneralsZHActivity loads
-     exactly our two libraries by the page's switch, and
-     GeneralsOnlineSession's clientId is this class's own constant
-     unconditionally (both our engines compile it in). The upstream
-     UpdateManager engine-override load path stays removed (kept from
-     v1.8: the APK's engines are the only engines).
-The phase-3 engine change (locomotor carry-over, ThingTemplate.cpp) is NOT
-here: it ships as ci/patches/engine-carryover.patch and is applied with
-`git apply` before this script runs (Reforged-engine tree only since v1.9).
-One patch applies to BOTH trees: package-android-zh-gradle-task.patch --
-build tooling only (the packaging script ships nothing and touches no
-engine or launcher code), and the base tree cannot be packaged without it
-(the pristine script has no release-task knob and no staging knob for
-libmainrf60.so).
+     exactly libmainz60, and GeneralsOnlineSession's clientId is
+     this class's own constant unconditionally (the engine compiles
+     it in). The upstream UpdateManager engine-override load path
+     stays removed (kept from v1.8: the APK's engine is the only
+     engine).
+package-android-zh-gradle-task.patch applies to BOTH trees --
+build tooling only (the packaging script ships nothing and touches
+no engine or launcher code), and the base tree cannot be packaged
+without it (the pristine script has no release-task knob and no
+staging knob for libmainz60.so).
 
 Modes (env REFORGED_SURGERY_MODE):
   full  (default) -- the base tree: phases 1a-1e + the post-check.
-  paths           -- the Reforged-engine tree: phase 1b + the post-check
-                     only (that tree contributes the Reforged engine
-                     libraries -- libmainrf60.so and, since v1.10,
-                     libmainrf.so; its Java/resources are never
-                     packaged, but its engine binaries carry the same
-                     hardcoded old-id data paths and must resolve this
-                     app's files directory).
+  paths           -- the engine tree: phase 1b + the post-check only
+                     (that tree contributes the one play engine
+                     library, libmainz60.so; its Java/resources are
+                     never packaged, but its engine binary carries
+                     the same hardcoded old-id data paths and must
+                     resolve this app's files directory).
 
 Layout: REFORGED_SRC (env) points at the MYSOREZ checkout; default is the
 parent of this repo's checkout (the CI workflow checks the overlay repo out
@@ -95,8 +92,8 @@ print('surgery target tree:', SRC, '| mode:', MODE)
 if MODE == 'full':
     edit('android/app/build.gradle', [
         ("applicationId 'com.generalsx.zerohour'", f"applicationId '{NEW_ID}'"),
-        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 20)'),
-        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.15.4')"),
+        ('(project.androidVersionCode as Integer) : 10402)', '(project.androidVersionCode as Integer) : 21)'),
+        ("project.androidVersionName : '1.4.2')", "project.androidVersionName : '1.16')"),
     ])
 
 # ---------------- Phase 1b: native hardcoded data paths ----------------
@@ -145,16 +142,11 @@ edit('android/app/src/main/java/com/generalsx/zerohour/UpdateManager.java', [
 # Their pages are not edited at all -- in particular the Simulation Rate
 # card keeps its pristine body and works again, because libmain60.so
 # really ships now.
-# The page carries the engine choice and the WiFi-play card, all Zero
-# Hour only (v1.13):
-#  * the Reforged 60-steps engine (libmainrf60.so, from the patched
-#    tree): its own pref (reforged_60_steps, default OFF) -- never a
-#    sim_hz value. OFF loads the standard Reforged engine
-#    (libmainrf.so, the same patched tree at the standard rate): since
-#    v1.13 those two are the only engines in the APK, so the choice is
-#    a single switch, not a pair of alternatives;
-#  * the bundled Reforged data has no switch at all: phase 2 forces it
-#    enabled at every launcher start (core app data, not a mod).
+# The page carries the WiFi-play status card, all Zero Hour only.
+# v1.16: there is no engine choice and no bundled data -- the app
+# ships one play engine (libmainz60.so, the pure 60-steps build on
+# the stock base) and plays the user's game folder exactly as it
+# is; phase 2 does not run anymore.
 # The same edit list settles the shell around the removed engines:
 # getSelectedGame always answers Zero Hour, and the Simulation Rate
 # section (which chose between the host's engines) is not built.
@@ -170,26 +162,13 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
             .apply();
     }
 
-    // GeneralsX @feature Zero Hour Reforged 11/11/2026 The Reforged 60-steps
-    // engine (libmainrf60.so): a separate pref from sim_hz on purpose.
-    // sim_hz selects the GeneralsOnline crossplay engine; this selects the
-    // faithful Reforged conversion -- upstream's 60-steps simulation, not
-    // the host's 60 Hz mode -- and GeneralsOnlineActivity's crossplay flow
-    // writes sim_hz on its own, so the two must never share a pref. Default
-    // OFF: the standard engine is the shipped experience until the player
-    // opts in. See GeneralsZHActivity.getLibraries().
-    static final String PREF_REFORGED_60 = "reforged_60_steps";
-
-    static boolean getReforged60(android.content.Context ctx) {
-        return ctx.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .getBoolean(PREF_REFORGED_60, false);
-    }
-
-    static void setReforged60(android.content.Context ctx, boolean on) {
-        ctx.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putBoolean(PREF_REFORGED_60, on)
-            .apply();
-    }"""),
+    // Zero Hour Reforged (v1.16): no engine pref exists anymore. This
+    // app ships exactly one play engine -- libmainz60.so, the pure
+    // 60-steps build on the stock base -- and GeneralsZHActivity names
+    // it directly. The v1.13-v1.15 engine pref, its accessors and
+    // its switch are gone, and with them the stale-engine trap: a
+    // pref could lie about which library the process had actually
+    // loaded; a constant cannot."""),
     ('    private static final int TAB_HELP = 5;',
      """    private static final int TAB_HELP = 5;
     // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.9) Our own page.
@@ -230,12 +209,11 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
                 break;"""),
     ("""    private int tabTitle(int tab) {""",
      """    // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.9; v1.13) The
-    // Reforged page. Since v1.13 this app ships only our engines and
-    // its Reforged data is built in, so the page is no longer a
-    // separation boundary: it carries the engine choice and the
-    // WiFi-play card, and its intro says exactly that. The page is
-    // Zero Hour only, like the app (the game getter never answers
-    // Generals since v1.13, so the gate below always passes).
+    // Reforged page. v1.16: this app ships one play engine and no
+    // bundled data, so the page carries only the WiFi-play status
+    // card, and its intro says exactly that. The page is Zero Hour
+    // only, like the app (the game getter never answers Generals
+    // since v1.13, so the gate below always passes).
     private void buildReforgedPage(LinearLayout page) {
         LinearLayout intro = UiKit.card(page);
         UiKit.sectionHeader(intro, R.drawable.ic_gzh_chip,
@@ -244,95 +222,29 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
         if (isGeneralsSelected(this)) {
             return;
         }
-        buildReforgedEngineCard(page);
         buildReforgedWifiCard(page);
     }
 
-    // The Reforged engine card (v1.13): this app ships ONLY our two
-    // engines, and this card is the whole engine choice -- the
-    // 60-steps engine (libmainrf60.so) behind its switch, and the
-    // standard Reforged engine (libmainrf.so) whenever the switch is
-    // off. There is no third state and nothing to disengage: the
-    // switch writes only its own pref, and
-    // GeneralsZHActivity.getLibraries() reads exactly this state.
-    private void buildReforgedEngineCard(LinearLayout root) {
-        if (!new java.io.File(getApplicationInfo().nativeLibraryDir, "libmainrf60.so").isFile()) {
-            return;
-        }
-        LinearLayout content = UiKit.card(root);
-        UiKit.sectionHeader(content, R.drawable.ic_gzh_chip,
-            getString(R.string.setup_card_reforged60), true);
-        com.google.android.material.materialswitch.MaterialSwitch sw60 = UiKit.switchRow(content,
-            getString(R.string.setup_reforged60_title), getString(R.string.setup_reforged60_desc));
-        sw60.setChecked(getReforged60(this));
-        sw60.setOnCheckedChangeListener((button, checked) -> setReforged60(this, checked));
-        UiKit.helpText(content, getString(R.string.setup_reforged60_help));
-    }
-
-    private int tabTitle(int tab) {"""),
-    ("""        UiKit.helpText(content, getString(R.string.setup_reforged60_help));
-    }
-
-    private int tabTitle(int tab) {""",
-     """        UiKit.helpText(content, getString(R.string.setup_reforged60_help));
-    }
-
-    // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.12; v1.13) The
-    // WiFi-play card. A match between two of our builds stands or falls
-    // on identity: the game compares the engine and data identities of
-    // both phones when the match starts and keeps comparing while it
-    // runs. The Reforged data is built into this app -- identical on
-    // both phones by construction -- so what the players must align is
-    // the engine choice above and the Community Patch state of the
-    // game folder. The card does two things only: it SAYS what this
-    // phone is set to, in words the player can compare against the
-    // other phone's screen, and it offers the two engine profiles as
-    // one tap each, applied through the same pref setter the engine
-    // card uses, so the prepared state is exactly the state that card
-    // displays.
+    // Zero Hour Reforged (v1.16) The WiFi-play card is a status card
+    // now. There is one engine in this app, so there is nothing to
+    // align and nothing to prepare: a WiFi match stands or falls on
+    // both phones running THIS build over game folders with the same
+    // Community Patch state, and the card says exactly that, in words
+    // the player can compare against the other phone's screen. It
+    // reads no files and writes no prefs -- the v1.12-v1.15 card's
+    // folder scan (and its fresh-install crash, fixed in v1.15.4)
+    // died with the engine choice it served.
     private void buildReforgedWifiCard(LinearLayout root) {
         LinearLayout content = UiKit.card(root);
         UiKit.sectionHeader(content, R.drawable.ic_gzh_chip,
             getString(R.string.setup_card_reforged_wifi), true);
         UiKit.supporting(content, getString(R.string.setup_reforged_wifi_intro));
-        String engine = getReforged60(this)
-            ? getString(R.string.setup_reforged_wifi_engine60)
-            : getString(R.string.setup_reforged_wifi_engine30);
-        // The data identity is more than the engine: the same engine
-        // over a game folder without the Community Patch reads a
-        // different INI stream than over one with it, and the identity
-        // check cannot tell the player which half differed. The card
-        // can: the patch is a file in the game folder, and the folder
-        // is the launcher's own.
-        String patchState = getString(R.string.setup_reforged_wifi_patch_off);
-        String gameFolderPath = getSavedGamePath(this, GAME_ZERO_HOUR);
-        java.io.File[] folderFiles = gameFolderPath == null ? null
-            : new java.io.File(gameFolderPath).listFiles();
-        if (folderFiles != null) {
-            for (java.io.File f : folderFiles) {
-                if (f.getName().toLowerCase(java.util.Locale.US)
-                        .contains("communitypatch")) {
-                    patchState = getString(R.string.setup_reforged_wifi_patch_on);
-                    break;
-                }
-            }
-        }
-        UiKit.supporting(content, getString(R.string.setup_reforged_wifi_state,
-            engine, patchState));
-        UiKit.button(content, UiKit.BTN_TONAL, R.drawable.ic_gzh_chip,
-            getString(R.string.setup_reforged_wifi_prepare30), () -> {
-                setReforged60(this, false);
-                content.post(() -> showTab(TAB_REFORGED));
-            });
-        UiKit.button(content, UiKit.BTN_TONAL, R.drawable.ic_gzh_chip,
-            getString(R.string.setup_reforged_wifi_prepare60), () -> {
-                setReforged60(this, true);
-                content.post(() -> showTab(TAB_REFORGED));
-            });
+        UiKit.supporting(content, getString(R.string.setup_reforged_wifi_state));
         UiKit.helpText(content, getString(R.string.setup_reforged_wifi_help));
     }
 
     private int tabTitle(int tab) {"""),
+
     # GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.13) This app is
     # Zero Hour only: the host's engines were removed by the owner's
     # order, and with them every Generals library -- a Generals selection
@@ -358,7 +270,8 @@ edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
     ("""                buildSimRateSection(page);""",
      """                // Zero Hour Reforged (v1.13): no Simulation Rate
                 // section -- the host engines it selected no longer
-                // ship; the engine choice is on the Reforged page."""),
+                // ship, and there is no engine choice anywhere
+                // (v1.16: one play engine, libmainz60.so)."""),
 ])
 
 edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java', [
@@ -368,15 +281,16 @@ edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsZHActivity.java',
                 && new java.io.File(getApplicationInfo().nativeLibraryDir, "lib" + engines[1] + ".so").isFile()) {
             engine = engines[1];
         }""",
-     """        // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.13) This
-        // app ships ONLY the Reforged engines -- the host's libraries
-        // were removed by the owner's order -- so the choice is ours
-        // alone: the 60-steps engine when the Reforged page's switch
-        // is on, the standard Reforged engine otherwise. Both
-        // libraries always ship; there is no fallback to a library
-        // that does not exist in this APK, and no sim_hz selection
-        // (its card is gone with the engines it chose between).
-        String engine = SetupActivity.getReforged60(this) ? "mainrf60" : "mainrf";"""),
+     """        // Zero Hour Reforged (v1.16): this app ships exactly ONE play
+        // engine -- libmainz60.so, the pure 60-steps build on the
+        // stock base -- so there is no choice to read and no fallback
+        // to hide behind: if the library were missing, loadLibrary
+        // would fail loud at once instead of silently starting a
+        // different engine. The v1.13-v1.15 pref ternary that stood
+        // here was the stale-engine trap (a switch could name a
+        // library the process had never loaded); a constant cannot
+        // lie.
+        String engine = "mainz60";"""),
     # The UpdateManager engine override stays removed at its only point of
     # use (kept from v1.8, wave-8 record section 8.4: proof it could never
     # fire in this build -- the phase-1d channel serves no manifest, and
@@ -469,130 +383,14 @@ edit('android/app/src/main/java/com/generalsx/zerohour/GeneralsOnlineSession.jav
     }"""),
 ])
 
-# ---------------- v1.13: the bundled data is not a mod ----------------
-# Phase 2 forces the bundled Reforged package enabled at every launcher
-# start; these pairs lock its handles in the shell's own mod UI, so no
-# screen presents it as an optional add-on: the Mods screen's switch
-# for it is disabled, its delete and move paths refuse it, its place
-# at the end of the order (its mount priority) cannot be moved across,
-# and the Home page's Mods row does not count it. The state machinery
-# itself (listMods/saveOrder/writeActiveList) is untouched.
-edit('android/app/src/main/java/com/generalsx/zerohour/ModManagerActivity.java', [
-    ("""        SwitchCompat toggle = new SwitchCompat(this);
-        toggle.setChecked(mod.enabled);
-        toggle.setContentDescription(mod.name);
-        toggle.setEnabled(!busy);""",
-     """        SwitchCompat toggle = new SwitchCompat(this);
-        toggle.setChecked(mod.enabled);
-        toggle.setContentDescription(mod.name);
-        // Zero Hour Reforged (v1.13): the bundled Reforged package is core
-        // app data, not a mod -- its switch is locked on.
-        toggle.setEnabled(!busy
-            && !ModManager.BUNDLED_DIR.equals(mod.dir.getName()));"""),
-    ("""    private void confirmDelete(ModManager.Mod mod) {
-        if (busy) {
-            return;
-        }""",
-     """    private void confirmDelete(ModManager.Mod mod) {
-        if (busy) {
-            return;
-        }
-        // Zero Hour Reforged (v1.13): the bundled Reforged package is core
-        // app data -- it cannot be deleted from this screen.
-        if (ModManager.BUNDLED_DIR.equals(mod.dir.getName())) {
-            return;
-        }"""),
-    ("""    private void moveToOtherGame(ModManager.Mod mod) {
-        if (busy) {
-            return;
-        }""",
-     """    private void moveToOtherGame(ModManager.Mod mod) {
-        if (busy) {
-            return;
-        }
-        // Zero Hour Reforged (v1.13): the bundled Reforged package is core
-        // app data -- it cannot be moved to the other game's folder.
-        if (ModManager.BUNDLED_DIR.equals(mod.dir.getName())) {
-            return;
-        }"""),
-    ("""    private void move(int index, int delta) {
-        int target = index + delta;
-        if (busy || target < 0 || target >= mods.size()) {
-            return;
-        }""",
-     """    private void move(int index, int delta) {
-        int target = index + delta;
-        if (busy || target < 0 || target >= mods.size()) {
-            return;
-        }
-        // Zero Hour Reforged (v1.13): the bundled Reforged package is
-        // pinned at the end of the order (its mount priority) -- neither
-        // it nor anything across it moves.
-        if (ModManager.BUNDLED_DIR.equals(mods.get(index).dir.getName())
-                || ModManager.BUNDLED_DIR.equals(mods.get(target).dir.getName())) {
-            return;
-        }"""),
-])
+# ---------------- v1.16: no bundled data, no mod locks ----------------
+# Phase 2 does not run anymore: there is no bundled package, so the
+# v1.13 ModManagerActivity locks and the mods-count filter (which
+# referenced ModManager.BUNDLED_DIR, a phase-2 definition) are gone
+# with it -- the host's mod UI stands exactly as upstream wrote it.
 
-edit('android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java', [
-    ("""        java.util.List<ModManager.Mod> installedMods = ModManager.listMods(this);
-        int modsOn = 0;
-        for (ModManager.Mod mod : installedMods) {
-            if (mod.enabled) {
-                modsOn++;
-            }
-        }""",
-     """        java.util.List<ModManager.Mod> installedMods = ModManager.listMods(this);
-        // Zero Hour Reforged (v1.13): the bundled Reforged package is core
-        // app data, not a mod -- it is not counted on the Mods row.
-        installedMods.removeIf(mod -> ModManager.BUNDLED_DIR.equals(mod.dir.getName()));
-        int modsOn = 0;
-        for (ModManager.Mod mod : installedMods) {
-            if (mod.enabled) {
-                modsOn++;
-            }
-        }"""),
-])
-
-# Engine card strings in every locale, inserted right after the sim-rate
-# toast line (the anchor string name exists in all locales; its text is
-# translated). AAPT2 law: an apostrophe inside a string resource must
-# reach the XML escaped as \' or mergeReleaseResources rejects the string
-# ("unescaped apostrophe in string") -- hence the \\' in the Python
-# literals below, which puts a literal backslash before the apostrophe in
-# the XML. The help text is revised in v1.9: the v1.5 sentence "this mode
-# plays no network games" predates the separation -- the honest rule now
-# is that this engine plays network games only against this same build.
-_RF60_STRINGS_EN = [
-    ('setup_card_reforged60', 'Reforged Engine'),
-    ('setup_reforged60_title', 'Reforged engine \u2014 60 steps per second (experimental)'),
-    ('setup_reforged60_desc', "Reforged\\'s own doubled simulation rate: smoother motion and faster response, at the cost of heavier work for the processor."),
-    ('setup_reforged60_help', "The engine is chosen when the game starts, so the change applies the next time you launch it. Save games and replays belong to the rate that made them: each engine refuses the other\\'s, cleanly. Network games with this engine run only against this same build. If large battles slow down, switch it off -- the standard Reforged engine is this app\\'s default."),
-]
-_RF60_STRINGS_AR = [
-    ('setup_card_reforged60', 'محرك ريفورجيد'),
-    ('setup_reforged60_title', 'محرك ريفورجيد — 60 خطوة بالثانية (تجريبي)'),
-    ('setup_reforged60_desc', 'محاكاة ريفورجيد الأصلية بمعدل مضاعف: حركة أنعم واستجابة أسرع، مقابل شغل أثقل على المعالج.'),
-    ('setup_reforged60_help', 'يُختار المحرك عند بدء اللعبة، فيسري التغيير عند تشغيلها في المرة القادمة. ملفات الحفظ والإعادات تخص المعدل الذي صنعها: كل محرك يرفض ملفات الآخر بشكل نظيف. مباريات الشبكة بهذا المحرك لا تجري إلا ضد هذه النسخة نفسها. إذا تراجعت السلاسة في المعارك الكبيرة، أوقف هذا الخيار — فمحرك ريفورجيد القياسي هو الافتراضي في هذا التطبيق.'),
-]
-for d in os.listdir(resdir):
-    p = os.path.join(resdir, d, 'strings.xml')
-    if not (d.startswith('values') and os.path.isfile(p)):
-        continue
-    s = open(p, encoding='utf-8').read()
-    if 'name="setup_card_reforged60"' in s:
-        continue
-    entries = _RF60_STRINGS_AR if d == 'values-ar' else _RF60_STRINGS_EN
-    block = ''.join(f'\n    <string name="{n}">{t}</string>' for n, t in entries)
-    lines = s.split('\n')
-    idx = next((i for i, ln in enumerate(lines) if 'name="setup_toast_sim_rate_saved"' in ln), None)
-    if idx is None:
-        idx = next(i for i, ln in enumerate(lines) if '</resources>' in ln)
-        lines.insert(idx, block.lstrip('\n'))
-    else:
-        lines.insert(idx + 1, block.lstrip('\n'))
-    open(p, 'w', encoding='utf-8').write('\n'.join(lines))
-    print('rf60 strings', os.path.join(d, 'strings.xml'))
+# (v1.16: the rf60 switch strings died with the switch -- no card
+# consumes them, so they are no longer inserted into any locale.)
 
 # Reforged page strings in every locale (the tab label, the intro card,
 # the mod card), inserted right after the nav_tab_help line -- the shell's
@@ -601,14 +399,14 @@ for d in os.listdir(resdir):
 _PAGE_STRINGS_EN = [
     ('nav_tab_reforged', 'Reforged'),
     ('setup_card_reforged_page', 'Reforged'),
-    ('setup_reforged_home_row_desc', 'Our engines and WiFi play, on their own page'),
-    ('setup_reforged_page_intro', 'This app runs only the Reforged engines, with the Reforged data built in -- there is nothing to switch on or off for the data. The engine choice is below. The original app and its online games live in the original app, not in this one.'),
+    ('setup_reforged_home_row_desc', 'One pure 60-steps engine and WiFi play, on their own page'),
+    ('setup_reforged_page_intro', 'This app runs one engine: a pure 60-steps build on the stock game, with no Reforged data added -- your game folder is played exactly as it is. The WiFi-play card is below. The original app and its online games live in the original app, not in this one.'),
 ]
 _PAGE_STRINGS_AR = [
     ('nav_tab_reforged', 'ريفورجيد'),
     ('setup_card_reforged_page', 'ريفورجيد'),
-    ('setup_reforged_home_row_desc', 'محركاتنا واللعب عبر الوايفاي، بصفحة لحالها'),
-    ('setup_reforged_page_intro', 'هذا التطبيق يعمل بمحركات ريفورجيد فقط، وبيانات ريفورجيد مدمجة فيه — لا شيء يُشغَّل أو يُطفأ بخصوص البيانات. اختيار المحرك في الأسفل. التطبيق الأصلي ومبارياته عبر الأونلاين يعيشان في التطبيق الأصلي، لا في هذا.'),
+    ('setup_reforged_home_row_desc', 'محرك 60 خطوة نقي واللعب عبر الوايفاي، بصفحة لحالها'),
+    ('setup_reforged_page_intro', 'هذا التطبيق يعمل بمحرك واحد: بناء 60 خطوة نقي على اللعبة الأصلية، دون أي بيانات ريفورجيد مضافة — مجلد لعبتك يُلعب كما هو تمامًا. بطاقة اللعب عبر الوايفاي في الأسفل. التطبيق الأصلي ومبارياته عبر الأونلاين يعيشان في التطبيق الأصلي، لا في هذا.'),
 ]
 for d in os.listdir(resdir):
     p = os.path.join(resdir, d, 'strings.xml')
@@ -633,27 +431,15 @@ for d in os.listdir(resdir):
 # discipline as the page strings above. No name here exists upstream.
 _WIFI_STRINGS_EN = [
     ('setup_card_reforged_wifi', 'WiFi Play'),
-    ('setup_reforged_wifi_intro', 'Two phones, one build: a WiFi match between our builds needs both phones on the same engine, over game folders with the same Community Patch state. The game compares both identities when the match starts and keeps comparing while it runs; a difference on either phone ends the match at the start.'),
-    ('setup_reforged_wifi_state', 'This phone: engine %1$s · Community Patch %2$s'),
-    ('setup_reforged_wifi_patch_on', 'installed'),
-    ('setup_reforged_wifi_patch_off', 'missing'),
-    ('setup_reforged_wifi_engine60', 'Reforged 60'),
-    ('setup_reforged_wifi_engine30', 'Reforged 30'),
-    ('setup_reforged_wifi_prepare30', 'Prepare WiFi play: Reforged 30'),
-    ('setup_reforged_wifi_prepare60', 'Prepare WiFi play: Reforged 60'),
-    ('setup_reforged_wifi_help', 'Press the same Prepare button on both phones, then compare the line above on both screens -- it must read the same before you start.'),
+    ('setup_reforged_wifi_intro', 'Two phones, one build: a WiFi match needs both phones running this exact build (1.16, the pure 60-steps engine), over game folders with the same Community Patch state. The game compares both identities when the match starts and keeps comparing while it runs; a difference on either phone ends the match at the start.'),
+    ('setup_reforged_wifi_state', 'This phone: Zero Hour Reforged 1.16 - pure 60-steps engine (Z60)'),
+    ('setup_reforged_wifi_help', 'Compare this card on both phones before you start -- both must read the same build. If a match ever reports a mismatch, export the logs from both phones: the [GX-CRC] lines name the identity that differed.'),
 ]
 _WIFI_STRINGS_AR = [
     ('setup_card_reforged_wifi', 'اللعب عبر الوايفاي'),
-    ('setup_reforged_wifi_intro', 'هاتفان وبناء واحد: مباراة وايفاي بين نسخنا تحتاج أن يعمل الهاتفان على المحرك نفسه، فوق مجلدَي لعبة بحالة باتش مجتمع واحدة. اللعبة تقارن هويتي الهاتفين عند بدء المباراة وتظل تقارن أثناءها؛ وأي اختلاف في أي هاتف ينهي المباراة من بدايتها.'),
-    ('setup_reforged_wifi_state', 'هذا الهاتف: المحرك %1$s · باتش المجتمع %2$s'),
-    ('setup_reforged_wifi_patch_on', 'موجود'),
-    ('setup_reforged_wifi_patch_off', 'غير موجود'),
-    ('setup_reforged_wifi_engine60', 'ريفورجيد 60'),
-    ('setup_reforged_wifi_engine30', 'ريفورجيد 30'),
-    ('setup_reforged_wifi_prepare30', 'جهّز للعب الوايفاي: ريفورجيد 30'),
-    ('setup_reforged_wifi_prepare60', 'جهّز للعب الوايفاي: ريفورجيد 60'),
-    ('setup_reforged_wifi_help', 'اضغط زر التجهيز نفسه على الهاتفين، ثم قارن السطر أعلاه على الشاشتين — لازم يقرأ الشيء نفسه قبل أن تبدأ.'),
+    ('setup_reforged_wifi_intro', 'هاتفان وبناء واحد: مباراة الوايفاي تحتاج أن يعمل الهاتفان على هذا البناء بالضبط (1.16، محرك 60 خطوة النقي)، فوق مجلدَي لعبة بحالة باتش مجتمع واحدة. اللعبة تقارن هويتي الهاتفين عند بدء المباراة وتظل تقارن أثناءها؛ وأي اختلاف في أي هاتف ينهي المباراة من بدايتها.'),
+    ('setup_reforged_wifi_state', 'هذا الهاتف: زيرو أور ريفورجيد 1.16 - محرك 60 خطوة نقي (Z60)'),
+    ('setup_reforged_wifi_help', 'قارن هذه البطاقة على الهاتفين قبل أن تبدأ — لازم يقرأا البناء نفسه. إذا أبلغت مباراة يومًا عن عدم تطابق، صدّر السجلات من الهاتفين: سطور [GX-CRC] تسمّي الهوية التي اختلفت.'),
 ]
 for d in os.listdir(resdir):
     p = os.path.join(resdir, d, 'strings.xml')
