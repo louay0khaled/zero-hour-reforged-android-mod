@@ -150,6 +150,91 @@ if os.path.exists(fc_path):
 open(fc_path, 'w', encoding='utf-8').write(FRAMECHECK_JAVA)
 print('wrote', os.path.relpath(fc_path, SRC))
 
+# ---------------- 1b) RfxGameActivity.java (new file) ----------------
+RFXGAME_JAVA = '''package com.generalsx.zerohour;
+
+import org.libsdl.apprfx.SDLActivity;
+
+import android.os.Bundle;
+import android.system.Os;
+
+/**
+ * Stage C4 tests (v1.18): the activity that runs the Reforged
+ * engine itself as a game.
+ *
+ * The payload is packaged as libmainrfxgame.so: the full Reforged
+ * game (PosixMain's SDL_main) built as a shared library by the C4
+ * CMake patch. This activity hands it the two things a desktop
+ * launch would: the install root (the game folder the owner picked
+ * in this launcher, passed as SDL_main's first argument, -root --
+ * PosixMain chdir()s there itself) and a writable user-data
+ * directory (ZH_USER_DATA_DIR, read once by the engine's early
+ * options; an isolated rfx-user folder under this app's external
+ * files, so the game's own saves/settings never mix with the
+ * shipped engines' -- sharing those is Stage C6 parity work).
+ *
+ * It runs in its own process (the manifest's :rfxgame), under the
+ * same isolated SDL 3.4.16 Java layer as the C3 payload -- never
+ * the host shell's 3.4.2 layer, and never in a process with the
+ * shipped engines. Touch control proper is Stage C5; this slice
+ * proves the engine opens its window, reaches its main menu and
+ * shell map, starts a skirmish, and quits cleanly.
+ */
+public class RfxGameActivity extends SDLActivity {
+
+    @Override
+    protected String[] getLibraries() {
+        return new String[] { "mainrfxgame" };
+    }
+
+    @Override
+    protected String[] getArguments() {
+        String root = SetupActivity.getSavedGamePath(this);
+        return new String[] { "-root", root == null ? "" : root };
+    }
+
+    // The engine reads ZH_USER_DATA_DIR once, before SDL_main runs;
+    // the variable must exist before loadLibraries() inside
+    // super.onCreate, so it is set first thing here.
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        markGameStage("oncreate-enter");
+        try {
+            java.io.File userDir =
+                new java.io.File(getExternalFilesDir(null), "rfx-user");
+            userDir.mkdirs();
+            Os.setenv("ZH_USER_DATA_DIR",
+                userDir.getAbsolutePath(), true);
+        } catch (Exception ignored) {}
+        super.onCreate(savedInstanceState);
+        markGameStage("oncreate-done");
+    }
+
+    @Override
+    public void loadLibraries() {
+        markGameStage("load-enter");
+        super.loadLibraries();
+        markGameStage("load-done");
+    }
+
+    private void markGameStage(String stage) {
+        try {
+            java.io.File dir = getExternalFilesDir(null);
+            if (dir == null) return;
+            java.io.FileWriter w = new java.io.FileWriter(
+                new java.io.File(dir, "rfxgame-stage.txt"), true);
+            w.write("[javastage] " + stage + "\\n");
+            w.close();
+        } catch (Exception ignored) {}
+    }
+}
+'''
+rg_path = os.path.join(JAVA_DIR, 'RfxGameActivity.java')
+if os.path.exists(rg_path):
+    sys.exit('phase3: RfxGameActivity.java already exists -- refusing to overwrite')
+open(rg_path, 'w', encoding='utf-8').write(RFXGAME_JAVA)
+print('wrote', os.path.relpath(rg_path, SRC))
+
 # ---------------- 2) Manifest: register the activity ----------------
 edit(MANIFEST, [(
     '    </application>',
@@ -157,6 +242,12 @@ edit(MANIFEST, [(
             android:name=".FrameCheckActivity"
             android:exported="false"
             android:process=":framecheck"
+            android:configChanges="orientation|keyboardHidden|keyboard|navigation|screenSize|screenLayout|smallestScreenSize|density|layoutDirection|locale|fontScale|uiMode"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
+        <activity
+            android:name=".RfxGameActivity"
+            android:exported="false"
+            android:process=":rfxgame"
             android:configChanges="orientation|keyboardHidden|keyboard|navigation|screenSize|screenLayout|smallestScreenSize|density|layoutDirection|locale|fontScale|uiMode"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
     </application>''',
@@ -222,6 +313,10 @@ edit(SETUP, [
     private static final String RFX_RESULT_FILE = "frame-result.txt";
     private static final String RFX_CAPTURE_FILE = "frame-capture.bmp";
     private static final String RFX_GAMEDATA_MARKER = "zh-gamedata-path.txt";
+
+    private void onLaunchRfxGame() {
+        startActivity(new android.content.Intent(this, RfxGameActivity.class));
+    }
 
     private void onRunRfxTests() {
         java.io.File dir = getExternalFilesDir(null);
@@ -309,6 +404,16 @@ edit(SETUP, [
                          : R.string.setup_tests_no_results));
         UiKit.button(run, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_chip,
             getString(R.string.setup_tests_run), this::onRunRfxTests);
+
+        // GeneralsX @feature Zero Hour Reforged 19/11/2026 (v1.18) Stage C4:
+        // the Reforged engine itself as a playable window, launched from
+        // the same tests page, in its own process (RfxGameActivity).
+        LinearLayout gameCard = UiKit.card(page);
+        UiKit.sectionHeader(gameCard, R.drawable.ic_gzh_chip,
+            getString(R.string.setup_tests_game_title), true);
+        UiKit.supporting(gameCard, getString(R.string.setup_tests_game_desc));
+        UiKit.button(gameCard, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_chip,
+            getString(R.string.setup_tests_game_launch), this::onLaunchRfxGame);
 
         if (haveResult) {
             LinearLayout results = UiKit.card(page);
@@ -636,7 +741,20 @@ if [[ -n "${GX_REFORGEDX_LIB:-}" ]]; then
         exit 1
     fi
     cp "${GX_REFORGEDX_LIB}" "${JNILIBS}/libmainrfx.so"
-    echo "Packaging the Reforged C3 test payload: libmainrfx.so ($(du -h "${GX_REFORGEDX_LIB}" | cut -f1))"
+    echo "Packaging the Reforged C3 test payload: libmainrfx.so ($(du -h \"${GX_REFORGEDX_LIB}\" | cut -f1))"
+fi
+
+# GeneralsX @feature Zero Hour Reforged 19/11/2026 (v1.18) The Stage C4 game
+# library: the Reforged engine itself as a playable window, loaded only by
+# the launcher's tests page (RfxGameActivity, own process). Not an engine
+# the game ever loads.
+if [[ -n \"${GX_REFORGEDX_GAME_LIB:-}\" ]]; then
+    if [[ ! -f \"${GX_REFORGEDX_GAME_LIB}\" ]]; then
+        echo \"ERROR: GX_REFORGEDX_GAME_LIB points at a file that does not exist: ${GX_REFORGEDX_GAME_LIB}\"
+        exit 1
+    fi
+    cp \"${GX_REFORGEDX_GAME_LIB}\" \"${JNILIBS}/libmainrfxgame.so\"
+    echo \"Packaging the Reforged C4 game library: libmainrfxgame.so ($(du -h \"${GX_REFORGEDX_GAME_LIB}\" | cut -f1))\"
 fi''',
 )])
 
@@ -661,6 +779,9 @@ STRINGS_EN = [
     ('setup_switch_gx_testrec', 'Test recorder'),
     ('setup_switch_gx_testrec_desc', 'Records the numbers of a test match into test-rec.txt in the game folder: match start, the engine CRC at frames 100/200/300, memory use every minute, and LAN lobby events. Turn on before a test match (solo or LAN), then share the file or the test log. (gx_testrec.txt)'),
     ('setup_tests_died', 'The test process ended with no result -- the system closed it. Open the test logs below to see why, and share them.'),
+    ('setup_tests_game_title', 'The Reforged game itself (Stage C4)'),
+    ('setup_tests_game_desc', 'Launches the full Reforged engine as a game window -- its own main menu and shell map -- in its own process. The engines you play with are never touched. Experimental: touch controls arrive in a later stage.'),
+    ('setup_tests_game_launch', 'Launch the Reforged game'),
 ]
 STRINGS_AR = [
     ('nav_tab_tests', 'اختبارات ريفورجيد'),
@@ -682,6 +803,9 @@ STRINGS_AR = [
     ('setup_switch_gx_testrec', 'مسجّل الاختبارات'),
     ('setup_switch_gx_testrec_desc', 'يسجّل أرقام مباراة الاختبار في ملف test-rec.txt داخل مجلد اللعبة: بداية المباراة، وبصمة المحرك عند الفريمات 100/200/300، واستهلاك الذاكرة كل دقيقة، وأحداث لوبي الشبكة المحلية. فعّله قبل مباراة اختبار (فردية أو شبكية)، ثم شارك الملف أو سجل الاختبارات. (gx_testrec.txt)'),
     ('setup_tests_died', 'انتهت عملية الاختبار دون أي نتيجة -- النظام أغلقها. افتح سجلات الاختبارات بالأسفل لمعرفة السبب ومشاركتها.'),
+    ('setup_tests_game_title', 'لعبة ريفورجيد نفسها (المرحلة C4)'),
+    ('setup_tests_game_desc', 'تشغّل محرك ريفورجيد الكامل كنافذة لعبة -- قائمته الرئيسية وخريطة القشرة -- بعملية منفصلة. المحركات التي تلعب بها لا تُمسّ أبدًا. تجريبي: التحكم باللمس يأتي بمرحلة لاحقة.'),
+    ('setup_tests_game_launch', 'تشغيل لعبة ريفورجيد'),
 ]
 
 
