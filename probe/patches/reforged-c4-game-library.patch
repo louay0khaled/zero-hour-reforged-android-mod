@@ -1,0 +1,60 @@
+diff --git a/GeneralsMD/Code/CMakeLists.txt b/GeneralsMD/Code/CMakeLists.txt
+index 10a1f1d6..46682fd7 100644
+--- a/GeneralsMD/Code/CMakeLists.txt
++++ b/GeneralsMD/Code/CMakeLists.txt
+@@ -871,6 +871,25 @@ set(GS_SECURESECONNECT  OFF CACHE BOOL "" FORCE)
+ set(GS_BUILD_TESTS      OFF CACHE BOOL "" FORCE)
+ set(GS_INCLUDE_VOICE    OFF CACHE BOOL "" FORCE)
+ add_subdirectory(${LIBSRC}/GameSpy ${CMAKE_CURRENT_BINARY_DIR}/gamespy)
++if(ZH_PLATFORM_ANDROID)
++  # Stage C4: GameSpy's 18 subprojects pin POSITION_INDEPENDENT_CODE to
++  # ${BUILD_SHARED_LIBS} (off in this build), which no cache variable
++  # overrides; the game links into a shared library, so force PIC on
++  # every target in the GameSpy directory tree.
++  function(zh_c4_force_pic dir)
++    get_directory_property(zh_c4_targets DIRECTORY "${dir}" BUILDSYSTEM_TARGETS)
++    foreach(t IN LISTS zh_c4_targets)
++      if(TARGET ${t})
++        set_target_properties(${t} PROPERTIES POSITION_INDEPENDENT_CODE ON)
++      endif()
++    endforeach()
++    get_directory_property(zh_c4_subdirs DIRECTORY "${dir}" SUBDIRECTORIES)
++    foreach(sd IN LISTS zh_c4_subdirs)
++      zh_c4_force_pic("${sd}")
++    endforeach()
++  endfunction()
++  zh_c4_force_pic("${LIBSRC}/GameSpy")
++endif()
+ 
+ # ---- mbedtls --------------------------------------------------------------
+ # mbedTLS 3.6.7 (Apache-2.0), fetched by both vendor scripts: the TLS under the online service's lobby
+@@ -1670,6 +1689,14 @@ if(ZH_PLATFORM_POSIX)
+   # FFmpeg's own configure picks the host's architecture, so a build for another one (x86_64 on Apple
+   # Silicon, run under Rosetta: E1's architecture axis) names it.  One at a time: configure builds one.
+   set(FFMPEG_POSIX_ARCH "")
++  if(ZH_PLATFORM_ANDROID)
++    # Stage C4: FFmpeg builds for the Android target, not the build host.
++    # The arch name alone is not enough: CMake's C compiler here is the bare
++    # NDK clang, which defaults to the host, so the target triple must ride
++    # in the flags FFmpeg's configure compiles and links its tests with.
++    set(FFMPEG_POSIX_ARCH aarch64)
++    set(FFMPEG_POSIX_CFLAGS "--target=aarch64-linux-android${ANDROID_PLATFORM_LEVEL}")
++  endif()
+   if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+     list(LENGTH CMAKE_OSX_ARCHITECTURES FFMPEG_ARCH_COUNT)
+     if(NOT FFMPEG_ARCH_COUNT EQUAL 1)
+@@ -2047,6 +2074,14 @@ if(ZH_PLATFORM_POSIX)
+   target_include_directories(generals PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Main ${GENERATED})
+   set_target_properties(generals PROPERTIES CXX_STANDARD 17)
+   target_link_libraries(generals PRIVATE sdldevice installroot)
++  if(ZH_PLATFORM_ANDROID)
++    # Stage C4: the whole game as an SDLActivity-loaded shared library;
++    # PosixMain's main becomes SDL_main on Android via SDL3/SDL_main.h.
++    add_library(rfx_game SHARED ${CMAKE_CURRENT_SOURCE_DIR}/Main/PosixMain.cpp)
++    target_include_directories(rfx_game PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Main ${GENERATED})
++    set_target_properties(rfx_game PROPERTIES CXX_STANDARD 17)
++    target_link_libraries(rfx_game PRIVATE sdldevice installroot)
++  endif()
+   # C2's SDL side of Monitors.h and MessageBoxWrapper, on SDL's offscreen video driver.
+   # test_gameengine_stubs.cpp: the names the executable supplies, which GCC's larger pull from sdldevice
+   # reaches (ld.lld, L1b); clang's does not, and they cost nothing there.
