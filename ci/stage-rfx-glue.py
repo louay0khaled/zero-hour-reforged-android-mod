@@ -66,5 +66,28 @@ for name in GLUE_FILES:
     open(os.path.join(DST, name), 'w', encoding='utf-8').write(text)
     print('staged', name)
 
+# v1.18 (Stage C4): the game payload needs the gesture-patched
+# SDLActivity (the host shell's edge-gesture fixes) rather than the
+# vendored vanilla one. The override file is upstream 3.4.16's
+# SDLActivity.java with the gesture patch applied, kept in the
+# overlay; it receives exactly the same package rename as the rest
+# of the glue and replaces the staged vanilla file.
+OVERRIDE = os.environ.get('GX_GLUE_SDL_ACTIVITY_OVERRIDE')
+if OVERRIDE:
+    if not os.path.isfile(OVERRIDE):
+        sys.exit(f'stage-rfx-glue: override not found: {OVERRIDE}')
+    text = open(OVERRIDE, encoding='utf-8').read()
+    if text.count('package org.libsdl.app;') != 1:
+        sys.exit('stage-rfx-glue: override: package line not unique/found')
+    text = text.replace('package org.libsdl.app;',
+                        'package org.libsdl.apprfx;', 1)
+    text = text.replace('"org.libsdl.app.USB_PERMISSION"',
+                        '"org.libsdl.apprfx.USB_PERMISSION"')
+    if re.search(r'org\.libsdl\.app(?!rfx)', text):
+        sys.exit('stage-rfx-glue: override: org.libsdl.app reference remains')
+    open(os.path.join(DST, 'SDLActivity.java'), 'w',
+         encoding='utf-8').write(text)
+    print('staged SDLActivity.java OVERRIDE (gesture-patched):', OVERRIDE)
+
 print('RFX GLUE STAGED:', len(GLUE_FILES), 'files ->',
       os.path.join('org', 'libsdl', 'apprfx'))
