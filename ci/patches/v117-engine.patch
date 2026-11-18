@@ -1,0 +1,326 @@
+diff --git a/Core/GameEngine/Source/GameNetwork/LANAPICallbacks.cpp b/Core/GameEngine/Source/GameNetwork/LANAPICallbacks.cpp
+index 499a4cb..b947fd2 100644
+--- a/Core/GameEngine/Source/GameNetwork/LANAPICallbacks.cpp
++++ b/Core/GameEngine/Source/GameNetwork/LANAPICallbacks.cpp
+@@ -38,6 +38,7 @@
+ #include "Common/PlayerTemplate.h"
+ #include "Common/QuotedPrintable.h"
+ #include "Common/RandomValue.h"
++#include "GXTestRecorder.h"	// GeneralsX @feature Zero Hour Reforged 18/11/2026 (v1.17): owner's test recorder
+ #include "Common/UserPreferences.h"
+ #include "GameClient/GameText.h"
+ #include "GameClient/LanguageFilter.h"
+@@ -258,6 +259,7 @@ void LANAPI::OnGameStart()
+ 		TheWritableGlobalData->m_useFpsLimit = false;
+ 
+ 		// Set the seeds
++		GXTestRec::logLine("lan match start seed %u", m_currentGame->getSeed());
+ 		InitRandom( m_currentGame->getSeed() );
+ 		DEBUG_LOG(("InitRandom( %d )", m_currentGame->getSeed()));
+ 	}
+diff --git a/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp b/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp
+index f8f6743..5b0ab70 100644
+--- a/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp
++++ b/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp
+@@ -38,6 +38,7 @@
+ #include "Common/UserPreferences.h"
+ #include "GameNetwork/LANAPI.h"
+ #include "GameNetwork/LANAPICallbacks.h"
++#include "GXTestRecorder.h"	// GeneralsX @feature Zero Hour Reforged 18/11/2026 (v1.17): owner's test recorder
+ #include "GameClient/MapUtil.h"
+ 
+ // GeneralsX @build BenderAI 13/02/2026 WideCharWindows conversion helpers (fighter19 pattern)
+@@ -137,6 +138,7 @@ void LANAPI::handleRequestLocations( LANMessage *msg, UnsignedInt senderIP )
+ 
+ void LANAPI::handleGameAnnounce( LANMessage *msg, UnsignedInt senderIP )
+ {
++	GXTestRec::logLine("lan announce from %u", senderIP);
+ 	if (senderIP == m_localIP)
+ 	{
+ 		return; // Don't try to update own info
+@@ -295,6 +297,7 @@ static Bool ContainsAnyReadableChars(const WideChar* playerName)
+ 
+ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
+ {
++	GXTestRec::logLine("lan join request from %u", senderIP);
+ 	UnsignedInt responseIP = senderIP;	// need this cause the player may or may not be
+ 																			// in the player list at the sendMessage.
+ 
+@@ -475,6 +478,7 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
+ 
+ void LANAPI::handleJoinAccept( LANMessage *msg, UnsignedInt senderIP )
+ {
++	GXTestRec::logLine("lan join accept from %u", senderIP);
+ 	if (msg->GameJoined.playerIP == m_localIP) // Is it for us?
+ 	{
+ 		if (m_pendingAction == ACT_JOIN) // Are we trying to join?
+@@ -711,6 +715,7 @@ void LANAPI::handleChat( LANMessage *msg, UnsignedInt senderIP )
+ 
+ void LANAPI::handleGameStart( LANMessage *msg, UnsignedInt senderIP )
+ {
++	GXTestRec::logLine("lan game start from %u", senderIP);
+ 	if (!m_inLobby && m_currentGame && m_currentGame->getIP(0) == senderIP && !m_currentGame->isGameInProgress())
+ 	{
+ 		OnGameStart();
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp
+index ce63731..01dc1f0 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp
+@@ -34,6 +34,7 @@
+ 
+ // SYSTEM INCLUDES ////////////////////////////////////////////////////////////////////////////////
+ #include <stdlib.h>
++#include <chrono>	// GeneralsX @bugfix Zero Hour Reforged 18/11/2026 (v1.17): shell camera real-time clock
+ #include <windows.h>
+ 
+ // USER INCLUDES //////////////////////////////////////////////////////////////////////////////////
+@@ -1319,7 +1320,28 @@ Bool W3DView::updateCameraMovements()
+ 		m_previousLookAtPosition = getPosition();
+ 		// TheSuperHackers @tweak The scripted camera movement is now decoupled from the render update.
+ 		// The scripted camera will still move when the time is frozen, but not when the game is halted.
+-		moveAlongWaypointPath(TheFramePacer->getLogicTimeStepMilliseconds(FramePacer::IgnoreFrozenTime));
++		// GeneralsX @bugfix Zero Hour Reforged 18/11/2026 (v1.17): while the
++		// shell is active, advance the scripted camera by REAL elapsed time.
++		// The logic timestep is authored for the simulation rate; summed over
++		// the shell's frame cap it ran at half the authored speed, so the menu
++		// background camera looked frozen. Client-only cosmetics -- the camera
++		// never enters lockstep/CRC, and the in-game path is unchanged.
++		Real camStepMs = TheFramePacer->getLogicTimeStepMilliseconds(FramePacer::IgnoreFrozenTime);
++		if (TheShell != nullptr && TheShell->isShellActive())
++		{
++			static std::chrono::steady_clock::time_point s_lastShellCamTime;
++			static Bool s_shellCamInit = false;
++			std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
++			if (s_shellCamInit)
++			{
++				camStepMs = (Real)std::chrono::duration<double, std::milli>(now - s_lastShellCamTime).count();
++				if (camStepMs > 100.0f)
++					camStepMs = 100.0f;	// clamp hitches (load, resume)
++			}
++			s_lastShellCamTime = now;
++			s_shellCamInit = true;
++		}
++		moveAlongWaypointPath(camStepMs);
+ 		didUpdate = true;
+ 	}
+ 	if (hasScriptedState(Scripted_CameraLock))
+diff --git a/Core/Libraries/Include/GXTestRecorder.h b/Core/Libraries/Include/GXTestRecorder.h
+new file mode 100644
+index 0000000..fa1259d
+--- /dev/null
++++ b/Core/Libraries/Include/GXTestRecorder.h
+@@ -0,0 +1,82 @@
++// GeneralsX @feature Zero Hour Reforged 18/11/2026 (v1.17): the owner's
++// independent test recorder. Deliberately separate from the host's GX-PERF
++// system: the launcher's Tests page switch creates the "gx_testrec.txt"
++// marker in the app's files dir (the same mechanism as the GXTrace
++// markers), and while it exists the engine appends plain-number lines to
++// "test-rec.txt" in the same dir and mirrors them to stderr with the
++// [GX-TESTREC] tag (stderr lands in generals-stderr.log, which the
++// launcher's log export always carries).
++//
++// Recorded: match start, the engine CRC at frames 100/200/300 (the LAN
++// desync discriminator: two phones with the same seed must print the same
++// three numbers), a per-minute RSS line, and the LAN lobby events (game
++// announce / join request / join accept / game start / match-start seed).
++//
++// Read-only instrumentation: nothing here ever touches game state, and the
++// marker check is cached after the first call, so a disabled recorder
++// costs one bool test per call site.
++#pragma once
++
++#include <cstdio>
++#include <cstring>
++#include <cstdarg>
++
++namespace GXTestRec
++{
++
++inline bool enabled()
++{
++	static int s_state = -1;
++	if (s_state < 0)
++	{
++		s_state = 0;
++		FILE *marker = fopen("gx_testrec.txt", "r");
++		if (marker != nullptr)
++		{
++			fclose(marker);
++			s_state = 1;
++		}
++	}
++	return s_state == 1;
++}
++
++inline void logLine(const char *fmt, ...)
++{
++	if (!enabled())
++		return;
++	char buf[512];
++	va_list args;
++	va_start(args, fmt);
++	vsnprintf(buf, sizeof(buf), fmt, args);
++	va_end(args);
++	fprintf(stderr, "[GX-TESTREC] %s\n", buf);
++	fflush(stderr);
++	FILE *f = fopen("test-rec.txt", "a");
++	if (f != nullptr)
++	{
++		fprintf(f, "%s\n", buf);
++		fclose(f);
++	}
++}
++
++// Current resident set size in kB (Android/Linux), -1 when unavailable.
++inline long rssKb()
++{
++	FILE *f = fopen("/proc/self/status", "r");
++	if (f == nullptr)
++		return -1;
++	char line[256];
++	long kb = -1;
++	while (fgets(line, sizeof(line), f) != nullptr)
++	{
++		if (strncmp(line, "VmRSS:", 6) == 0)
++		{
++			sscanf(line + 6, "%ld", &kb);
++			break;
++		}
++	}
++	fclose(f);
++	return kb;
++}
++
++} // namespace GXTestRec
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+index 60faa5f..0c5d351 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -78,6 +78,7 @@
+ #include "Common/Registry.h"
+ #include "Common/GameCommon.h"	// FOR THE ALLOW_DEBUG_CHEATS_IN_RELEASE #define
+ #include "GXTrace.h"
++#include "GXTestRecorder.h"	// GeneralsX @feature Zero Hour Reforged 18/11/2026 (v1.17): owner's test recorder
+ 
+ #include <chrono>
+ 
+@@ -1382,7 +1383,14 @@ void GameEngine::update()
+ 			}
+ 			else if (!TheGameLogic->isInGame() || TheShell->isShellActive())
+ 			{
+-				TheFramePacer->setFramesPerSecondLimit(GENERALS_ONLINE_HIGH_FPS_LIMIT);
++				// GeneralsX @bugfix Zero Hour Reforged 18/11/2026 (v1.17): the shell
++				// (main menu + shell map) runs at 60, not the GeneralsOnline
++				// HIGH_FPS_LIMIT of 30. On the 60-steps engine the 30 cap halved
++				// the shell map's scripted-camera speed and capped the menu at
++				// 30 fps on 120 Hz phones. Shell/presentation only -- the in-game
++				// branch above and the NGMP latency math that also reads
++				// HIGH_FPS_LIMIT are untouched.
++				TheFramePacer->setFramesPerSecondLimit(60);
+ 			}
+ 			// GeneralsX @bugfix Android port 28/09/2026 An offline game keeps the limit
+ 			// MSG_NEW_GAME set from the skirmish Game Speed slider (GameLogicDispatch.cpp). This
+@@ -1460,6 +1468,27 @@ void GameEngine::update()
+ 				std::chrono::duration<double, std::micro>(gxT4 - gxT3).count(),
+ 				logicUs, stepUs);
+ 		}
++
++		// GeneralsX @feature Zero Hour Reforged 18/11/2026 (v1.17): the owner's
++		// independent test recorder (marker gx_testrec.txt, GXTestRecorder.h).
++		// Read-only: it never touches game state. The frame-100/200/300 CRCs
++		// are the LAN desync discriminator -- two phones with the same seed
++		// must print the same three numbers.
++		if (GXTestRec::enabled())
++		{
++			static UnsignedInt s_lastRecFrame = 0xffffffff;
++			UnsignedInt recFrame = TheGameLogic->getFrame();
++			if (recFrame != s_lastRecFrame)
++			{
++				s_lastRecFrame = recFrame;
++				if (recFrame == 1)
++					GXTestRec::logLine("match start");
++				else if (recFrame == 100 || recFrame == 200 || recFrame == 300)
++					GXTestRec::logLine("frame %u crc %08X", recFrame, TheGameLogic->getCRC());
++				else if ((recFrame % 3600) == 0)
++					GXTestRec::logLine("frame %u rss %ld kB", recFrame, GXTestRec::rssKb());
++			}
++		}
+ 	}
+ }
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptEngine.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptEngine.cpp
+index 76c5c4c..dba678d 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptEngine.cpp
+@@ -7012,7 +7012,13 @@ namespace
+ 
+ void ScriptEngine::executeScript( Script *pScript )
+ {
+-	GXScriptNameLatch gxScriptName( pScript ? pScript->getName() : AsciiString::TheEmptyString );
++	// GeneralsX @perf n60 strike #1 (copy-elimination only): getName()
++	// returns by value, so each call site used to pay a fresh AsciiString
++	// copy. Fetch the name once into a local; the latch and _appendMessage()
++	// take const refs and reuse it. The string VALUES are identical -- only
++	// the temporaries disappear. No evaluation-order or behavior change.
++	const AsciiString scriptName = pScript ? pScript->getName() : AsciiString::TheEmptyString;
++	GXScriptNameLatch gxScriptName( scriptName );
+ 
+ 	// GeneralsX @feature Android port 22/09/2026 One line per script evaluation on
+ 	// the opening frames. A creation trace alone cannot tell "one script with twelve
+@@ -7023,7 +7029,7 @@ void ScriptEngine::executeScript( Script *pScript )
+ 	{
+ 		GX_NET_TRACE("script eval mode %d frame %u: '%s' active=%d oneshot=%d\n",
+ 			(int)TheGameLogic->getGameMode(), (unsigned)TheGameLogic->getFrame(),
+-			pScript ? pScript->getName().str() : "(null)",
++			pScript ? scriptName.str() : "(null)",
+ 			pScript ? (int)pScript->isActive() : -1,
+ 			pScript ? (int)pScript->isOneShot() : -1);
+ 	}
+@@ -7065,8 +7071,9 @@ void ScriptEngine::executeScript( Script *pScript )
+ 	Team *pSavConditionTeam = m_conditionTeam;
+ 	TeamPrototype *pProto = nullptr;
+ 
+-	if (!pScript->getConditionTeamName().isEmpty()) {
+-		pProto = TheTeamFactory->findTeamPrototype(pScript->getConditionTeamName());
++	const AsciiString conditionTeamName = pScript->getConditionTeamName();
++	if (!conditionTeamName.isEmpty()) {
++		pProto = TheTeamFactory->findTeamPrototype(conditionTeamName);
+ 	}
+ 
+ 	if (pProto && pProto->countTeamInstances() > 0) {
+@@ -7078,7 +7085,7 @@ void ScriptEngine::executeScript( Script *pScript )
+ 			if (evaluateConditions(pScript)) {
+ 				// Script Debug window
+ 				if (pScript->getAction()) {
+-					_appendMessage(pScript->getName());
++					_appendMessage(scriptName);
+ 					executeActions(pScript->getAction());
+ 				}
+ 
+@@ -7088,7 +7095,7 @@ void ScriptEngine::executeScript( Script *pScript )
+ 			}	else if (pScript->getFalseAction()) {
+ 
+ 				// Script Debug window
+-				_appendMessage(pScript->getName(), false);
++				_appendMessage(scriptName, false);
+ 
+ 				// Only do this if there are actually false actions.
+ 				executeActions(pScript->getFalseAction());
+@@ -7101,7 +7108,7 @@ void ScriptEngine::executeScript( Script *pScript )
+ 		if (evaluateConditions(pScript)) {
+ 			if (pScript->getAction()) {
+ 				// Script Debug window
+-				_appendMessage(pScript->getName());
++				_appendMessage(scriptName);
+ 				executeActions(pScript->getAction());
+ 			}
+ 
+@@ -7111,7 +7118,7 @@ void ScriptEngine::executeScript( Script *pScript )
+ 		}	else if (pScript->getFalseAction()) {
+ 
+ 			// Script Debug window
+-			_appendMessage(pScript->getName(), false);
++			_appendMessage(scriptName, false);
+ 
+ 			// Only do this if there are actually false actions.
+ 			executeActions(pScript->getFalseAction());
