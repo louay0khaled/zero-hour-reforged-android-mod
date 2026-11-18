@@ -179,6 +179,9 @@ jobs:
           grep -q "setup_reforged_wifi_state" android/app/src/main/res/values/strings.xml
           grep -q "GX_ENGINE_LIB" scripts/build/android/package-android-zh.sh
           grep -q "GX_REFORGEDX_LIB" scripts/build/android/package-android-zh.sh
+          grep -q "GX_REFORGEDX_GAME_LIB" scripts/build/android/package-android-zh.sh
+          grep -q "RfxGameActivity" android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java
+          test -f android/app/src/main/java/com/generalsx/zerohour/RfxGameActivity.java
           ! grep -q "GX_REFORGED60_LIB" scripts/build/android/package-android-zh.sh
           ! grep -q "GX_REFORGED_LIB" scripts/build/android/package-android-zh.sh
           grep -q "GX_OMIT_HOST_ENGINES" scripts/build/android/package-android-zh.sh
@@ -570,6 +573,24 @@ jobs:
           grep -q "org/libsdl/apprfx/SDLActivity" "${RUNNER_TEMP}/rfx-strings.txt"
           ! grep -q "org/libsdl/app/SDLActivity" "${RUNNER_TEMP}/rfx-strings.txt"
           ls -la "${GITHUB_WORKSPACE}/libmainrfx.so"
+          # v1.18: the Stage C4 game library -- the full Reforged game
+          # as libmainrfxgame.so, built in this same tree (C1 + the
+          # frame-entry patch already applied) with the C4 CMake patch
+          # (rfx_game target + the FFmpeg target-arch/triple fix + the
+          # GameSpy PIC force). Locally proven 2026-11-19: the whole
+          # game compiles and links, SDL_main exported.
+          git -C "$SRC" apply --check "$PWD/reforged-overlay/probe/patches/reforged-c4-game-library.patch"
+          git -C "$SRC" apply "$PWD/reforged-overlay/probe/patches/reforged-c4-game-library.patch"
+          grep -q "add_library(rfx_game SHARED" "$SRC/GeneralsMD/Code/CMakeLists.txt"
+          grep -q "zh_c4_force_pic" "$SRC/GeneralsMD/Code/CMakeLists.txt"
+          cmake --build "$PWD/rfx-build" --target rfx_game -j"$(nproc)"
+          cp "$PWD/rfx-build/librfx_game.so" "${GITHUB_WORKSPACE}/libmainrfxgame.so"
+          "$NM" -D "${GITHUB_WORKSPACE}/libmainrfxgame.so" > "${RUNNER_TEMP}/rfxgame-dynsym.txt"
+          grep -q " T SDL_main" "${RUNNER_TEMP}/rfxgame-dynsym.txt"
+          strings "${GITHUB_WORKSPACE}/libmainrfxgame.so" > "${RUNNER_TEMP}/rfxgame-strings.txt"
+          grep -q "org/libsdl/apprfx/SDLActivity" "${RUNNER_TEMP}/rfxgame-strings.txt"
+          ! grep -q "org/libsdl/app/SDLActivity" "${RUNNER_TEMP}/rfxgame-strings.txt"
+          ls -la "${GITHUB_WORKSPACE}/libmainrfxgame.so"
 
       # v1.15.2: stage the payload's own SDL 3.4.16 Java layer under
       # the renamed package org.libsdl.apprfx (see ci/stage-rfx-glue.py
@@ -581,9 +602,35 @@ jobs:
           set -euo pipefail
           GX_GLUE_SRC="$PWD/reforged-engine/GeneralsMD/Code/Libraries/Source/SDL3/android-project/app/src/main/java/org/libsdl/app" \
           GX_APP_JAVA="$PWD/android/app/src/main/java" \
+          GX_GLUE_SDL_ACTIVITY_OVERRIDE="$PWD/reforged-overlay/ci/glue/SDLActivity-gesture-3416.java" \
             python3 reforged-overlay/ci/stage-rfx-glue.py
           test -f android/app/src/main/java/org/libsdl/apprfx/SDLActivity.java
           grep -q "package org.libsdl.apprfx;" android/app/src/main/java/org/libsdl/apprfx/SDLActivity.java
+          grep -q "EdgeBackGestureHandler" android/app/src/main/java/org/libsdl/apprfx/SDLActivity.java
+
+      # Symbol table of the unstripped C4 game library, same reason
+      # as the play engine's: device crash logs from the tests page
+      # can only be symbolized with it. Runs after the payload step
+      # (which stages the library at the workspace root) and before
+      # the strip step below.
+      - name: Collect C4 symbol table (before stripping)
+        run: |
+          set -e
+          TOOLS="$(dirname "$(ls "${ANDROID_NDK_HOME}"/toolchains/llvm/prebuilt/*/bin/llvm-nm | head -1)")"
+          mkdir -p symbols
+          LIBG="${GITHUB_WORKSPACE}/libmainrfxgame.so"
+          [ -f "$LIBG" ] || { echo "::error::libmainrfxgame.so missing at symbol collection (C4 staging lost)"; exit 1; }
+          OUTG="symbols/libmainrfxgame-run${{ github.run_number }}.symbols.txt"
+          BUILD_IDG="$(readelf -n "$LIBG" 2>/dev/null | sed -n 's/.*Build ID: \([0-9a-f]*\).*/\1/p' | head -1)"
+          {
+            echo "# libmainrfxgame.so symbols -- run ${{ github.run_number }}, commit ${{ github.sha }}"
+            echo "# BuildID: ${BUILD_IDG:-UNKNOWN}"
+            "$TOOLS/llvm-readelf" --notes --program-headers "$LIBG"
+            echo "# --- defined symbols: address size type name ---"
+            "$TOOLS/llvm-nm" --defined-only --numeric-sort --print-size --demangle "$LIBG"
+          } > "$OUTG"
+          gzip -9 "$OUTG"
+          ls -la symbols/
 
       - name: Strip debug symbols
         run: |
@@ -610,6 +657,9 @@ jobs:
           # The C3 test payload's packaged copy, same discipline.
           [ -f "${GITHUB_WORKSPACE}/libmainrfx.so" ] || { echo "::error::libmainrfx.so missing at strip time (C3 payload staging lost)"; exit 1; }
           "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainrfx.so"
+          # The C4 game library's packaged copy, same discipline.
+          [ -f "${GITHUB_WORKSPACE}/libmainrfxgame.so" ] || { echo "::error::libmainrfxgame.so missing at strip time (C4 game staging lost)"; exit 1; }
+          "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainrfxgame.so"
 
       # GX_GRADLE_TASK is the overlay patch's knob: the packaging script
       # stages jniLibs/assets, then runs assembleRelease instead of its
@@ -623,6 +673,7 @@ jobs:
           GX_GRADLE_TASK: assembleRelease
           GX_ENGINE_LIB: ${{ github.workspace }}/libmainz60.so
           GX_REFORGEDX_LIB: ${{ github.workspace }}/libmainrfx.so
+          GX_REFORGEDX_GAME_LIB: ${{ github.workspace }}/libmainrfxgame.so
           # v1.16: the host's engines are NOT packaged. The packaging
           # script still stages the shared libraries from the base tree,
           # but this knob (our gradle-task patch) keeps libmain.so and
@@ -661,7 +712,7 @@ jobs:
           # Reforged engines are forbidden outright -- any one of them
           # in the APK fails the build -- and the *60.so set is
           # exactly {libmainz60.so} (ls sorts).
-          for required in libmainz60.so libmainrfx.so; do
+          for required in libmainz60.so libmainrfx.so libmainrfxgame.so; do
             if [ ! -f "${WORKDIR}/lib/arm64-v8a/${required}" ]; then
               echo "::error::required engine library ${required} is missing from the APK"
               exit 1
@@ -679,7 +730,7 @@ jobs:
             exit 1
           fi
           missing=0
-          for engine in libmainz60.so; do
+          for engine in libmainz60.so libmainrfxgame.so; do
             NEEDED="$("${READELF}" -d "${WORKDIR}/lib/arm64-v8a/${engine}" | grep NEEDED | sed -E 's/.*\[(.*)\]/\1/')"
             for lib in ${NEEDED}; do
               case "${lib}" in
@@ -697,7 +748,7 @@ jobs:
             echo "::error::APK is missing required native libraries."
             exit 1
           fi
-          echo "OK: engine set exact (libmainz60.so + libmainrfx.so only), and every DT_NEEDED of the play engine is present in the APK."
+          echo "OK: engine set exact (libmainz60.so + libmainrfx.so + libmainrfxgame.so), and every DT_NEEDED of the play engine and the C4 game library is present in the APK."
 
       # v1.17 (owner's order, wave-8 record §156): the account-wide
       # Actions artifact quota is exhausted, so the build is delivered
