@@ -576,6 +576,47 @@ edit(SETUP, [
     private int tabTitle(int tab) {'''),
 ])
 
+
+# ---------------- 3e) v1.17: the test recorder switch + log ----------------
+# The recorder's marker joins the host's diagnostics arrays (the card, the
+# game-folder handling and the refresh logic already exist); the engine
+# side is GXTestRecorder.h (marker gx_testrec.txt -> test-rec.txt). The
+# shared test log also appends test-rec.txt from the game folder.
+edit(SETUP, [
+    ("""        "gx_trace.txt", "gx_perf.txt", "gx_gles_gputimer.txt", "gx_audio_trace.txt", "gx_net_trace.txt",""",
+     """        "gx_trace.txt", "gx_perf.txt", "gx_testrec.txt", "gx_gles_gputimer.txt", "gx_audio_trace.txt", "gx_net_trace.txt","""),
+    ("""        R.string.setup_switch_gx_trace, R.string.setup_switch_gx_perf, R.string.setup_switch_gpu_timer,""",
+     """        R.string.setup_switch_gx_trace, R.string.setup_switch_gx_perf, R.string.setup_switch_gx_testrec, R.string.setup_switch_gpu_timer,"""),
+    ("""        R.string.setup_switch_gx_trace_desc, R.string.setup_switch_gx_perf_desc, R.string.setup_switch_gpu_timer_desc,""",
+     """        R.string.setup_switch_gx_trace_desc, R.string.setup_switch_gx_perf_desc, R.string.setup_switch_gx_testrec_desc, R.string.setup_switch_gpu_timer_desc,"""),
+    ("""        } else {
+            sb.append("frame-result.txt: MISSING\\n");
+        }
+        java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);""",
+     """        } else {
+            sb.append("frame-result.txt: MISSING\\n");
+        }
+        // Zero Hour Reforged (v1.17): the test recorder's numbers file
+        // lives in the game folder (the engine writes it next to its
+        // marker); append it so one shared log carries everything.
+        java.io.File testRec = null;
+        String testRecPath = getSavedGamePath();
+        if (testRecPath != null) {
+            testRec = new java.io.File(testRecPath, "test-rec.txt");
+        }
+        if (testRec != null && testRec.isFile()) {
+            sb.append("test-rec.txt: ").append(testRec.length())
+              .append(" bytes, modified ")
+              .append(rfxTime(testRec.lastModified())).append("\\n");
+            sb.append("---- test-rec.txt ----\\n");
+            sb.append(readTextFileQuietly(testRec));
+            sb.append("\\n---- end test-rec.txt ----\\n");
+        } else {
+            sb.append("test-rec.txt: MISSING\\n");
+        }
+        java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);"""),
+])
+
 # ---------------- 4) Packaging knob for libmainrfx.so ----------------
 edit(PACKAGE_SH, [(
     '''    cp "${GX_ENGINE_LIB}" "${JNILIBS}/libmainz60.so"
@@ -617,6 +658,8 @@ STRINGS_EN = [
     ('setup_tests_logs_share', 'Share the log'),
     ('setup_tests_logs_copy', 'Copy the log'),
     ('setup_tests_logs_copied', 'Log copied'),
+    ('setup_switch_gx_testrec', 'Test recorder'),
+    ('setup_switch_gx_testrec_desc', 'Records the numbers of a test match into test-rec.txt in the game folder: match start, the engine CRC at frames 100/200/300, memory use every minute, and LAN lobby events. Turn on before a test match (solo or LAN), then share the file or the test log. (gx_testrec.txt)'),
     ('setup_tests_died', 'The test process ended with no result -- the system closed it. Open the test logs below to see why, and share them.'),
 ]
 STRINGS_AR = [
@@ -636,6 +679,8 @@ STRINGS_AR = [
     ('setup_tests_logs_share', 'مشاركة السجل'),
     ('setup_tests_logs_copy', 'نسخ السجل'),
     ('setup_tests_logs_copied', 'نُسخ السجل'),
+    ('setup_switch_gx_testrec', 'مسجّل الاختبارات'),
+    ('setup_switch_gx_testrec_desc', 'يسجّل أرقام مباراة الاختبار في ملف test-rec.txt داخل مجلد اللعبة: بداية المباراة، وبصمة المحرك عند الفريمات 100/200/300، واستهلاك الذاكرة كل دقيقة، وأحداث لوبي الشبكة المحلية. فعّله قبل مباراة اختبار (فردية أو شبكية)، ثم شارك الملف أو سجل الاختبارات. (gx_testrec.txt)'),
     ('setup_tests_died', 'انتهت عملية الاختبار دون أي نتيجة -- النظام أغلقها. افتح سجلات الاختبارات بالأسفل لمعرفة السبب ومشاركتها.'),
 ]
 
