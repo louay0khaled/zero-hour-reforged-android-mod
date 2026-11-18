@@ -707,6 +707,11 @@ jobs:
       - name: Publish APK as GitHub Release asset
         env:
           GH_TOKEN: ${{ github.token }}
+          # The workspace root is the MYSOREZ checkout (the first one
+          # without a path), so gh would resolve THAT repo from the git
+          # remote -- run #30 died on exactly that (403 on
+          # MYSOREZ/GeneralsZH-Android-Port/releases). Pin ours.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           VER="${{ inputs.version_name }}"
@@ -726,6 +731,7 @@ jobs:
       - name: Attach symbol tables to the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           VER="${{ inputs.version_name }}"
