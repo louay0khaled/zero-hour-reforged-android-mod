@@ -35,18 +35,18 @@ name: Build Zero Hour Reforged APK
 # publishing a Release.
 #
 permissions:
-  contents: read
+  contents: write
 
 on:
   workflow_dispatch:
     inputs:
       version_name:
         type: string
-        description: "Override versionName (blank = build.gradle default, currently '1.16'). Bump together with version_code for a new release."
+        description: "Override versionName (blank = build.gradle default, currently '1.17'). Bump together with version_code for a new release."
         default: ""
       version_code:
         type: string
-        description: "Override versionCode (blank = build.gradle default, currently 21). Must increase between published releases."
+        description: "Override versionCode (blank = build.gradle default, currently 22). Must increase between published releases."
         default: ""
 
 env:
@@ -205,6 +205,7 @@ jobs:
             git apply --verbose ../reforged-overlay/ci/patches/60flip.patch
             git apply --verbose ../reforged-overlay/ci/patches/n60-stamp.patch
             git apply --verbose ../reforged-overlay/ci/patches/n60-pacing.patch
+            git apply --verbose ../reforged-overlay/ci/patches/v117-engine.patch
             git apply --verbose ../reforged-overlay/ci/patches/package-android-zh-gradle-task.patch )
           REFORGED_SRC="${{ github.workspace }}/reforged-src" REFORGED_SURGERY_MODE=paths \
             python3 reforged-overlay/ci/apply-surgery.py
@@ -223,6 +224,11 @@ jobs:
           grep -q "0x5A300000" reforged-src/GeneralsMD/Code/GameEngine/Source/Common/version.cpp
           grep -q '" Z60"' reforged-src/GeneralsMD/Code/GameEngine/Source/Common/version.cpp
           grep -q "m_frameRate = LOGICFRAMES_PER_SECOND" reforged-src/Core/GameEngine/Source/GameNetwork/Network.cpp
+          # v1.17 landed: strike #1, the shell fixes and the test recorder:
+          grep -q "const AsciiString scriptName" reforged-src/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptEngine.cpp
+          grep -q "camStepMs" reforged-src/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp
+          grep -q "GXTestRecorder" reforged-src/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+          grep -q "GXTestRecorder" reforged-src/Core/GameEngine/Source/GameNetwork/LANAPICallbacks.cpp
           # Phase 1b landed in this tree too (the paths-mode surgery's own
           # post-check already failed the run if any old-id path remains):
           grep -q "com.louay.zerohour.reforged" reforged-src/Core/GameEngine/Include/Common/GXLogging.h
@@ -693,42 +699,41 @@ jobs:
           fi
           echo "OK: engine set exact (libmainz60.so + libmainrfx.so only), and every DT_NEEDED of the play engine is present in the APK."
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ZeroHourReforged-apk
-          path: ${{ steps.locate.outputs.path }}
-          # Free-plan Actions storage is a small account-wide quota and an
-          # APK is ~55 MB; 7 days is ample to pull a build down for the
-          # local re-sign + Release step.
-          retention-days: 7
-
-      - name: Upload symbol table artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-symbols-run${{ github.run_number }}
-          path: symbols/
-          retention-days: 90
-
-      - name: Collect dependency build logs for diagnosis
-        if: always()
+      # v1.17 (owner's order, wave-8 record §156): the account-wide
+      # Actions artifact quota is exhausted, so the build is delivered
+      # as a GitHub Release asset on this repo instead of an artifact.
+      # A download channel for test builds only -- the official signed
+      # launch still waits for the owner's word.
+      - name: Publish APK as GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p logs
-          cp build/${{ env.PRESET }}/vcpkg-manifest-install.log logs/ 2>/dev/null || true
-          if [ -d /opt/vcpkg/buildtrees ]; then
-            find /opt/vcpkg/buildtrees -maxdepth 2 -name "*.log" -newer .git -exec cp {} logs/ \; 2>/dev/null || true
+          set -euo pipefail
+          VER="${{ inputs.version_name }}"
+          if [ -z "$VER" ]; then VER="build-${{ github.run_number }}"; fi
+          TAG="v$VER"
+          APK="${{ steps.locate.outputs.path }}"
+          [ -f "$APK" ] || { echo "::error::APK not found at $APK"; exit 1; }
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+          else
+            gh release create "$TAG" "$APK" \
+              --title "Zero Hour Reforged $TAG (test build)" \
+              --notes "Test build $TAG, delivered as a Release asset because the Actions artifact quota is exhausted. Not the official signed launch."
           fi
-          cp build/${{ env.PRESET }}/_deps/dxvk-build-android/meson-logs/meson-log.txt logs/dxvk-meson-log.txt 2>/dev/null || true
-          ls -la logs/ || true
+          echo "APK published as release asset: $TAG"
 
-      - name: Upload build logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-build-logs-${{ github.run_number }}
-          path: logs/
-          retention-days: 7
-          if-no-files-found: ignore
+      - name: Attach symbol tables to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VER="${{ inputs.version_name }}"
+          if [ -z "$VER" ]; then VER="build-${{ github.run_number }}"; fi
+          TAG="v$VER"
+          if [ -d symbols ]; then
+            find symbols -type f -print0 | xargs -0 --no-run-if-empty gh release upload "$TAG" --clobber
+          fi
 
       # Save caches even when the job failed (upstream discipline: a failed
       # run must not force the next one to rebuild ffmpeg/openssl/DXVK from
