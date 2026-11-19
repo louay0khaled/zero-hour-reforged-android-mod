@@ -3,10 +3,10 @@
 **Louay Khaled (لؤي خالد)** — project owner. Direction, decisions,
 on-device testing, and the final verdict on every build.
 
-**Louay's Assistant (Muse, by Meta)** — development partner. Hands-on
-engineering alongside Louay: the Android build system and CI, the C1/C4
-patch sets that build the Reforged engine as an Android library, launcher
-surgery, test harnesses, and diagnostics.
+**Louay's Assistant (Muse, by Meta)** — [@louays-assistant](https://github.com/louays-assistant) —
+development partner. Hands-on engineering alongside Louay: the Android
+build system and CI, the C1/C4 patch sets that build the Reforged engine
+as an Android library, launcher surgery, test harnesses, and diagnostics.
 
 ## Upstream
 
