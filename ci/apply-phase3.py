@@ -334,6 +334,7 @@ edit(MANIFEST, [(
         <activity
             android:name=".RfxGameActivity"
             android:exported="false"
+            android:screenOrientation="landscape"
             android:process=":rfxgame"
             android:configChanges="orientation|keyboardHidden|keyboard|navigation|screenSize|screenLayout|smallestScreenSize|density|layoutDirection|locale|fontScale|uiMode"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
