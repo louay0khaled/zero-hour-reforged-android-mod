@@ -58,3 +58,25 @@ index 10a1f1d6..46682fd7 100644
    # C2's SDL side of Monitors.h and MessageBoxWrapper, on SDL's offscreen video driver.
    # test_gameengine_stubs.cpp: the names the executable supplies, which GCC's larger pull from sdldevice
    # reaches (ld.lld, L1b); clang's does not, and they cost nothing there.
+diff --git a/GeneralsMD/Code/Main/PosixMain.cpp b/GeneralsMD/Code/Main/PosixMain.cpp
+index e220d026..b2cae7af 100644
+--- a/GeneralsMD/Code/Main/PosixMain.cpp
++++ b/GeneralsMD/Code/Main/PosixMain.cpp
+@@ -84,6 +84,17 @@
+ 
+ #include "posixpath.h"
+ 
++// GeneralsX @zh-c4-crumb 19/11/2026: the frame-entry patch makes
++// SdlGpuFrame::Create report its stages through zh_probe_crumb, whose
++// definition lives in the selfcheck's entry TU. The game library links
++// the same posixd3d9 archive but not that TU, so the game's entry TU
++// provides the symbol here: crumbs go to stderr (logcat under SDL).
++extern "C" void zh_probe_crumb(const char *stage)
++{
++	fprintf(stderr, "[crumb] %s\n", stage ? stage : "(null)");
++	fflush(stderr);
++}
++
+ #include <SDL3/SDL.h>		// the folder dialog and the message box, before the engine exists (P1 step 4)
+ #include <atomic>
+ #include <mutex>
