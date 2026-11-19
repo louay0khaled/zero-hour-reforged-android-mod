@@ -190,7 +190,79 @@ public class RfxGameActivity extends SDLActivity {
     @Override
     protected String[] getArguments() {
         String root = SetupActivity.getSavedGamePath(this);
+        java.io.File odir = overlayDir();
+        if (odir != null
+                && new java.io.File(odir, ".rfx-overlay-version").isFile()) {
+            return new String[] { "-root", root == null ? "" : root,
+                "-overlay", odir.getAbsolutePath() };
+        }
         return new String[] { "-root", root == null ? "" : root };
+    }
+
+    private static final String OVERLAY_REV = "1";
+
+    private java.io.File overlayDir() {
+        java.io.File base = getExternalFilesDir(null);
+        return base == null ? null
+            : new java.io.File(base, "rfx-overlay");
+    }
+
+    // Stage C4 (v1.22): the fork's own data -- its *Reforged.ini
+    // set, cursors, scripts, window files and HUD textures --
+    // ships upstream as an overlay directory searched before the
+    // install root (PosixMain -overlay, the fork's P1 decision
+    // 9). It rides in the APK as assets/rfx-overlay.zip, staged
+    // in CI by the fork's own Tools/stage-overlay.sh, and is
+    // extracted here, once per OVERLAY_REV, before the engine
+    // starts. Failure leaves the marker absent, getArguments()
+    // then omits -overlay, and the launch degrades to the
+    // pre-overlay behaviour -- never worse.
+    private void ensureOverlay() {
+        try {
+            java.io.File dir = overlayDir();
+            if (dir == null) return;
+            java.io.File marker =
+                new java.io.File(dir, ".rfx-overlay-version");
+            if (marker.isFile()) {
+                java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.FileReader(marker));
+                String v = r.readLine();
+                r.close();
+                if (OVERLAY_REV.equals(v)) {
+                    markGameStage("overlay-ready");
+                    return;
+                }
+            }
+            markGameStage("overlay-extract-begin");
+            java.util.zip.ZipInputStream zin =
+                new java.util.zip.ZipInputStream(
+                    getAssets().open("rfx-overlay.zip"));
+            byte[] buf = new byte[65536];
+            java.util.zip.ZipEntry e;
+            while ((e = zin.getNextEntry()) != null) {
+                String name = e.getName();
+                if (name.contains("..")) continue;
+                java.io.File out = new java.io.File(dir, name);
+                if (e.isDirectory()) {
+                    out.mkdirs();
+                    continue;
+                }
+                java.io.File parent = out.getParentFile();
+                if (parent != null) parent.mkdirs();
+                java.io.FileOutputStream fos =
+                    new java.io.FileOutputStream(out);
+                int n;
+                while ((n = zin.read(buf)) > 0) fos.write(buf, 0, n);
+                fos.close();
+            }
+            zin.close();
+            java.io.FileWriter w = new java.io.FileWriter(marker);
+            w.write(OVERLAY_REV);
+            w.close();
+            markGameStage("overlay-ready");
+        } catch (Exception ex) {
+            markGameStage("overlay-failed");
+        }
     }
 
     // The engine reads ZH_USER_DATA_DIR once, before SDL_main runs;
@@ -220,6 +292,7 @@ public class RfxGameActivity extends SDLActivity {
         } catch (Exception e) {
             markGameStage("stderr-redirect-failed");
         }
+        ensureOverlay();
         super.onCreate(savedInstanceState);
         markGameStage("oncreate-done");
     }
