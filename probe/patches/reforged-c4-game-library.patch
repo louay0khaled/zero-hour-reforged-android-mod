@@ -85,6 +85,24 @@ index 375a431b..15ef476b 100644
  	getExecutableDirectory( buf, size, keepTrailingSeparator );
  	if (!isExecutablePackaged())
  		return;
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/GameMemory.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/GameMemory.cpp
+index aa7efb26..b70ed8a8 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/GameMemory.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/GameMemory.cpp
+@@ -248,6 +248,13 @@ static Int roundUpMemBound(Int i)
+ 	MEM_BOUND_ALIGNMENT aligned, so one mask catches ASCII or a stray Int written over the pointer. */
+ static inline Bool isBadHeaderPointer(const void *p)
+ {
++#if defined(__ANDROID__)
++	// Android's heap allocator hands out tagged pointers (a tag byte in bits
++	// 63..56; 0xb4 in the wild).  Judge the pointer with the tag stripped, or
++	// every live header on Android reads as corrupt and the guards below fire
++	// on sound blocks from the first free on.
++	p = (const void *)((uintptr_t)p & (uintptr_t)0x0000FFFFFFFFFFFF);
++#endif
+ 	return ((uintptr_t)p & (~(uintptr_t)0 << 48 | (MEM_BOUND_ALIGNMENT-1))) != 0;
+ }
+ 
 diff --git a/GeneralsMD/Code/Main/PosixMain.cpp b/GeneralsMD/Code/Main/PosixMain.cpp
 index e220d026..b2cae7af 100644
 --- a/GeneralsMD/Code/Main/PosixMain.cpp
