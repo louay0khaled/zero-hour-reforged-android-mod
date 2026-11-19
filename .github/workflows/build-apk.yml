@@ -7,6 +7,14 @@ name: Build Zero Hour Reforged APK
 # lives in this repo -- it is checked out fresh from upstream on every
 # run and the overlay is applied on top.
 #
+# v1.20 (owner order 2026-11-19): NO PLAY ENGINE AT ALL. All effort is
+# on the second engine (Reforged's own, Stage C); the 60-steps engine is
+# parked and NOT built or packaged in this line -- the APK carries only
+# the Stage C payload (libmainrfx.so + libmainrfxgame.so). The launcher's
+# Play entry therefore has no library to load in these builds, by the
+# owner's explicit order ("for speed"). The v1.16/v1.17 text below is
+# the parked line's description, kept for when it resumes.
+#
 # v1.16 (owner orders 2026-11-17): PURE AND SINGLE-ENGINED. The APK
 # carries exactly ONE play engine, libmainz60.so -- a true 60-steps
 # build of the PRISTINE stock engine (the n60 patch set: foundations,
@@ -390,6 +398,8 @@ jobs:
       # trees are separate checkouts, so the base tree's standard
       # libmain.so can never be confused with this one.
       - name: Build pure 60-steps engine (libmainz60.so)
+        # v1.20: skipped (owner's order) -- no play engine in this build.
+        if: ${{ false }}
         run: |
           set -o pipefail
           mkdir -p logs
@@ -486,33 +496,22 @@ jobs:
               exit 1
             fi
           done
-          # The pure 60-steps engine staged at the workspace root by
-          # the engine step: it must exist, be AArch64, carry the Z60
-          # stamp and the 30 Hz client id only, and carry NOTHING of
-          # the retired engines.
-          LIB60="${GITHUB_WORKSPACE}/libmainz60.so"
-          [ -f "$LIB60" ] || { echo "::error::$LIB60 not found (engine-tree staging missing)"; exit 1; }
-          ls -la "$LIB60"
-          "$READELF" -h "$LIB60"
-          "$READELF" -h "$LIB60" | grep -qE "Machine:.*AArch64" || { echo "::error::$LIB60 is not AArch64 (see the ELF header printed above)"; exit 1; }
-          strings "$LIB60" > "${RUNNER_TEMP}/z60-verify-strings.txt"
-          grep -q " Z60" "${RUNNER_TEMP}/z60-verify-strings.txt" || { echo "::error::$LIB60 lacks the Z60 version stamp"; exit 1; }
-          if grep -q " RF60" "${RUNNER_TEMP}/z60-verify-strings.txt"; then echo "::error::RF60 stamp found in $LIB60"; exit 1; fi
-          if grep -q "smoothMotionCapture" "${RUNNER_TEMP}/z60-verify-strings.txt"; then echo "::error::smoothMotionCapture found in $LIB60"; exit 1; fi
-          grep -q "gen_online_30hz" "${RUNNER_TEMP}/z60-verify-strings.txt" || { echo "::error::$LIB60 lacks the gen_online_30hz client id"; exit 1; }
-          if grep -q "gen_online_60hz" "${RUNNER_TEMP}/z60-verify-strings.txt"; then echo "::error::gen_online_60hz found in $LIB60"; exit 1; fi
+          # v1.20: the pure 60-steps engine is not built in this line
+          # (owner's order), so there is no staged libmainz60.so to verify.
           for lib in libdxvk_d3d8.so libdxvk_d3d9.so; do
             [ -f "build/${{ env.PRESET }}/$lib" ] || { echo "::error::$lib missing"; exit 1; }
           done
           strings "build/${{ env.PRESET }}/libdxvk_d3d9.so" | grep -q "SDL3 WSI:" || {
             echo "::error::libdxvk_d3d9.so built without SDL3 WSI"; exit 1; }
-          echo "Artifacts verified: AArch64 libmainz60.so (Z60-stamped, pure) + DXVK with SDL3 WSI; base libmain.so + libgenerals.so built for dependency staging only (not packaged)"
+          echo "Artifacts verified: DXVK with SDL3 WSI; base libmain.so + libgenerals.so built for dependency staging only (not packaged). v1.20: no play engine is built or packaged."
 
       # Symbol table of the unstripped shipped play engine
       # (libmainz60.so), kept so crash logs from this build can be
       # symbolized later (a few MB of text; the library itself is far
       # too big to archive).
       - name: Collect symbol table (before stripping)
+        # v1.20: skipped -- libmainz60.so is not built in this line.
+        if: ${{ false }}
         run: |
           set -e
           TOOLS="$(dirname "$(ls "${ANDROID_NDK_HOME}"/toolchains/llvm/prebuilt/*/bin/llvm-nm | head -1)")"
@@ -648,12 +647,8 @@ jobs:
                      "build/${{ env.PRESET }}/_deps/adrenotools-build/src/hook/libfile_redirect_hook.so"; do
             [ -f "$lib" ] && "$STRIP" --strip-unneeded "$lib"
           done
-          # The 60-steps engine's packaged copy (workspace root) strips too;
-          # the packaging script copies exactly this file. Unlike the
-          # guarded list above this one is REQUIRED, so a missing file
-          # fails loud with its own message instead of a bare strip error.
-          [ -f "${GITHUB_WORKSPACE}/libmainz60.so" ] || { echo "::error::libmainz60.so missing at strip time (Reforged-tree staging lost)"; exit 1; }
-          "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainz60.so"
+          # v1.20: no 60-steps engine is packaged in this build, so
+          # there is no workspace libmainz60.so to strip.
           # The C3 test payload's packaged copy, same discipline.
           [ -f "${GITHUB_WORKSPACE}/libmainrfx.so" ] || { echo "::error::libmainrfx.so missing at strip time (C3 payload staging lost)"; exit 1; }
           "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainrfx.so"
@@ -671,7 +666,10 @@ jobs:
         env:
           GX_ANDROID_STAGING: ${{ github.workspace }}/android-staging
           GX_GRADLE_TASK: assembleRelease
-          GX_ENGINE_LIB: ${{ github.workspace }}/libmainz60.so
+          # v1.20 (owner's order): EMPTY -- the packaging script skips
+          # the play-engine copy when GX_ENGINE_LIB is empty; this build
+          # ships the Reforged test payload only, no play engine.
+          GX_ENGINE_LIB: ""
           GX_REFORGEDX_LIB: ${{ github.workspace }}/libmainrfx.so
           GX_REFORGEDX_GAME_LIB: ${{ github.workspace }}/libmainrfxgame.so
           # v1.16: the host's engines are NOT packaged. The packaging
@@ -707,30 +705,30 @@ jobs:
           unzip -q "${APK}" 'lib/arm64-v8a/*' -d "${WORKDIR}"
           echo "Packaged libraries:"
           ls "${WORKDIR}/lib/arm64-v8a/"
-          # Engine set, exactly (v1.16): the one play engine plus the
-          # tests payload. The host's four libraries AND the retired
-          # Reforged engines are forbidden outright -- any one of them
-          # in the APK fails the build -- and the *60.so set is
-          # exactly {libmainz60.so} (ls sorts).
-          for required in libmainz60.so libmainrfx.so libmainrfxgame.so; do
+          # Engine set, exactly (v1.20): the Reforged tests payload
+          # only -- NO play engine (owner's order, 2026-11-19). The
+          # host's libraries, the retired Reforged engines AND the
+          # 60-steps engine are forbidden outright -- any one of them
+          # in the APK fails the build -- and the *60.so set is empty.
+          for required in libmainrfx.so libmainrfxgame.so; do
             if [ ! -f "${WORKDIR}/lib/arm64-v8a/${required}" ]; then
               echo "::error::required engine library ${required} is missing from the APK"
               exit 1
             fi
           done
-          for forbidden in libmain.so libmain60.so libgenerals.so libgenerals60.so libmainrf.so libmainrf60.so; do
+          for forbidden in libmain.so libmain60.so libgenerals.so libgenerals60.so libmainrf.so libmainrf60.so libmainz60.so; do
             if [ -f "${WORKDIR}/lib/arm64-v8a/${forbidden}" ]; then
-              echo "::error::forbidden engine library ${forbidden} is packaged in the APK -- v1.16 ships libmainz60.so + libmainrfx.so only"
+              echo "::error::forbidden engine library ${forbidden} is packaged in the APK -- v1.20 ships the Reforged payload only (libmainrfx.so + libmainrfxgame.so), no play engine"
               exit 1
             fi
           done
           SIXTY="$(ls "${WORKDIR}/lib/arm64-v8a/" | grep -E '^lib.*60\.so$' || true)"
-          if [ "${SIXTY}" != "libmainz60.so" ]; then
-            echo "::error::unexpected *60.so set in the APK: '${SIXTY}' (only libmainz60.so is allowed)"
+          if [ -n "${SIXTY}" ]; then
+            echo "::error::unexpected *60.so in the APK: '${SIXTY}' (v1.20 packages no 60-steps engine at all)"
             exit 1
           fi
           missing=0
-          for engine in libmainz60.so libmainrfxgame.so; do
+          for engine in libmainrfxgame.so; do
             NEEDED="$("${READELF}" -d "${WORKDIR}/lib/arm64-v8a/${engine}" | grep NEEDED | sed -E 's/.*\[(.*)\]/\1/')"
             for lib in ${NEEDED}; do
               case "${lib}" in
