@@ -295,6 +295,37 @@ public class RfxGameActivity extends SDLActivity {
         ensureOverlay();
         super.onCreate(savedInstanceState);
         markGameStage("oncreate-done");
+        // (v1.24) The game is a fullscreen surface: keep the screen
+        // on while it runs, and keep Android's status and navigation
+        // bars out of it (sticky immersive). The engine's own SDL
+        // window does not inherit the activity's bar state, so the
+        // bars are hidden here and re-hidden on every focus gain --
+        // a notification-shade pull or an incoming call takes focus
+        // first, and the game must come back exactly as it was.
+        try {
+            getWindow().addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } catch (Exception ignored) {}
+        hideSystemBars();
+    }
+
+    private void hideSystemBars() {
+        try {
+            android.view.View decor = getWindow().getDecorView();
+            decor.setSystemUiVisibility(
+                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                | android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        } catch (Exception ignored) {}
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemBars();
     }
 
     @Override
