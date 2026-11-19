@@ -1011,19 +1011,49 @@ if [[ -n \"${GX_REFORGEDX_GAME_LIB:-}\" ]]; then
     cp \"${GX_REFORGEDX_GAME_LIB}\" \"${JNILIBS}/libmainrfxgame.so\"
     echo \"Packaging the Reforged C4 game library: libmainrfxgame.so ($(du -h \"${GX_REFORGEDX_GAME_LIB}\" | cut -f1))\"
 fi
-# GeneralsX @purge Zero Hour Reforged 19/11/2026 (v1.24.1, owner's order:
+''',
+)])
+# ---------------- 4b) v1.24.1 purge, relocated after ALL staging ---------
+# Run #41 proved the first placement (right after the engine cp blocks in
+# section 4) useless: the SDL/ANGLE/DXVK staging further down the script
+# re-staged everything the purge removed, and the workflow's own verify
+# step caught the full set still in the APK. The purge now sits after the
+# last staging action in the script (the assets listing + engine build
+# number), immediately before the gradle section, and it verifies itself.
+edit(PACKAGE_SH, [(
+    '''echo "==> Engine build number: ${ENGINE_BUILD}"
+
+# --- 4. gradle ---------------------------------------------------------------''',
+    '''echo "==> Engine build number: ${ENGINE_BUILD}"
+
+# GeneralsX @purge Zero Hour Reforged 20/11/2026 (v1.24.1, owner's order:
 # remove everything MYSOREZ-related that this app no longer needs) The old
 # engine left the package in v1.20; its support libraries and its Adreno
 # driver asset are dead weight -- the Reforged libraries link only against
-# Android system libraries (readelf-verified on the shipped APK). Out.
+# Android system libraries (readelf-verified on the shipped APK). Placed
+# AFTER all staging and BEFORE gradle (run #41: purging earlier in the
+# script is useless, the staging below it re-stages everything), and it
+# verifies itself so a missed file fails the packaging, not the release.
 for gxdead in libEGL_angle.so libGLESv2_angle.so libadrenotools.so libdxvk_d3d8.so libdxvk_d3d9.so libfile_redirect_hook.so libgamespy.so libgsl_alloc_hook.so libhook_impl.so libmain_hook.so libopenal.so libSDL3.so libSDL3_image.so libc++_shared.so; do
     rm -f "${JNILIBS}/${gxdead}"
 done
 rm -rf "${DEFAULT_DRIVER_ASSETS}"
 rm -f "${ASSETS}/dxvk.conf"
+for gxdead in libEGL_angle.so libGLESv2_angle.so libadrenotools.so libdxvk_d3d8.so libdxvk_d3d9.so libfile_redirect_hook.so libgamespy.so libgsl_alloc_hook.so libhook_impl.so libmain_hook.so libopenal.so libSDL3.so libSDL3_image.so libc++_shared.so; do
+    if [[ -e "${JNILIBS}/${gxdead}" ]]; then
+        echo "ERROR: purge failed, ${gxdead} is still staged in ${JNILIBS}"
+        exit 1
+    fi
+done
+if [[ -d "${DEFAULT_DRIVER_ASSETS}" || -f "${ASSETS}/dxvk.conf" ]]; then
+    echo "ERROR: purge failed, old-engine assets are still staged"
+    exit 1
+fi
 echo "Purged the old engine's support libraries and driver assets (v1.24.1)"
-''',
+
+# --- 4. gradle ---------------------------------------------------------------''',
 )])
+
 
 # ---------------- 5) Strings in every locale that has the Reforged tab ----
 STRINGS_EN = [
