@@ -193,10 +193,10 @@ public class RfxGameActivity extends SDLActivity {
         java.io.File odir = overlayDir();
         if (odir != null
                 && new java.io.File(odir, ".rfx-overlay-version").isFile()) {
-            return new String[] { "-root", root == null ? "" : root,
+            return new String[] { "-fullscreen", "-root", root == null ? "" : root,
                 "-overlay", odir.getAbsolutePath() };
         }
-        return new String[] { "-root", root == null ? "" : root };
+        return new String[] { "-fullscreen", "-root", root == null ? "" : root };
     }
 
     private static final String OVERLAY_REV = "1";
@@ -295,37 +295,17 @@ public class RfxGameActivity extends SDLActivity {
         ensureOverlay();
         super.onCreate(savedInstanceState);
         markGameStage("oncreate-done");
-        // (v1.24) The game is a fullscreen surface: keep the screen
-        // on while it runs, and keep Android's status and navigation
-        // bars out of it (sticky immersive). The engine's own SDL
-        // window does not inherit the activity's bar state, so the
-        // bars are hidden here and re-hidden on every focus gain --
-        // a notification-shade pull or an incoming call takes focus
-        // first, and the game must come back exactly as it was.
+        // (v1.24) Keep the screen on while the game runs.
+        // (v1.24.1) The status and navigation bars are hidden by SDL
+        // itself: the engine is launched with -fullscreen (see
+        // getArguments), and SDL's fullscreen window is what makes
+        // Android hide the bars. The legacy systemUiVisibility flags
+        // this activity used in v1.24 are ignored on Android 16 --
+        // device-proven, the bars stayed -- so they are gone.
         try {
             getWindow().addFlags(
                 android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         } catch (Exception ignored) {}
-        hideSystemBars();
-    }
-
-    private void hideSystemBars() {
-        try {
-            android.view.View decor = getWindow().getDecorView();
-            decor.setSystemUiVisibility(
-                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                | android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
-                | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
-        } catch (Exception ignored) {}
-    }
-
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) hideSystemBars();
     }
 
     @Override
@@ -928,7 +908,19 @@ if [[ -n \"${GX_REFORGEDX_GAME_LIB:-}\" ]]; then
     fi
     cp \"${GX_REFORGEDX_GAME_LIB}\" \"${JNILIBS}/libmainrfxgame.so\"
     echo \"Packaging the Reforged C4 game library: libmainrfxgame.so ($(du -h \"${GX_REFORGEDX_GAME_LIB}\" | cut -f1))\"
-fi''',
+fi
+# GeneralsX @purge Zero Hour Reforged 19/11/2026 (v1.24.1, owner's order:
+# remove everything MYSOREZ-related that this app no longer needs) The old
+# engine left the package in v1.20; its support libraries and its Adreno
+# driver asset are dead weight -- the Reforged libraries link only against
+# Android system libraries (readelf-verified on the shipped APK). Out.
+for gxdead in libEGL_angle.so libGLESv2_angle.so libadrenotools.so libdxvk_d3d8.so libdxvk_d3d9.so libfile_redirect_hook.so libgamespy.so libgsl_alloc_hook.so libhook_impl.so libmain_hook.so libopenal.so libSDL3.so libSDL3_image.so libc++_shared.so; do
+    rm -f "${JNILIBS}/${gxdead}"
+done
+rm -rf "${DEFAULT_DRIVER_ASSETS}"
+rm -f "${ASSETS}/dxvk.conf"
+echo "Purged the old engine's support libraries and driver assets (v1.24.1)"
+''',
 )])
 
 # ---------------- 5) Strings in every locale that has the Reforged tab ----
