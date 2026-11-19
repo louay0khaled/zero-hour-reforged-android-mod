@@ -278,6 +278,17 @@ public class RfxGameActivity extends SDLActivity {
             Os.setenv("ZH_USER_DATA_DIR",
                 userDir.getAbsolutePath(), true);
         } catch (Exception ignored) {}
+        // v1.25: the launcher's render-resolution choice for this engine
+        // (ZH_RENDER_SCALE, read by SdlGpuFrame when it creates its
+        // targets). Only set below 100: unset is the engine's full-size
+        // default, so the default path stays exactly as it was.
+        try {
+            int scalePercent = SetupActivity.getRfxRenderScalePercent(this);
+            if (scalePercent < 100) {
+                Os.setenv("ZH_RENDER_SCALE",
+                    String.valueOf(scalePercent / 100.0), true);
+            }
+        } catch (Exception ignored) {}
         // C4 diagnostics (v1.19): the engine's debug channel also
         // writes to stderr, which Android discards for app processes;
         // redirect fd 2 to a file in the external files dir before
@@ -1133,5 +1144,423 @@ for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))
 if count < 10:
     sys.exit(f'phase3: only {count} locale files carried nav_tab_reforged -- expected 10+')
 print(f'strings added to {count} locale files')
+
+
+# ---------------- 6a) v1.25: the render-resolution slider (Reforged) ------
+# The engine half shipped inert in v1.24 (SdlGpuFrame's ZH_RENDER_SCALE knob,
+# clamped [0.5, 1.0]); this wires the launcher end: a slider card next to the
+# menu-text-size card, a SharedPreferences percent, and (in RfxGameActivity's
+# onCreate above) the env var set before the engine starts.
+edit(SETUP, [
+    ('''                buildUiScaleSection(page);
+''',
+     '''                buildUiScaleSection(page);
+                buildRfxRenderScaleSection(page);
+'''),
+    ('''    private void buildUiScaleSection(LinearLayout root) {
+''',
+     '''    // GeneralsX @feature Reforged render resolution 20/11/2026 (v1.25):
+    // the Reforged engine renders at this fraction of the panel and
+    // upscales (SdlGpuFrame's ZH_RENDER_SCALE). Stored as a plain percent
+    // in SharedPreferences; RfxGameActivity turns it into the env var
+    // before the engine starts. 100 = full resolution.
+    private Slider rfxRenderScaleSlider;
+    private TextView rfxRenderScaleLabel;
+
+    private static final String PREF_RFX_RENDER_SCALE = "rfx_render_scale";
+
+    static int getRfxRenderScalePercent(android.content.Context ctx) {
+        int percent = ctx.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getInt(PREF_RFX_RENDER_SCALE, 100);
+        return Math.max(50, Math.min(100, percent));
+    }
+
+    private void writeRfxRenderScalePercent(int percent) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putInt(PREF_RFX_RENDER_SCALE,
+                Math.max(50, Math.min(100, percent))).apply();
+    }
+
+    private void buildRfxRenderScaleSection(LinearLayout root) {
+        LinearLayout content = UiKit.card(root);
+        rfxRenderScaleLabel = UiKit.sectionHeader(content, R.drawable.ic_gzh_sliders,
+            getString(R.string.setup_card_render_scale), true);
+
+        int startPercent = getRfxRenderScalePercent(this);
+        rfxRenderScaleSlider = new Slider(this);
+        rfxRenderScaleSlider.setValueFrom(50f);
+        rfxRenderScaleSlider.setValueTo(100f);
+        rfxRenderScaleSlider.setStepSize(5f);
+        rfxRenderScaleSlider.setValue(startPercent);
+        rfxRenderScaleSlider.setLabelBehavior(LabelFormatter.LABEL_GONE);
+        rfxRenderScaleSlider.setTrackActiveTintList(UiKit.tint(this, R.color.gzh_primary));
+        rfxRenderScaleSlider.setTrackInactiveTintList(UiKit.tint(this, R.color.gzh_surface_container_highest));
+        rfxRenderScaleSlider.setThumbTintList(UiKit.tint(this, R.color.gzh_primary));
+        rfxRenderScaleSlider.setHaloTintList(UiKit.tint(this, R.color.gzh_ripple_primary));
+        updateRfxRenderScaleLabel(startPercent);
+        rfxRenderScaleSlider.addOnChangeListener((slider, value, fromUser) -> updateRfxRenderScaleLabel((int) value));
+        LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        sliderLp.topMargin = UiKit.dim(this, R.dimen.gzh_item_gap_tight);
+        content.addView(rfxRenderScaleSlider, sliderLp);
+
+        UiKit.button(content, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_check,
+            getString(R.string.setup_button_apply_render_scale), () -> {
+                writeRfxRenderScalePercent((int) rfxRenderScaleSlider.getValue());
+                Toast.makeText(this, R.string.setup_toast_text_size_saved, Toast.LENGTH_LONG).show();
+            });
+
+        UiKit.helpText(content, getString(R.string.setup_render_scale_help));
+    }
+
+    private void updateRfxRenderScaleLabel(int percent) {
+        if (rfxRenderScaleLabel != null) {
+            rfxRenderScaleLabel.setText(getString(R.string.setup_text_size_label, percent));
+        }
+    }
+
+    private void buildUiScaleSection(LinearLayout root) {
+'''),
+])
+
+# ---------------- 6b) v1.25: render-scale strings, every locale ----------
+RENDER_SCALE_STRINGS = {
+    'values': [
+        ('setup_card_render_scale', 'Render Resolution'),
+        ('setup_button_apply_render_scale', 'Apply Render Resolution'),
+        ('setup_render_scale_help', "Renders the Reforged game at this percentage of your screen's resolution and stretches it back to full screen. Lower values (try 75) run smoother on weaker phones, at some sharpness cost. 100 is full quality. Takes effect the next time you launch the game, not live."),
+    ],
+    'values-ar': [
+        ('setup_card_render_scale', 'دقة العرض'),
+        ('setup_button_apply_render_scale', 'تطبيق دقة العرض'),
+        ('setup_render_scale_help', 'تعرض لعبة ريفورجيد بهذه النسبة من دقة شاشتك ثم تُمدَّد لتملأ الشاشة. القيم الأقل (جرّب 75) تجعل اللعبة أنعم على الهواتف الأضعف، مقابل خسارة بعض الحدة. القيمة 100 هي الجودة الكاملة. يسري المفعول عند تشغيل اللعبة في المرة القادمة، وليس فورًا.'),
+    ],
+    'values-de': [
+        ('setup_card_render_scale', 'Renderauflösung'),
+        ('setup_button_apply_render_scale', 'Renderauflösung anwenden'),
+        ('setup_render_scale_help', 'Rendert das Reforged-Spiel mit diesem Prozentsatz der Bildschirmauflösung und streckt es wieder auf Vollbild. Niedrigere Werte (z. B. 75) laufen auf schwächeren Handys flüssiger, mit etwas weniger Schärfe. 100 ist volle Qualität. Wird beim nächsten Spielstart wirksam, nicht sofort.'),
+    ],
+    'values-es': [
+        ('setup_card_render_scale', 'Resolución de renderizado'),
+        ('setup_button_apply_render_scale', 'Aplicar resolución de renderizado'),
+        ('setup_render_scale_help', 'Renderiza el juego Reforged con este porcentaje de la resolución de tu pantalla y lo estira a pantalla completa. Los valores más bajos (prueba 75) van más fluidos en teléfonos débiles, con algo menos de nitidez. 100 es la calidad completa. Se aplica la próxima vez que inicies el juego, no al instante.'),
+    ],
+    'values-fa': [
+        ('setup_card_render_scale', 'وضوح رندر'),
+        ('setup_button_apply_render_scale', 'اعمال وضوح رندر'),
+        ('setup_render_scale_help', 'بازی ریفورجد را با این درصد از وضوح صفحه‌نمایش رندر می‌کند و به تمام‌صفحه می‌کشد. مقادیر کمتر (۷۵ را امتحان کنید) روی گوشی‌های ضعیف‌تر روان‌تر اجرا می‌شود، با کمی کاهش وضوح. ۱۰۰ کیفیت کامل است. از اجرای بعدی بازی اعمال می‌شود، نه فوراً.'),
+    ],
+    'values-fr': [
+        ('setup_card_render_scale', 'Résolution de rendu'),
+        ('setup_button_apply_render_scale', 'Appliquer la résolution de rendu'),
+        ('setup_render_scale_help', "Affiche le jeu Reforged à ce pourcentage de la résolution de votre écran, puis l'étire en plein écran. Des valeurs plus basses (essayez 75) sont plus fluides sur les téléphones modestes, avec un peu moins de netteté. 100 est la qualité maximale. Prend effet au prochain lancement du jeu, pas immédiatement."),
+    ],
+    'values-b+isv': [
+        ('setup_card_render_scale', 'Razrěšenje renderovanja'),
+        ('setup_button_apply_render_scale', 'Priměniti razrěšenje renderovanja'),
+        ('setup_render_scale_help', 'Renderuje igru Reforged pri tomto procentu razrěšenja ekrana i raztegaje ju na cěly ekran. Nižše hodnoty (poprobuj 75) rabotajut plavněje na slabyh telefonah, s někoj utratom ostrosti. 100 je polna jakość. Dějstvuje od slědujuščego zapuska igry, ne srazu.'),
+    ],
+    'values-ko': [
+        ('setup_card_render_scale', '렌더 해상도'),
+        ('setup_button_apply_render_scale', '렌더 해상도 적용'),
+        ('setup_render_scale_help', '화면 해상도의 이 비율로 Reforged 게임을 렌더링한 뒤 전체 화면으로 확대합니다. 낮은 값(75 권장)은 약한 휴대폰에서 더 부드럽게 실행되며 선명도가 약간 떨어집니다. 100이 최고 화질입니다. 다음에 게임을 실행할 때 적용되며 즉시 적용되지 않습니다.'),
+    ],
+    'values-pl': [
+        ('setup_card_render_scale', 'Rozdzielczość renderowania'),
+        ('setup_button_apply_render_scale', 'Zastosuj rozdzielczość renderowania'),
+        ('setup_render_scale_help', 'Renderuje grę Reforged w tym procencie rozdzielczości ekranu i rozciąga ją do pełnego ekranu. Niższe wartości (spróbuj 75) działają płynniej na słabszych telefonach, kosztem ostrości. 100 to pełna jakość. Obowiązuje od następnego uruchomienia gry, nie od razu.'),
+    ],
+    'values-pt-rBR': [
+        ('setup_card_render_scale', 'Resolução de renderização'),
+        ('setup_button_apply_render_scale', 'Aplicar resolução de renderização'),
+        ('setup_render_scale_help', 'Renderiza o jogo Reforged nesta porcentagem da resolução da tela e o estica para tela cheia. Valores menores (tente 75) rodam mais suaves em celulares fracos, com alguma perda de nitidez. 100 é a qualidade total. Entra em vigor na próxima vez que você abrir o jogo, não na hora.'),
+    ],
+    'values-ru': [
+        ('setup_card_render_scale', 'Разрешение рендера'),
+        ('setup_button_apply_render_scale', 'Применить разрешение рендера'),
+        ('setup_render_scale_help', 'Рендерит игру Reforged в этом проценте разрешения экрана и растягивает на весь экран. Меньшие значения (попробуйте 75) работают плавнее на слабых телефонах, с некоторой потерей резкости. 100 — полное качество. Применяется при следующем запуске игры, не сразу.'),
+    ],
+    'values-uk': [
+        ('setup_card_render_scale', 'Роздільна здатність рендера'),
+        ('setup_button_apply_render_scale', 'Застосувати роздільну здатність рендера'),
+        ('setup_render_scale_help', 'Рендерить гру Reforged у цьому відсотку роздільної здатності екрана й розтягує на весь екран. Менші значення (спробуйте 75) працюють плавніше на слабких телефонах, із деякою втратою різкості. 100 — повна якість. Застосовується під час наступного запуску гри, не одразу.'),
+    ],
+    'values-zh': [
+        ('setup_card_render_scale', '渲染分辨率'),
+        ('setup_button_apply_render_scale', '应用渲染分辨率'),
+        ('setup_render_scale_help', '以屏幕分辨率的此百分比渲染 Reforged 游戏，再拉伸至全屏。较低的值（可试 75）在较弱的手机上运行更流畅，但清晰度会有所下降。100 为完整画质。下次启动游戏时生效，不会立即生效。'),
+    ],
+}
+
+count = 0
+for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
+    s = open(strings_xml, encoding='utf-8').read()
+    anchor = None
+    for line in s.split('\n'):
+        if 'name="setup_tests_game_launch"' in line:
+            anchor = line
+            break
+    if anchor is None:
+        continue
+    if 'name="setup_card_render_scale"' in s:
+        sys.exit(f'phase3: {strings_xml} already carries setup_card_render_scale')
+    locale = os.path.basename(os.path.dirname(strings_xml))
+    block = ''.join(
+        f'\n    <string name="{name}">{xml_escape(text)}</string>'
+        for name, text in RENDER_SCALE_STRINGS.get(locale, RENDER_SCALE_STRINGS['values']))
+    s = s.replace(anchor, anchor + block, 1)
+    open(strings_xml, 'w', encoding='utf-8').write(s)
+    count += 1
+if count < 10:
+    sys.exit(f'phase3: only {count} locale files carried the tests strings -- expected 10+')
+print(f'render-scale strings added to {count} locale files')
+
+
+# ---------------- 7) v1.25 ADOPTION: Reforged reskin + developer credit + C6/C7
+# (Reforged the only engine entry, on the shared user-data folder).
+# The reskin is a palette + shape pass: the shell's look is role-based
+# (colors.xml roles through ThemeHelper/UiKit), so retuning the roles and
+# the corner radii re-skins every screen at once. Palette: near-black
+# blue-steel surfaces, Reforged gold primary, off-white text.
+
+# ---------------- 7a) colors.xml palette (regex per role; values only) ---
+import re
+COLORS = os.path.join(RES, 'values', 'colors.xml')
+REFORGED_PALETTE = {
+    'gzh_background': '#0B0E13',
+    'gzh_surface': '#10141B',
+    'gzh_surface_container_low': '#12161F',
+    'gzh_surface_container': '#161C26',
+    'gzh_surface_container_high': '#1E2634',
+    'gzh_surface_container_highest': '#283242',
+    'gzh_on_surface': '#ECEEF2',
+    'gzh_on_surface_variant': '#A8B0BE',
+    'gzh_on_surface_faint': '#8B94A5',
+    'gzh_outline': '#46536A',
+    'gzh_outline_variant': '#232B38',
+    'gzh_primary': '#E3B341',
+    'gzh_on_primary': '#241A02',
+    'gzh_primary_container': '#4A3A10',
+    'gzh_on_primary_container': '#F5D67A',
+    'gzh_primary_dark': '#0B0E13',
+    'gzh_accent': '#E3B341',
+    'gzh_secondary': '#9FB4C8',
+    'gzh_on_secondary': '#16222E',
+    'gzh_secondary_container': '#2A3644',
+    'gzh_on_secondary_container': '#D7E3EE',
+    'gzh_on_surface_disabled': '#61ECEEF2',
+    'gzh_container_disabled': '#1FECEEF2',
+    'gzh_ripple_light': '#1FECEEF2',
+    'gzh_ripple_primary': '#33E3B341',
+}
+xml = open(COLORS, encoding='utf-8').read()
+for name, value in REFORGED_PALETTE.items():
+    xml, n = re.subn(r'(<color name="' + name + r'">)#[0-9A-Fa-f]+(</color>)',
+                     r'\g<1>' + value + r'\g<2>', xml)
+    if n != 1:
+        sys.exit('phase3: palette role %s matched %d times' % (name, n))
+open(COLORS, 'w', encoding='utf-8').write(xml)
+print('reforged palette applied to colors.xml (%d roles)' % len(REFORGED_PALETTE))
+
+# ---------------- 7b) angular shapes: dimens + UiKit radii ---------------
+edit(os.path.join(RES, 'values', 'dimens.xml'), [
+    ('<dimen name="gzh_radius_card">24dp</dimen>',
+     '<dimen name="gzh_radius_card">6dp</dimen>'),
+    ('<dimen name="gzh_radius_row">16dp</dimen>',
+     '<dimen name="gzh_radius_row">4dp</dimen>'),
+    ('<dimen name="gzh_radius_field">16dp</dimen>',
+     '<dimen name="gzh_radius_field">4dp</dimen>'),
+])
+edit(os.path.join(JAVA_DIR, 'UiKit.java'), [
+    ('        b.setCornerRadius(dp(c, 26));',
+     '        b.setCornerRadius(dp(c, 6));'),
+    ('            b.setCornerRadius(dp(c, 22));',
+     '            b.setCornerRadius(dp(c, 6));'),
+])
+
+# ---------------- 7c) C7: the launch path starts the Reforged engine -----
+# launchGameNow() (and its rotation-completion twin) named the old engine's
+# activity; its native libraries have not shipped since v1.24.1's purge, so
+# the entry was already dead -- it now starts RfxGameActivity, keeping the
+# mod safe-start wrapper, the language override and the rotation settle.
+setup_src = open(SETUP, encoding='utf-8').read()
+launch_old = 'startActivity(new Intent(this, GeneralsZHActivity.class));'
+if setup_src.count(launch_old) != 2:
+    sys.exit('phase3: expected 2 GeneralsZHActivity launch sites, found %d'
+             % setup_src.count(launch_old))
+setup_src = setup_src.replace(launch_old,
+    'startActivity(new Intent(this, RfxGameActivity.class));')
+open(SETUP, 'w', encoding='utf-8').write(setup_src)
+
+# ---------------- 7d) C7: pin the game selection to Zero Hour ------------
+# The Generals/Zero Hour picker chose between the old engines. With one
+# engine it only misleads (the Reforged page even hides itself when Generals
+# is picked), so the picker goes and the selection is pinned where the page
+# is built.
+edit(SETUP, [
+    ("""        final boolean generals = isGeneralsSelected(this);
+""",
+     """        // v1.25 (C7 adoption): one engine -- Zero Hour Reforged. The game
+        // selection is pinned to Zero Hour; the picker that chose between the
+        // old engines is removed below.
+        if (isGeneralsSelected(this)) {
+            setSelectedGame(this, GAME_ZERO_HOUR);
+        }
+        final boolean generals = false;
+"""),
+])
+setup_src = open(SETUP, encoding='utf-8').read()
+span_start = setup_src.index('        CharSequence[] games = new CharSequence[] {')
+span_end_marker = '        UiKit.supporting(game, getString(R.string.setup_game_desc));'
+span_end = setup_src.index(span_end_marker) + len(span_end_marker)
+setup_src = (setup_src[:span_start]
+    + '        // (the Generals/Zero Hour segmented picker stood here; v1.25 removed it)\n'
+    + setup_src[span_end:])
+open(SETUP, 'w', encoding='utf-8').write(setup_src)
+
+# ---------------- 7e) developer credit on the Home page ------------------
+edit(SETUP, [
+    ("""        // The one thing this app exists to do, as the first thing on it.
+        UiKit.button(page, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_play,
+            getString(R.string.setup_button_launch_game), this::onLaunchGame);
+""",
+     """        // The one thing this app exists to do, as the first thing on it.
+        UiKit.button(page, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_play,
+            getString(R.string.setup_button_launch_game), this::onLaunchGame);
+
+        // v1.25: the developer credit, centred under the launch button.
+        TextView developerCredit = UiKit.supporting(page,
+            getString(R.string.setup_developer_credit));
+        developerCredit.setGravity(android.view.Gravity.CENTER);
+"""),
+])
+
+# ---------------- 7f) tests page reads the game log from the shared folder
+edit(SETUP, [
+    ("""        java.io.File glog = new java.io.File(dir, "rfx-user/Logs/DebugLogFile.txt");
+        if (!glog.isFile()) {
+            glog = new java.io.File(dir, "rfx-user/DebugLogFile.txt");
+        }
+""",
+     """        // v1.25 (C6): the game log lives in the shared data folder now;
+        // the pre-1.25 private rfx-user paths stay as fallbacks.
+        java.io.File glog = new java.io.File(
+            android.os.Environment.getExternalStorageDirectory(),
+            "Generals/Command and Conquer Generals Zero Hour Data/Logs/DebugLogFile.txt");
+        if (!glog.isFile()) {
+            glog = new java.io.File(dir, "rfx-user/Logs/DebugLogFile.txt");
+        }
+        if (!glog.isFile()) {
+            glog = new java.io.File(dir, "rfx-user/DebugLogFile.txt");
+        }
+"""),
+])
+
+# ---------------- 7g) C6: RfxGameActivity on the shared user-data folder -
+edit(rg_path, [
+    (""" * directory (ZH_USER_DATA_DIR, read once by the engine's early
+ * options; an isolated rfx-user folder under this app's external
+ * files, so the game's own saves/settings never mix with the
+ * shipped engines' -- sharing those is Stage C6 parity work).
+""",
+     """ * directory (ZH_USER_DATA_DIR, read once by the engine's early
+ * options; since v1.25 (Stage C6 parity) the shared Zero Hour data
+ * folder on public storage -- the same folder the launcher's tools
+ * manage and the shipped engines used -- so saves, replays and
+ * Options.ini are one set for the whole app.
+"""),
+    ("""            java.io.File userDir =
+                new java.io.File(getExternalFilesDir(null), "rfx-user");
+            userDir.mkdirs();
+""",
+     """            // v1.25 (C6 parity): the shared Zero Hour data folder, as the
+            // old engines had it (DataPackInstaller.userDataDir()).
+            java.io.File userDir =
+                new java.io.File(android.os.Environment.getExternalStorageDirectory(),
+                    "Generals/Command and Conquer Generals Zero Hour Data");
+            userDir.mkdirs();
+            migrateLegacyRfxUser(userDir);
+"""),
+    ("""    private void markGameStage(String stage) {
+""",
+     """    // One-time carry-over of the pre-1.25 private user folder (rfx-user)
+    // into the shared data folder: copies anything the shared folder does
+    // not already have, never overwrites, and leaves the original in place.
+    private void migrateLegacyRfxUser(java.io.File sharedDir) {
+        try {
+            java.io.File legacy =
+                new java.io.File(getExternalFilesDir(null), "rfx-user");
+            if (legacy.isDirectory()) {
+                copyTreeNoOverwrite(legacy, sharedDir);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private static void copyTreeNoOverwrite(java.io.File from, java.io.File to) {
+        try {
+            if (from.isDirectory()) {
+                to.mkdirs();
+                java.io.File[] kids = from.listFiles();
+                if (kids != null) {
+                    for (java.io.File kid : kids) {
+                        copyTreeNoOverwrite(kid, new java.io.File(to, kid.getName()));
+                    }
+                }
+            } else if (!to.exists()) {
+                java.io.InputStream in = new java.io.FileInputStream(from);
+                java.io.OutputStream out = new java.io.FileOutputStream(to);
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                }
+                out.close();
+                in.close();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void markGameStage(String stage) {
+"""),
+])
+
+# ---------------- 7h) the credit string, every locale --------------------
+CREDIT_STRINGS = {
+    'values': 'Developer: Louay Khaled',
+    'values-ar': 'المطوّر: لؤي خالد',
+    'values-b+isv': 'Razvojnik: Louay Khaled',
+    'values-de': 'Entwickler: Louay Khaled',
+    'values-es': 'Desarrollador: Louay Khaled',
+    'values-fa': 'توسعه‌دهنده: لؤي خالد',
+    'values-fr': 'Développeur : Louay Khaled',
+    'values-ko': '개발자: Louay Khaled',
+    'values-pl': 'Twórca: Louay Khaled',
+    'values-pt-rBR': 'Desenvolvedor: Louay Khaled',
+    'values-ru': 'Разработчик: Louay Khaled',
+    'values-uk': 'Розробник: Louay Khaled',
+    'values-zh': '开发者：Louay Khaled',
+}
+credit_added = 0
+for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
+    locale = os.path.basename(os.path.dirname(strings_xml))
+    if locale not in CREDIT_STRINGS:
+        continue
+    xml = open(strings_xml, encoding='utf-8').read()
+    if 'name="setup_developer_credit"' in xml:
+        sys.exit('phase3: %s already carries setup_developer_credit' % strings_xml)
+    lines = xml.split('\n')
+    for idx, line in enumerate(lines):
+        if 'name="setup_tests_game_launch"' in line:
+            indent = line[:len(line) - len(line.lstrip())]
+            lines.insert(idx + 1, indent + '<string name="setup_developer_credit">'
+                         + xml_escape(CREDIT_STRINGS[locale]) + '</string>')
+            credit_added += 1
+            break
+    else:
+        sys.exit('phase3: no setup_tests_game_launch anchor in %s' % strings_xml)
+    open(strings_xml, 'w', encoding='utf-8').write('\n'.join(lines))
+if credit_added < 10:
+    sys.exit('phase3: developer credit added to only %d locales' % credit_added)
+print('developer credit string added to %d locale files' % credit_added)
 
 print('PHASE 3 DONE')
