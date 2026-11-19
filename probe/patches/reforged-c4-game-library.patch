@@ -71,11 +71,72 @@ index 10a1f1d6..82ca34ad 100644
    # C2's SDL side of Monitors.h and MessageBoxWrapper, on SDL's offscreen video driver.
    # test_gameengine_stubs.cpp: the names the executable supplies, which GCC's larger pull from sdldevice
    # reaches (ld.lld, L1b); clang's does not, and they cost nothing there.
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/CommandStore.h b/GeneralsMD/Code/GameEngine/Include/Common/CommandStore.h
+index 8823da01..0957c274 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/CommandStore.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/CommandStore.h
+@@ -57,6 +57,7 @@ public:
+ 	const CommandSet *findCommandSet( const AsciiString& name );				///< the set's final override
+ 
+ 	CommandButton *findNonConstCommandButton( const AsciiString& name );
++	CommandButton *newCodeBuiltCommandButton( const AsciiString& name );	///< a button built in code, not parsed from INI (ControlBar's touch mode buttons)
+ 	CommandSet *findNonConstCommandSet( const AsciiString& name );
+ 
+ 	const CommandButton *getCommandButtons( void ) { return m_commandButtons; }
 diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBar.h b/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBar.h
-index 4d82f338..86c4afc2 100644
+index 4d82f338..ef0dde9e 100644
 --- a/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBar.h
 +++ b/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBar.h
-@@ -1372,12 +1372,27 @@ protected:
+@@ -227,6 +227,25 @@ enum GUICommandType : Int
+ 	GUI_COMMAND_SELECT_ALL_UNITS_OF_TYPE,
+ 	GUI_COMMAND_FORCE_ATTACK,							///< arm force-fire; the next click attacks whatever is under the pointer
+ 
++	// (C5 touch graft, from the GeneralsX Android port) Force attack as a button, for a
++	// touchscreen that has no Ctrl key. Never parsed from the game's own INI -- the button
++	// is built in code (ControlBar::initTouchModeButtons) -- and never sent anywhere: it
++	// only switches InGameUI's force-attack mode, and the order it leads to is the ordinary
++	// MSG_DO_FORCE_ATTACK_* a Ctrl+click sends. Appended last so no existing value moves.
++	GUI_COMMAND_GX_FORCE_ATTACK,
++
++	// (C5 touch graft) Page switch on a builder's bar (dozer, worker): the first page is
++	// the stock palette of structures, the second holds the touch order buttons. Built in
++	// code like GX_FORCE_ATTACK and purely a UI state -- nothing is sent to the logic.
++	GUI_COMMAND_GX_BUILDER_PAGE,
++
++	// (C5 touch graft) X and Ctrl+F for a touchscreen: the selected units scatter, or form
++	// up and move as one. Built in code like GX_FORCE_ATTACK; each sends the message the
++	// key's meta command sends (MSG_DO_SCATTER, MSG_CREATE_FORMATION), so the logic sees
++	// exactly what a keyboard player's game sends.
++	GUI_COMMAND_GX_SCATTER,
++	GUI_COMMAND_GX_FORMATION,
++
+ 	// add more commands here, don't forget to update the string command list below too ...
+ 
+ 	GUI_COMMAND_NUM_COMMANDS							// keep this last
+@@ -277,6 +296,10 @@ static const char *TheGuiCommandNames[] =
+ 	"SPECIAL_POWER_CONSTRUCT_FROM_SHORTCUT", 
+ 	"SELECT_ALL_UNITS_OF_TYPE",
+ 	"FORCE_ATTACK",
++	"GX_FORCE_ATTACK",
++	"GX_BUILDER_PAGE",
++	"GX_SCATTER",
++	"GX_FORMATION",
+ 
+ 	NULL
+ };
+@@ -356,6 +379,11 @@ public:
+ 	const Image* getButtonImage() const { return m_buttonImage;	}
+ 	void cacheButtonImage();
+ 
++	// (C5 touch graft) Fill in a button built in code rather than parsed from INI --
++	// see ControlBar::initTouchModeButtons for the ones that exist.
++	void initTouchModeButton( GUICommandType command, const char *textLabel,
++														const char *descriptionLabel, const char *buttonImageName );
++
+ 	GameWindow* getWindow() const { return m_window;	}
+ 	Int getFlashCount() const { return m_flashCount; }
+ 
+@@ -1372,12 +1400,53 @@ protected:
  	Player *m_watchedSelection;													///< the player the selection last named while watching, NULL for nobody
  
  	WindowLayout *m_buildToolTipLayout;										///< The window that will slide on/display tooltips
@@ -89,11 +150,37 @@ index 4d82f338..86c4afc2 100644
 +	// while a point stays true and can simply be hit-tested again each frame.
 +	Bool m_touchHoldActive;
 +	ICoord2D m_touchHoldPoint;											///< every frame we test to see if we aregoing to continue showing this or not.
++
++	// (C5 touch graft) Ctrl and Alt for a touchscreen. A mouse player holds Ctrl to
++	// force-attack and Alt to queue waypoints; a finger has no modifier keys, so these
++	// buttons switch the same InGameUI modes instead. Built in code, never part of a
++	// CommandSet from the game's INI, and placed into a free command slot on top of
++	// whatever the selection's own set shows (addTouchOrderButtons).
++	const CommandButton *m_touchForceAttackButton;
++	const CommandButton *m_touchWaypointButton;
++	// (C5 touch graft) X and Ctrl+F, for two or more units.
++	const CommandButton *m_touchScatterButton;
++	const CommandButton *m_touchFormationButton;
++	void initTouchModeButtons();
++	Int collectTouchOrderButtons( const CommandButton *out[], Int maxCount ) const;
++	Bool isSelectionInFormation() const;
++
++	// (C5 touch graft) The touch order buttons go into free cells of the bar when they
++	// all fit. A builder's bar (its cells are a palette of structures) and a bar without
++	// room for all of them get a second page instead: an arrow in the bar's last cell
++	// opens it and an arrow in the same cell brings the bar back. Whatever the stock set
++	// keeps in that cell moves to a free slot. m_orderPageObject is the first selected
++	// object while the second page is showing, INVALID_ID when it is not.
++	const CommandButton *m_touchBuilderMoreButton;
++	const CommandButton *m_touchBuilderBackButton;
++	ObjectID m_orderPageObject;
++	void addTouchOrderButtons( const CommandSet *commandSet );
  public:
  	void showBuildTooltipLayout( GameWindow *cmdButton );
  	void hideBuildTooltipLayout( void );
  	void deleteBuildTooltipLayout( void );
  	Bool getShowBuildTooltipLayout( void ){return m_showBuildToolTipLayout;	}
++	void toggleOrderPage();	///< (C5 touch graft) flip the bar between its stock page and the touch order page
 +	void setTouchHoldPoint( Int x, Int y, Bool held )
 +	{
 +		m_touchHoldActive = held;
@@ -273,6 +360,26 @@ index 33b72fae..6b8629b6 100644
  		//if (TheGlobalData->m_vTune)
  		{
  #ifdef PERF_TIMERS
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/CommandStore.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/CommandStore.cpp
+index ca84995b..ca140c0b 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/CommandStore.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/CommandStore.cpp
+@@ -160,6 +160,15 @@ CommandButton *CommandStore::newCommandButton( const AsciiString& name )
+ 	return newButton;
+ }
+ 
++//-------------------------------------------------------------------------------------------------
++/** A button the code builds for itself (the control bar's touch mode buttons): the INI
++	* loader's allocation, handed out on purpose. */
++//-------------------------------------------------------------------------------------------------
++CommandButton *CommandStore::newCodeBuiltCommandButton( const AsciiString& name )
++{
++	return newCommandButton( name );
++}
++
+ //-------------------------------------------------------------------------------------------------
+ CommandButton *CommandStore::newCommandButtonOverride( CommandButton *buttonToOverride )
+ {
 diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/ExecutableDirectory.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/ExecutableDirectory.cpp
 index 375a431b..15ef476b 100644
 --- a/GeneralsMD/Code/GameEngine/Source/Common/System/ExecutableDirectory.cpp
@@ -319,19 +426,36 @@ index aa7efb26..b70ed8a8 100644
  }
  
 diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
-index 951d3d8a..7f30fc65 100644
+index 951d3d8a..d39e1cea 100644
 --- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
 +++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
-@@ -1274,6 +1274,8 @@ ControlBar::ControlBar( void )
+@@ -1274,6 +1274,15 @@ ControlBar::ControlBar( void )
  	m_currentControlBarStage = CONTROL_BAR_STAGE_DEFAULT;
  	m_buildToolTipLayout = NULL;
  	m_showBuildToolTipLayout = FALSE;
 +	m_touchHoldActive = FALSE;
 +	m_touchHoldPoint.x = m_touchHoldPoint.y = 0;
++	m_touchForceAttackButton = NULL;
++	m_touchWaypointButton = NULL;
++	m_touchScatterButton = NULL;
++	m_touchFormationButton = NULL;
++	m_touchBuilderMoreButton = NULL;
++	m_touchBuilderBackButton = NULL;
++	m_orderPageObject = INVALID_ID;
  
  	// Added By Sadullah Nader
  	// initializing vars to zero
-@@ -2963,6 +2965,28 @@ void ControlBar::update( void )
+@@ -2445,6 +2454,9 @@ void ControlBar::init( void )
+ 	// TheCommandStore loaded the buttons and sets before the game logic existed; their images are ours
+ 	postProcessCommands();
+ 
++	// (C5 touch graft) the code-built touch mode buttons, now that every INI button exists
++	initTouchModeButtons();
++
+ 	// Init the scheme manager, this will call it's won INI init funciton.
+ 	m_controlBarSchemeManager = NEW ControlBarSchemeManager;
+ 	m_controlBarSchemeManager->init();
+@@ -2963,6 +2975,28 @@ void ControlBar::update( void )
  
  
  	// every other use of m_buildToolTipLayout is null-guarded; this one was not
@@ -360,6 +484,542 @@ index 951d3d8a..7f30fc65 100644
  	if( m_buildToolTipLayout && !m_buildToolTipLayout->isHidden())
  	{
  		m_buildToolTipLayout->runUpdate();
+@@ -4410,6 +4444,122 @@ void ControlBar::postProcessCommands( void )
+ 	}
+ }
+ 
++//-------------------------------------------------------------------------------------------------
++void CommandButton::initTouchModeButton( GUICommandType command, const char *textLabel,
++																				 const char *descriptionLabel, const char *buttonImageName )
++{
++	m_command = command;
++	// CHECK_LIKE: the button stays drawn pressed while its mode is on, driven every frame
++	// by getCommandAvailability() returning COMMAND_ACTIVE -- the mechanism the game already
++	// uses for Overcharge. OK_FOR_MULTI_SELECT: both modes apply to whatever is selected.
++	m_options = CHECK_LIKE | OK_FOR_MULTI_SELECT;
++	m_textLabel = textLabel;
++	m_descriptionLabel = descriptionLabel;
++	m_buttonImageName = buttonImageName;
++	m_commandButtonBorder = COMMAND_BUTTON_BORDER_ACTION;
++	cacheButtonImage();
++}
++
++//-------------------------------------------------------------------------------------------------
++/** (C5 touch graft, from the GeneralsX Android port) The touch modifier buttons.
++
++	Only on touch platforms: everywhere else Ctrl and Alt already do this, and the buttons
++	would only take room on the bar.
++
++	The pictures are the game's own. SCCAttack is the art of the attack cursor (Mouse.ini's
++	AttackObj, ForceAttackObj and ForceAttackGround all name it), which is what the player
++	sees when a force attack is about to happen; SSRally is the flag the game puts on a
++	rally point, the closest thing it has to "a point to go through". The waypoint strings
++	are the game's own too -- CONTROLBAR:Waypoints and CONTROLBAR:ToolTipWayPoints exist in
++	every language it shipped in, left over from a waypoint button that never made it into
++	a CommandSet. Force attack never had strings; GameText.cpp carries GX:ForceAttack. */
++//-------------------------------------------------------------------------------------------------
++//-------------------------------------------------------------------------------------------------
++/** The store's button of this name, created on first need: a control bar re-init must not
++	* stack a second copy of a code-built button on the store's list. */
++//-------------------------------------------------------------------------------------------------
++static CommandButton *touchModeButton( const char *name )
++{
++	CommandButton *button = TheCommandStore->findNonConstCommandButton( name );
++	if( button == nullptr )
++		button = TheCommandStore->newCodeBuiltCommandButton( name );
++	return button;
++}
++
++void ControlBar::initTouchModeButtons()
++{
++#if defined(__ANDROID__)
++	CommandButton *forceAttack = touchModeButton( "GX_Command_TouchForceAttack" );
++	// SCCAttack is Zero Hour's own attack-cursor art (Mouse.ini's AttackObj, ForceAttackObj
++	// and ForceAttackGround all name it); the null-image guard below drops the button if an
++	// install somehow lacks it, rather than drawing a purple square.
++	const char *forceAttackImage = "SCCAttack";
++	forceAttack->initTouchModeButton( GUI_COMMAND_GX_FORCE_ATTACK,
++																		"GX:ForceAttack", "GX:ToolTipForceAttack", forceAttackImage );
++	m_touchForceAttackButton = forceAttack;
++
++	CommandButton *waypoints = touchModeButton( "GX_Command_TouchWaypoints" );
++	waypoints->initTouchModeButton( GUI_COMMAND_WAYPOINTS,
++											"CONTROLBAR:Waypoints", "CONTROLBAR:ToolTipWayPoints", "SSRally" );
++	m_touchWaypointButton = waypoints;
++
++	// A button with no picture would keep showing the previous command's art in its slot
++	// (setControlCommand only ever sets an image, never clears one), which is worse than no
++	// button at all. So an install missing either picture simply does not get that button.
++	if( m_touchForceAttackButton->getButtonImage() == nullptr )
++	{
++		fprintf(stderr, "[touchmodes] %s image missing; no force-attack button\n", forceAttackImage);
++		m_touchForceAttackButton = nullptr;
++	}
++	if( m_touchWaypointButton->getButtonImage() == nullptr )
++	{
++		fprintf(stderr, "[touchmodes] SSRally image missing; no waypoint button\n");
++		m_touchWaypointButton = nullptr;
++	}
++
++	// (C5 touch graft) Scatter and formation. The game has no art for either, so the display
++	// draws both at startup (W3DTouchButtonImages.cpp); the strings are GameText.cpp's GX:
++	// defaults. A missing picture means no button, as above.
++	CommandButton *scatter = touchModeButton( "GX_Command_TouchScatter" );
++	scatter->initTouchModeButton( GUI_COMMAND_GX_SCATTER, "GX:Scatter", "GX:ToolTipScatter", "GXScatter" );
++	if( scatter->getButtonImage() != nullptr )
++		m_touchScatterButton = scatter;
++	else
++		fprintf(stderr, "[touchmodes] GXScatter image missing; no scatter button\n");
++
++	CommandButton *formation = touchModeButton( "GX_Command_TouchFormation" );
++	formation->initTouchModeButton( GUI_COMMAND_GX_FORMATION, "GX:Formation", "GX:ToolTipFormation", "GXFormation" );
++	if( formation->getButtonImage() != nullptr )
++		m_touchFormationButton = formation;
++	else
++		fprintf(stderr, "[touchmodes] GXFormation image missing; no formation button\n");
++
++	// (C5 touch graft) The page arrows (addTouchOrderButtons): a cyan down arrow for "more
++	// orders", an up arrow for "back". Both pictures are drawn by the display at startup
++	// (W3DTouchButtonImages.cpp); should that ever fail, SUFakeToggle -- the GLA worker's
++	// own "other page" arrow -- stands in for both.
++	const char *moreImage = TheMappedImageCollection && TheMappedImageCollection->findImageByName( "GXBuilderPageMore" )
++		? "GXBuilderPageMore" : "SUFakeToggle";
++	const char *backImage = TheMappedImageCollection && TheMappedImageCollection->findImageByName( "GXBuilderPageBack" )
++		? "GXBuilderPageBack" : "SUFakeToggle";
++	CommandButton *builderMore = touchModeButton( "GX_Command_TouchBuilderPageMore" );
++	builderMore->initTouchModeButton( GUI_COMMAND_GX_BUILDER_PAGE,
++																	 "GX:BuilderPageMore", "GX:ToolTipBuilderPageMore", moreImage );
++	CommandButton *builderBack = touchModeButton( "GX_Command_TouchBuilderPageBack" );
++	builderBack->initTouchModeButton( GUI_COMMAND_GX_BUILDER_PAGE,
++																	 "GX:BuilderPageBack", "GX:ToolTipBuilderPageBack", backImage );
++	if( builderMore->getButtonImage() != nullptr && builderBack->getButtonImage() != nullptr )
++	{
++		m_touchBuilderMoreButton = builderMore;
++		m_touchBuilderBackButton = builderBack;
++	}
++	else
++	{
++		fprintf(stderr, "[touchmodes] builder page arrow images missing; no builder pages\n");
++	}
++#endif
++}
++
+ //-------------------------------------------------------------------------------------------------
+ /** set the command for the button identified by the window name
+ 	* NOTE that parent may be NULL, it only helps to speed up the search for a particular
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarCommand.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarCommand.cpp
+index 02c207b0..a4f6d0b2 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarCommand.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarCommand.cpp
+@@ -614,6 +614,9 @@ void ControlBar::populateCommand( Object *obj )
+ 
+ 	}  // end if
+ 
++	// (C5 touch graft) the touch order buttons take the bar's free cells, or a second page
++	addTouchOrderButtons( commandSet );
++
+ 	//
+ 	// to avoid a one frame delay where windows may become enabled/disabled, run the update
+ 	// at once to get it all in the correct state immediately
+@@ -622,6 +625,305 @@ void ControlBar::populateCommand( Object *obj )
+ 
+ }  // end populateCommand
+ 
++//-------------------------------------------------------------------------------------------------
++/** Can this object be given a force-attack order at all?
++
++	Not Object::isAbleToAttack() on its own: that answers "is anything stopping it from
++	attacking right now" and is TRUE for an object with no weapon whatsoever, which put the
++	button on a dozer. A real weapon is required -- on the object, or on a passenger its
++	container lets fire out (a garrisoned building, an Overlord bunker, a Humvee with
++	infantry in it). */
++//-------------------------------------------------------------------------------------------------
++static Bool hasForceAttackWeapon( const Object *obj )
++{
++	// Object::hasAnyDamageWeapon() counts DAMAGE_DISARM, which is what a USA dozer clears
++	// mines with; a force-attack button on it was still wrong. Game logic relies on that
++	// answer, so the UI walks the slots itself.
++	for( Int slot = PRIMARY_WEAPON; slot < WEAPONSLOT_COUNT; ++slot )
++	{
++		const Weapon *weapon = obj->getWeaponInWeaponSlot( (WeaponSlotType)slot );
++		if( weapon && weapon->isDamageWeapon() && weapon->getDamageType() != DAMAGE_DISARM )
++			return TRUE;
++	}
++	return FALSE;
++}
++
++static Bool canBeOrderedToForceAttack( const Object *obj )
++{
++	if( !obj->isAbleToAttack() )
++		return FALSE;
++	if( hasForceAttackWeapon( obj ) )
++		return TRUE;
++
++	const ContainModuleInterface *contain = obj->getContain();
++	if( contain == nullptr || contain->getContainCount() == 0 )
++		return FALSE;
++	const ContainedItemsList *passengers = contain->getContainedItemsList();
++	if( passengers == nullptr )
++		return FALSE;
++	for( ContainedItemsList::const_iterator it = passengers->begin(); it != passengers->end(); ++it )
++	{
++		const Object *passenger = *it;
++		if( passenger && hasForceAttackWeapon( passenger ) && contain->isPassengerAllowedToFire( passenger->getID() ) )
++			return TRUE;
++	}
++	return FALSE;
++}
++
++//-------------------------------------------------------------------------------------------------
++/** Is this set a builder's palette of structures (dozer, worker, GLA fake-building page)? */
++//-------------------------------------------------------------------------------------------------
++static Bool isBuilderCommandSet( const CommandSet *commandSet )
++{
++	if( commandSet == nullptr )
++		return FALSE;
++	for( Int i = 0; i < MAX_COMMANDS_PER_SET; ++i )
++	{
++		const CommandButton *button = commandSet->getCommandButton( i );
++		if( button && button->getCommandType() == GUI_COMMAND_DOZER_CONSTRUCT )
++			return TRUE;
++	}
++	return FALSE;
++}
++
++//-------------------------------------------------------------------------------------------------
++/** (C5 touch graft, from the GeneralsX Android port) The touch order buttons the current
++	selection can use, in the order they are laid out: force attack (a weapon), waypoints
++	(something that moves), then scatter and formation (two or more units that move -- what
++	the keyboard's X and Ctrl+F are for). Only the local player's own objects count: an
++	order is only ever given to those. Returns how many were written to out. */
++//-------------------------------------------------------------------------------------------------
++Int ControlBar::collectTouchOrderButtons( const CommandButton *out[], Int maxCount ) const
++{
++	if( TheInGameUI == nullptr )
++		return 0;
++
++	Bool canAttack = FALSE;
++	Int movers = 0;
++	const DrawableList *selected = TheInGameUI->getAllSelectedDrawables();
++	for( DrawableListCIt it = selected->begin(); it != selected->end(); ++it )
++	{
++		const Object *obj = (*it)->getObject();
++		if( obj == nullptr || !obj->isLocallyControlled() || obj->isKindOf( KINDOF_IGNORED_IN_GUI ) )
++			continue;
++		if( canBeOrderedToForceAttack( obj ) )
++			canAttack = TRUE;
++		if( obj->isMobile() && !obj->isKindOf( KINDOF_STRUCTURE ) )
++			++movers;
++	}
++
++	const CommandButton *wanted[ 4 ];
++	wanted[ 0 ] = canAttack ? m_touchForceAttackButton : nullptr;
++	wanted[ 1 ] = movers > 0 ? m_touchWaypointButton : nullptr;
++	wanted[ 2 ] = movers > 1 ? m_touchScatterButton : nullptr;
++	wanted[ 3 ] = movers > 1 ? m_touchFormationButton : nullptr;
++
++	Int count = 0;
++	for( Int b = 0; b < 4 && count < maxCount; ++b )
++		if( wanted[ b ] != nullptr )
++			out[ count++ ] = wanted[ b ];
++	return count;
++}
++
++//-------------------------------------------------------------------------------------------------
++/** (C5 touch graft) Is the selection one formation already? Then the formation button is
++	lit, and pressing it breaks the formation up -- what Ctrl+F does to a formation
++	(AIGroup::groupCreateFormation). Read only. */
++//-------------------------------------------------------------------------------------------------
++Bool ControlBar::isSelectionInFormation() const
++{
++	if( TheInGameUI == nullptr )
++		return FALSE;
++
++	FormationID formation = NO_FORMATION_ID;
++	const DrawableList *selected = TheInGameUI->getAllSelectedDrawables();
++	for( DrawableListCIt it = selected->begin(); it != selected->end(); ++it )
++	{
++		const Object *obj = (*it)->getObject();
++		if( obj == nullptr || !obj->isLocallyControlled() || obj->isKindOf( KINDOF_IGNORED_IN_GUI ) )
++			continue;
++		if( !obj->isMobile() || obj->isKindOf( KINDOF_STRUCTURE ) )
++			continue;
++		if( obj->getFormationID() == NO_FORMATION_ID )
++			return FALSE;
++		if( formation == NO_FORMATION_ID )
++			formation = obj->getFormationID();
++		else if( obj->getFormationID() != formation )
++			return FALSE;
++	}
++	return formation != NO_FORMATION_ID;
++}
++
++//-------------------------------------------------------------------------------------------------
++/** The first selected object: which selection the order page was opened for. */
++//-------------------------------------------------------------------------------------------------
++static ObjectID orderPageKey()
++{
++	if( TheInGameUI == nullptr )
++		return INVALID_ID;
++	const DrawableList *selected = TheInGameUI->getAllSelectedDrawables();
++	if( selected == nullptr || selected->empty() )
++		return INVALID_ID;
++	const Object *obj = selected->front()->getObject();
++	return obj ? obj->getID() : INVALID_ID;
++}
++
++//-------------------------------------------------------------------------------------------------
++/** (C5 touch graft, from the GeneralsX Android port) Put the touch order buttons (see
++	collectTouchOrderButtons) on the command bar that was just populated.
++
++	A slot is free only if the SET leaves it empty, not merely if its window is hidden right
++	now: a transport's passenger slots are hidden while nobody is inside, and a button parked
++	there would be displaced the moment someone boards. Slot 12 first -- in most stock sets
++	that carry Attack Move it is the one empty cell of the bottom row, between Attack Move
++	(11) and Guard (13) -- then leftwards from 10. Nothing already on the bar is ever covered.
++
++	When they do not all fit -- transports (Humvee, Battle Bus, Troop Crawler, Helix), whose
++	passenger cells are taken -- and always on a builder's bar, whose cells are a palette of
++	structures where an order button would read as one more building, they go on a second
++	page. Page one is the stock bar with the page arrow in its bottom-right cell (slot 14 in
++	Zero Hour); whatever the set keeps there (Stop, or a builder's Disarm Mines) moves to a
++	free slot, bottom row first, and still works: a command window carries its own button,
++	nothing looks the slot index up again. With no free slot (a full set) it goes to page
++	two. Page two holds that button if it moved there, then the order buttons, from slot 1,
++	and the arrow back in the last cell.
++
++	Fork note: the GeneralsX original also served a multi-selection straight from the
++	common-commands table (a null commandSet). This fork's multi-select funnels through
++	populateCommand with the focused type's own set (ControlBarMultiSelect.cpp,
++	setMultiSelectFocus), so the set is always the one on the bar here. */
++//-------------------------------------------------------------------------------------------------
++void ControlBar::addTouchOrderButtons( const CommandSet *commandSet )
++{
++	if( commandSet == nullptr )
++	{
++		m_orderPageObject = INVALID_ID;
++		return;
++	}
++
++	const CommandButton *wanted[ 4 ];
++	const Int count = collectTouchOrderButtons( wanted, 4 );
++	if( count == 0 )
++	{
++		m_orderPageObject = INVALID_ID;
++		return;
++	}
++
++	// The page arrow goes in the bar's last cell: slot 14 in Zero Hour, whose bar has 14
++	// cells -- found by scanning, not fixed, so a bar of another size still works.
++	Int pageSlot = -1;
++	for( Int i = MAX_COMMANDS_PER_SET - 1; i >= 0 && pageSlot < 0; --i )
++		if( m_commandWindows[ i ] != nullptr )
++			pageSlot = i;
++	if( pageSlot < 0 )
++		return;
++	const Int PAGE_SLOT = pageSlot;
++	auto slotTaken = [&]( Int i ) -> Bool
++	{
++		return commandSet->getCommandButton( i ) != nullptr;
++	};
++
++	// Zero-based window indices: slot 12, then 10, 9, ... 1.
++	static const Int preferredSlots[] = { 11, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
++	Int freeSlots[ ARRAY_SIZE( preferredSlots ) ];
++	Int freeCount = 0;
++	for( size_t k = 0; k < ARRAY_SIZE( preferredSlots ); ++k )
++	{
++		const Int i = preferredSlots[ k ];
++		if( m_commandWindows[ i ] != nullptr && !slotTaken( i ) )
++			freeSlots[ freeCount++ ] = i;
++	}
++
++	if( !isBuilderCommandSet( commandSet ) && freeCount >= count )
++	{
++		m_orderPageObject = INVALID_ID;
++		for( Int b = 0; b < count; ++b )
++		{
++			GameWindow *win = m_commandWindows[ freeSlots[ b ] ];
++			win->winHide( FALSE );
++			win->winEnable( TRUE );
++			setControlCommand( win, wanted[ b ] );
++		}
++		return;
++	}
++
++	GameWindow *pageWin = m_commandWindows[ PAGE_SLOT ];
++	if( m_touchBuilderMoreButton == nullptr || m_touchBuilderBackButton == nullptr )
++		return;
++
++	// What the set keeps in the arrow's cell moves to a free cell, bottom row first (odd
++	// indices), then the top row from the right. A full set has none: then it goes to the
++	// second page, first, ahead of the orders.
++	const CommandButton *moved = commandSet->getCommandButton( PAGE_SLOT );
++	const Bool movedShown = moved != nullptr && !pageWin->winIsHidden();
++	Int moveTarget = -1;
++	if( movedShown )
++	{
++		static const Int moveSlots[] = { 11, 9, 7, 5, 3, 1, 12, 10, 8, 6, 4, 2, 0 };
++		for( size_t k = 0; k < ARRAY_SIZE( moveSlots ) && moveTarget < 0; ++k )
++		{
++			const Int i = moveSlots[ k ];
++			if( i != PAGE_SLOT && m_commandWindows[ i ] && !slotTaken( i ) )
++				moveTarget = i;
++		}
++	}
++	const CommandButton *overflow = ( movedShown && moveTarget < 0 ) ? moved : nullptr;
++
++	const ObjectID key = orderPageKey();
++	if( key != INVALID_ID && m_orderPageObject == key )
++	{
++		for( Int i = 0; i < MAX_COMMANDS_PER_SET; ++i )
++			if( m_commandWindows[ i ] )
++				m_commandWindows[ i ]->winHide( TRUE );
++
++		const CommandButton *pageTwo[ 5 ];
++		Int pageTwoCount = 0;
++		if( overflow != nullptr )
++			pageTwo[ pageTwoCount++ ] = overflow;
++		for( Int b = 0; b < count; ++b )
++			pageTwo[ pageTwoCount++ ] = wanted[ b ];
++
++		Int slot = 0;
++		for( Int b = 0; b < pageTwoCount && slot < PAGE_SLOT; ++b, ++slot )
++		{
++			GameWindow *win = m_commandWindows[ slot ];
++			if( win == nullptr )
++				continue;
++			win->winHide( FALSE );
++			win->winEnable( TRUE );
++			setControlCommand( win, pageTwo[ b ] );
++		}
++
++		pageWin->winHide( FALSE );
++		pageWin->winEnable( TRUE );
++		setControlCommand( pageWin, m_touchBuilderBackButton );
++		return;
++	}
++	m_orderPageObject = INVALID_ID;
++
++	if( moveTarget >= 0 )
++	{
++		GameWindow *win = m_commandWindows[ moveTarget ];
++		win->winHide( FALSE );
++		win->winEnable( TRUE );
++		setControlCommand( win, moved );
++	}
++
++	pageWin->winHide( FALSE );
++	pageWin->winEnable( TRUE );
++	setControlCommand( pageWin, m_touchBuilderMoreButton );
++}
++
++//-------------------------------------------------------------------------------------------------
++/** Flip the bar between its stock page and the order page. UI only. */
++//-------------------------------------------------------------------------------------------------
++void ControlBar::toggleOrderPage()
++{
++	const ObjectID key = orderPageKey();
++	m_orderPageObject = ( key != INVALID_ID && m_orderPageObject != key ) ? key : INVALID_ID;
++	markUIDirty();
++}
++
+ //-------------------------------------------------------------------------------------------------
+ /** reset transport data */
+ //-------------------------------------------------------------------------------------------------
+@@ -1244,6 +1546,22 @@ CommandAvailability ControlBar::getCommandAvailability( const CommandButton *com
+ 			obj = NULL;
+ 	}
+ 
++	// (C5 touch graft, from the GeneralsX Android port) The touch modifier buttons show a
++	// mode of the UI, not an ability of any one object, so none of the per-object tests
++	// below apply to them: pressed while the mode is on, available otherwise. Answered
++	// before those tests because in a multi-selection this runs once per selected object,
++	// and one disabled unit hiding the button would take the mode away from every other one.
++	if( command == m_touchForceAttackButton && command != nullptr )
++		return ( TheInGameUI && TheInGameUI->isInForceAttackMode() ) ? COMMAND_ACTIVE : COMMAND_AVAILABLE;
++	if( command == m_touchWaypointButton && command != nullptr )
++		return ( TheInGameUI && TheInGameUI->isInWaypointMode() ) ? COMMAND_ACTIVE : COMMAND_AVAILABLE;
++	if( command != nullptr && ( command == m_touchBuilderMoreButton || command == m_touchBuilderBackButton ) )
++		return COMMAND_AVAILABLE;
++	if( command == m_touchScatterButton && command != nullptr )
++		return COMMAND_AVAILABLE;
++	if( command == m_touchFormationButton && command != nullptr )
++		return isSelectionInFormation() ? COMMAND_ACTIVE : COMMAND_AVAILABLE;
++
+ 	//If we modify the button (like a gadget clock overlay), then sometimes we may wish to apply it to a specific different button.
+ 	//But if we don't specify anything (default), then make them the same.
+ 	if( !applyToWin )
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarCommandProcessing.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarCommandProcessing.cpp
+index ce871b73..817bb646 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarCommandProcessing.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarCommandProcessing.cpp
+@@ -946,7 +946,65 @@ CBCommandStatus ControlBar::processCommandUI( GameWindow *control,
+ 		
+ 		//---------------------------------------------------------------------------------------------
+ 		case GUI_COMMAND_WAYPOINTS:
++		{
++			// (C5 touch graft, from the GeneralsX Android port) The touch waypoint button is
++			// Alt for a finger: it holds InGameUI's waypoint mode on until pressed again, and
++			// every order given meanwhile is MSG_ADD_WAYPOINT, exactly as while Alt is held.
++			// Only that button: GUI_COMMAND_WAYPOINTS was never given behaviour for a button
++			// from the INI.
++			if( commandButton != m_touchWaypointButton )
++				break;
++			const Bool enable = !TheInGameUI->isInWaypointMode();
++			TheInGameUI->setWaypointMode( enable );
++			if( enable )
++				TheInGameUI->setForceAttackMode( FALSE );
++			break;
++		}
++
++		//---------------------------------------------------------------------------------------------
++		case GUI_COMMAND_GX_FORCE_ATTACK:
++		{
++			// (C5 touch graft) Ctrl for a finger. Switches InGameUI's force-attack mode;
++			// while it is on, the touch layer turns every tap into the MSG_DO_FORCE_ATTACK_*
++			// a Ctrl+click sends (SdlInput.cpp). A mode, like the waypoint button: on until
++			// this button is pressed again (or the selection is cancelled), so artillery can
++			// be aimed shot after shot.
++			const Bool enable = !TheInGameUI->isInForceAttackMode();
++			TheInGameUI->setForceAttackMode( enable );
++			if( enable )
++				TheInGameUI->setWaypointMode( FALSE );
++			break;
++		}
++
++		//---------------------------------------------------------------------------------------------
++		case GUI_COMMAND_GX_BUILDER_PAGE:
++		{
++			// (C5 touch graft) Page arrow on a builder's bar, on any bar without room. UI
++			// only: no message reaches the logic, so it cannot affect a replay or a network
++			// game.
++			toggleOrderPage();
+ 			break;
++		}
++
++		//---------------------------------------------------------------------------------------------
++		case GUI_COMMAND_GX_SCATTER:
++		{
++			// (C5 touch graft) X for a finger: what MSG_META_SCATTER sends (CommandXlat.cpp).
++			// Works on the currently selected team.
++			TheMessageStream->appendMessage( GameMessage::MSG_DO_SCATTER );
++			break;
++		}
++
++		//---------------------------------------------------------------------------------------------
++		case GUI_COMMAND_GX_FORMATION:
++		{
++			// (C5 touch graft) Ctrl+F for a finger: what MSG_META_CREATE_FORMATION sends. On
++			// a group that already is one formation the logic breaks it up instead
++			// (AIGroup::groupCreateFormation), which is why the button is lit while the
++			// selection is in formation.
++			TheMessageStream->appendMessage( GameMessage::MSG_CREATE_FORMATION );
++			break;
++		}
+ 
+ 		//-------------------------------------------------------------------------------------------------
+ 		case GUI_COMMAND_EXIT_CONTAINER:
 diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/ControlBarPopupDescription.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/ControlBarPopupDescription.cpp
 index 7c45adf6..b09a6ed3 100644
 --- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/ControlBarPopupDescription.cpp
@@ -515,6 +1175,49 @@ index 84d046c8..c79312d8 100644
  //-------------------------------------------------------------------------------------------------
  /** Get the ray effect data for a drawable */
  void GameClient::getRayEffectData( Drawable *draw, RayEffectData *effectData )
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GameText.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GameText.cpp
+index f8077f5b..dfb1c8c2 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GameText.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GameText.cpp
+@@ -1426,6 +1426,38 @@ UnicodeString GameTextManager::fetch( const Char *label, Bool *exists )
+ 	if( lookUp == NULL )
+ 	{
+ 
++		// (C5 touch graft, from the GeneralsX Android port) English defaults for the labels
++		// the touch mode buttons add, answered only here -- after every table the game
++		// loaded has missed -- so the buttons show words instead of "MISSING" in any
++		// language whose string files predate them. A language pack carrying the label
++		// wins, as it should.
++		{
++			static const struct { const char *label; const WideChar *text; } touchModeDefaults[] =
++			{
++				{ "GX:ForceAttack",        u"Force Attack" },
++				{ "GX:ToolTipForceAttack", u"Attack whatever you tap, even your own units or empty ground, until you press this again" },
++				{ "GX:BuilderPageMore",        u"More Orders" },
++				{ "GX:ToolTipBuilderPageMore", u"Show more orders: force attack, waypoints, scatter, formation" },
++				{ "GX:BuilderPageBack",        u"Back" },
++				{ "GX:ToolTipBuilderPageBack", u"Back to this unit's own buttons" },
++				{ "GX:Scatter",                u"Scatter" },
++				{ "GX:ToolTipScatter",         u"The selected units spread out from their centre, away from artillery and bombs" },
++				{ "GX:Formation",              u"Formation" },
++				{ "GX:ToolTipFormation",       u"The selected units keep their places and move together at the speed of the slowest. Press again to break the formation" },
++				{ "CONTROLBAR:Waypoints",       u"Waypoints" },
++				{ "CONTROLBAR:ToolTipWayPoints", u"While this is on, every order is added as a waypoint on a path the units then follow" },
++			};
++			for( Int di = 0; di < (Int)( sizeof( touchModeDefaults ) / sizeof( touchModeDefaults[ 0 ] ) ); ++di )
++			{
++				if( strcasecmp( label, touchModeDefaults[ di ].label ) == 0 )
++				{
++					if( exists )
++						*exists = TRUE;
++					return UnicodeString( touchModeDefaults[ di ].text );
++				}
++			}
++		}
++
+ 		// string not found
+ 		if( exists )
+ 			*exists = FALSE;
 diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/InGameUI.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/InGameUI.cpp
 index 1365fad6..41a4679c 100644
 --- a/GeneralsMD/Code/GameEngine/Source/GameClient/InGameUI.cpp
@@ -1205,6 +1908,40 @@ index 00000000..6fed18fd
 +	Bool lookAtRadarPoint(Int x, Int y);
 +
 +}  // namespace TouchInput
+diff --git a/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DTouchButtonImages.h b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DTouchButtonImages.h
+new file mode 100644
+index 00000000..8b0e0880
+--- /dev/null
++++ b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DTouchButtonImages.h
+@@ -0,0 +1,28 @@
++/*
++**	Command & Conquer Generals Zero Hour(tm)
++**	Copyright 2025 Electronic Arts Inc.
++**
++**	This program is free software: you can redistribute it and/or modify
++**	it under the terms of the GNU General Public License as published by
++**	the Free Software Foundation, either version 3 of the License, or
++**	(at your option) any later version.
++**
++**	This program is distributed in the hope that it will be useful,
++**	but WITHOUT ANY WARRANTY; without even the implied warranty of
++**	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++**	GNU General Public License for more details.
++**
++**	You should have received a copy of the GNU General Public License
++**	along with this program.  If not, see <http://www.gnu.org/licenses/>.
++*/
++
++// (C5 touch graft, from the GeneralsX Android port) Pictures for the command-bar buttons
++// the touch layer adds and the game has no art for: the page arrows (GXBuilderPageMore,
++// GXBuilderPageBack), scatter (GXScatter), formation (GXFormation) and the force-attack
++// crosshair (GXForceAttack, the fallback where SCCAttack art is absent). Drawn once, at
++// display init, into textures the display owns and registered in the mapped-image
++// collection by name, where the control bar finds them like any other button picture.
++
++#pragma once
++
++void W3DRegisterTouchButtonImages();
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
 index 9a804e2f..0a8f902f 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
@@ -1248,6 +1985,233 @@ index 9a804e2f..0a8f902f 100644
  	SDL_GPUTextureCreateInfo info;
  	SDL_zero(info);
  	info.type = SDL_GPU_TEXTURETYPE_2D;
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlProgramCache.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlProgramCache.cpp
+index e414c150..636b652c 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlProgramCache.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlProgramCache.cpp
+@@ -35,6 +35,7 @@
+ #include "SdlSunShadowDebug.h"
+ #include <stdlib.h>
+ #include <string.h>
++#include <sys/stat.h>
+ 
+ void Sdl_Read_Slot_Lines(const std::string &hlsl, unsigned int slots, std::vector<int> &textures, std::vector<int> &samplers)
+ {
+@@ -55,6 +56,120 @@ void Sdl_Read_Slot_Lines(const std::string &hlsl, unsigned int slots, std::vecto
+ 	}
+ }
+ 
++// -----------------------------------------------------------------------------
++// GeneralsX persistent shader cache 20/11/2026 (v1.25): the SPIR-V a program
++// compiles to is written to <ZH_USER_DATA_DIR>/shadercache/<hash>.spv and read
++// back on the next launch, so glslang runs once per program per device instead
++// of once per program per launch.  The key is an FNV-1a hash of the stage and
++// the exact HLSL the generator produced; a file that fails the SPIR-V magic or
++// size checks, or whose shader the device refuses, is dropped and recompiled.
++// ZH_SHADER_CACHE=0 turns the disk layer off; the in-memory cache is unchanged.
++// -----------------------------------------------------------------------------
++static unsigned int g_disk_cache_hits = 0;
++static unsigned int g_disk_cache_misses = 0;
++
++static uint64_t Disk_Cache_Hash(bool vertex_stage, const std::string &hlsl)
++{
++	uint64_t hash = 14695981039346656037ull;
++	hash = (hash ^ (uint64_t)(vertex_stage ? 'v' : 'p')) * 1099511628211ull;
++	const uint64_t size = (uint64_t)hlsl.size();
++	for (int i = 0; i < 8; ++i) {
++		hash = (hash ^ ((size >> (i * 8)) & 0xffu)) * 1099511628211ull;
++	}
++	for (size_t i = 0; i < hlsl.size(); ++i) {
++		hash = (hash ^ (uint64_t)(unsigned char)hlsl[i]) * 1099511628211ull;
++	}
++	return hash;
++}
++
++static const std::string &Disk_Cache_Dir()
++{
++	static const std::string dir = []() -> std::string {
++		const char *off = getenv("ZH_SHADER_CACHE");
++		if (off != NULL && off[0] == '0') {
++			return std::string();
++		}
++		const char *base = getenv("ZH_USER_DATA_DIR");
++		if (base == NULL || base[0] == '\0') {
++			return std::string();
++		}
++		const std::string made = std::string(base) + "/shadercache";
++		mkdir(base, 0777);
++		mkdir(made.c_str(), 0777);
++		return made;
++	}();
++	return dir;
++}
++
++static std::string Disk_Cache_Path(bool vertex_stage, const std::string &hlsl)
++{
++	const std::string &dir = Disk_Cache_Dir();
++	if (dir.empty()) {
++		return std::string();
++	}
++	char name[32];
++	snprintf(name, sizeof(name), "%016llx.spv", (unsigned long long)Disk_Cache_Hash(vertex_stage, hlsl));
++	return dir + "/" + name;
++}
++
++static bool Disk_Cache_Load(const std::string &path, std::vector<unsigned char> &spirv)
++{
++	if (path.empty()) {
++		return false;
++	}
++	FILE *file = fopen(path.c_str(), "rb");
++	if (file == NULL) {
++		++g_disk_cache_misses;
++		return false;
++	}
++	fseek(file, 0, SEEK_END);
++	const long size = ftell(file);
++	fseek(file, 0, SEEK_SET);
++	bool ok = size >= 20 && (size % 4) == 0;
++	if (ok) {
++		spirv.resize((size_t)size);
++		ok = fread(&spirv[0], 1, (size_t)size, file) == (size_t)size;
++	}
++	fclose(file);
++	if (ok) {
++		uint32_t magic = 0;
++		memcpy(&magic, &spirv[0], sizeof(magic));
++		ok = magic == 0x07230203u;
++	}
++	if (!ok) {
++		spirv.clear();
++		++g_disk_cache_misses;
++		return false;
++	}
++	++g_disk_cache_hits;
++	static bool said = false;
++	if (!said) {
++		said = true;
++		fprintf(stderr, "SdlProgramCache: persistent shader cache active at %s\n", Disk_Cache_Dir().c_str());
++	}
++	return true;
++}
++
++static void Disk_Cache_Store(const std::string &path, const std::vector<unsigned char> &spirv)
++{
++	if (path.empty() || spirv.empty()) {
++		return;
++	}
++	const std::string temp = path + ".tmp";
++	FILE *file = fopen(temp.c_str(), "wb");
++	if (file == NULL) {
++		return;
++	}
++	const bool ok = fwrite(&spirv[0], 1, spirv.size(), file) == spirv.size();
++	fclose(file);
++	if (ok) {
++		rename(temp.c_str(), path.c_str());
++	}
++	else {
++		remove(temp.c_str());
++	}
++}
++
+ SdlProgramCache::SdlProgramCache(SDL_GPUDevice *device) :
+ 	Device(device),
+ 	Built(0),
+@@ -65,6 +180,10 @@ SdlProgramCache::SdlProgramCache(SDL_GPUDevice *device) :
+ 
+ SdlProgramCache::~SdlProgramCache()
+ {
++	if (g_disk_cache_hits + g_disk_cache_misses > 0) {
++		fprintf(stderr, "SdlProgramCache: persistent shader cache: %u hits, %u misses\n", g_disk_cache_hits,
++			g_disk_cache_misses);
++	}
+ 	for (int stage = 0; stage < 2; ++stage) {
+ 		std::map<std::string, SdlProgram> &cache = stage == 0 ? VertexPrograms : PixelPrograms;
+ 		for (std::map<std::string, SdlProgram>::iterator it = cache.begin(); it != cache.end(); ++it) {
+@@ -92,15 +211,39 @@ const SdlProgram &SdlProgramCache::Make(std::map<std::string, SdlProgram> &cache
+ 		std::vector<unsigned char> spirv;
+ 		std::string log;
+ 		Dump_Program(key, vertex_stage, hlsl);
+-		if (!SDL3_Compile_HLSL_To_SPIRV(hlsl, vertex_stage, spirv, log)) {
+-			program.Refusal = "glslang: " + log;
++		const std::string disk_path = Disk_Cache_Path(vertex_stage, hlsl);
++		const bool from_disk = Disk_Cache_Load(disk_path, spirv);
++		bool have_spirv = from_disk;
++		if (!have_spirv) {
++			have_spirv = SDL3_Compile_HLSL_To_SPIRV(hlsl, vertex_stage, spirv, log);
++			if (!have_spirv) {
++				program.Refusal = "glslang: " + log;
++			}
+ 		}
+-		else {
++		if (have_spirv) {
+ 			SDL3_Shader_Slots(spirv, vertex_stage, program.SamplerSlots, program.UniformBuffers);
+ 			program.Shader = SDL3_Create_Shader(Device, spirv, vertex_stage, log);
++			if (program.Shader == NULL && from_disk) {
++				// A cached program this device now refuses (a driver change?): drop the
++				// file and compile fresh rather than refusing the program for good.
++				remove(disk_path.c_str());
++				std::string retry_log;
++				spirv.clear();
++				if (SDL3_Compile_HLSL_To_SPIRV(hlsl, vertex_stage, spirv, retry_log)) {
++					SDL3_Shader_Slots(spirv, vertex_stage, program.SamplerSlots, program.UniformBuffers);
++					program.Shader = SDL3_Create_Shader(Device, spirv, vertex_stage, retry_log);
++					if (program.Shader != NULL) {
++						Disk_Cache_Store(disk_path, spirv);
++					}
++				}
++				log = retry_log;
++			}
+ 			if (program.Shader == NULL) {
+ 				program.Refusal = "the device: " + log;
+ 			}
++			else if (!from_disk) {
++				Disk_Cache_Store(disk_path, spirv);
++			}
+ 		}
+ 		CompileMilliseconds += (double)(SDL_GetTicksNS() - start) / 1.0e6;
+ 		if (Sdl_Creation_Log_Asked()) {
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlResourceMirror.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlResourceMirror.cpp
+index 9b774db5..8c25de38 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlResourceMirror.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlResourceMirror.cpp
+@@ -167,6 +167,7 @@ SdlResourceMirrors::SdlResourceMirrors(SdlGpuFrame * frame) :
+ 	Frame(frame),
+ 	WhiteTexture(NULL),
+ 	BcSupported(-1),
++	AstcSupported(-1),
+ 	StaleFlushes(0),
+ 	TexturesUploaded(0),
+ 	BuffersUploaded(0)
+@@ -266,6 +267,15 @@ SDL_GPUTexture * SdlResourceMirrors::Texture(IDirect3DBaseTexture9 * base, std::
+ 					SDL_GPU_TEXTUREUSAGE_SAMPLER)
+ 				&& SDL_GPUTextureSupportsFormat(device, SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM, SDL_GPU_TEXTURETYPE_2D,
+ 					SDL_GPU_TEXTUREUSAGE_SAMPLER) ? 1 : 0;
++			// GeneralsX v1.25 probe: ASTC is the block format Mali samples (BC it does not),
++			// so where BC is refused every DXT texture is CPU-expanded to B8G8R8A8 at 4x the
++			// memory.  Measured and logged once here; the transcode decision rides on it.
++			AstcSupported = SDL_GPUTextureSupportsFormat(device, SDL_GPU_TEXTUREFORMAT_ASTC_4x4_UNORM, SDL_GPU_TEXTURETYPE_2D,
++					SDL_GPU_TEXTUREUSAGE_SAMPLER)
++				&& SDL_GPUTextureSupportsFormat(device, SDL_GPU_TEXTUREFORMAT_ASTC_6x6_UNORM, SDL_GPU_TEXTURETYPE_2D,
++					SDL_GPU_TEXTUREUSAGE_SAMPLER) ? 1 : 0;
++			fprintf(stderr, "SdlResourceMirrors: texture compression: BC=%s ASTC=%s\n", BcSupported ? "yes" : "no",
++				AstcSupported ? "yes" : "no");
+ 		}
+ 		const PosixImage & base_level = texture->level(0);
+ 		unsigned int format = 0;
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlResourceMirror.h b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlResourceMirror.h
+index 7ce32623..aa7cc49a 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlResourceMirror.h
++++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlResourceMirror.h
+@@ -118,6 +118,7 @@ private:
+ 	std::vector<Copy> Dead;
+ 	SDL_GPUTexture * WhiteTexture;
+ 	int BcSupported;									///< -1 not asked yet
++	int AstcSupported;								///< -1 not asked yet (v1.25 probe: measured and logged, not yet used)
+ 	unsigned int StaleFlushes;
+ 	unsigned int TexturesUploaded;
+ 	unsigned int BuffersUploaded;
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/Common/SdlGameEngine.cpp b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/Common/SdlGameEngine.cpp
 index fcca0bb1..91ba622f 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/Common/SdlGameEngine.cpp
@@ -3829,10 +4793,18 @@ index 00000000..9805d4a3
 +
 +}  // namespace TouchInput
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
-index 827031df..8af6243d 100644
+index 827031df..caf8e05b 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
-@@ -874,6 +874,25 @@ Bool W3DDisplay::setDisplayMode( UnsignedInt xres, UnsignedInt yres, UnsignedInt
+@@ -55,6 +55,7 @@ static void drawFramerateBar(void);
+ #include "Common/LogicThread.h"
+ #include "Common/GameEngine.h"
+ #include "GameClient/LookAtXlat.h"
++#include "W3DDevice/GameClient/W3DTouchButtonImages.h"	// (C5 touch graft) procedural touch-mode button art
+ #include "Common/GlobalData.h"
+ #include "Common/Monitors.h"
+ #include "Common/OptionsCatalog.h"
+@@ -874,6 +875,25 @@ Bool W3DDisplay::setDisplayMode( UnsignedInt xres, UnsignedInt yres, UnsignedInt
  {
  	extern Bool ApplicationIsBorderless;
  
@@ -3858,6 +4830,259 @@ index 827031df..8af6243d 100644
  	// WW3D2 cannot see GlobalData, so a vsync change has to be pushed in before the reset below
  	// the way the sample count is pushed in before the device exists.  The monitor too: a fullscreen
  	// game changes that monitor's mode and nobody else's.
+@@ -1351,6 +1371,10 @@ void W3DDisplay::init( void )
+ 	DX8WebBrowser::Initialize();
+ #endif
+ 
++	// (C5 touch graft) draw the touch mode buttons' pictures (scatter, formation, page
++	// arrows) into the mapped-image collection before the control bar looks them up
++	W3DRegisterTouchButtonImages();
++
+ 	// we're now online
+ 	m_initialized = true;
+ 	if( TheGlobalData->m_displayDebug )
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DTouchButtonImages.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DTouchButtonImages.cpp
+new file mode 100644
+index 00000000..45a2a5f5
+--- /dev/null
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DTouchButtonImages.cpp
+@@ -0,0 +1,236 @@
++/*
++**	Command & Conquer Generals Zero Hour(tm)
++**	Copyright 2025 Electronic Arts Inc.
++**
++**	This program is free software: you can redistribute it and/or modify
++**	it under the terms of the GNU General Public License as published by
++**	the Free Software Foundation, either version 3 of the License, or
++**	(at your option) any later version.
++**
++**	This program is distributed in the hope that it will be useful,
++**	but WITHOUT ANY WARRANTY; without even the implied warranty of
++**	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++**	GNU General Public License for more details.
++**
++**	You should have received a copy of the GNU General Public License
++**	along with this program.  If not, see <http://www.gnu.org/licenses/>.
++*/
++
++// (C5 touch graft, from the GeneralsX Android port) -- see W3DTouchButtonImages.h.
++//
++// The game has arrows of the right style only as 14x7 scroll-bar pieces, which turn into a
++// smear when a 60x48 button stretches them, and shipping a texture would mean writing into
++// the player's game folder. So the pictures are drawn here -- the way W3DRadar builds its
++// images -- as a few convex polygons in cyan with a dark rim and a drop shadow, on the dark
++// steel of a command button, with 4x4 supersampling so the edges stay smooth at the ~2.3x
++// scale a command button is shown at on a phone.
++
++#include <stdio.h>
++
++#include "Lib/BaseType.h"
++#include "Common/GameMemory.h"
++#include "GameClient/Image.h"
++#include "WW3D2/surfaceclass.h"
++#include "WW3D2/texture.h"
++#include "W3DDevice/GameClient/W3DTouchButtonImages.h"
++
++#include <math.h>
++
++namespace
++{
++	enum { TEX = 64, CELL_W = 60, CELL_H = 48, SS = 4, MAX_VERTS = 4, MAX_POLYS = 7 };
++
++	struct Poly
++	{
++		Int count;
++		Real x[ MAX_VERTS ];
++		Real y[ MAX_VERTS ];
++	};
++
++	struct Icon
++	{
++		const char *name;
++		Int count;
++		Poly polys[ MAX_POLYS ];
++	};
++
++	// A command button is 60x48; every shape keeps clear of the 1-pixel frame and the
++	// 2-pixel shadow.
++	const Icon kIcons[] =
++	{
++		// "More orders": one triangle pointing down.
++		{ "GXBuilderPageMore", 1, {
++			{ 3, { 30, 13, 47 }, { 39, 9, 9 } } } },
++		// "Back": one triangle pointing up.
++		{ "GXBuilderPageBack", 1, {
++			{ 3, { 30, 13, 47 }, { 9, 39, 39 } } } },
++		// Scatter: four arrowheads flying out of a centre point.
++		{ "GXScatter", 5, {
++			{ 4, { 26, 34, 34, 26 }, { 20, 20, 28, 28 } },
++			{ 3, { 30, 21, 39 }, { 4, 15, 15 } },
++			{ 3, { 30, 39, 21 }, { 44, 33, 33 } },
++			{ 3, { 7, 19, 19 }, { 24, 15, 33 } },
++			{ 3, { 53, 41, 41 }, { 24, 33, 15 } } } },
++		// Force attack: four arrowheads closing on a centre point -- a crosshair. The base
++		// game has no SCCAttack picture (its cursors are animated files), and its mapped
++		// image name drew as a purple square there.
++		{ "GXForceAttack", 5, {
++			{ 4, { 28, 32, 32, 28 }, { 22, 22, 26, 26 } },
++			{ 3, { 30, 37, 23 }, { 18, 5, 5 } },
++			{ 3, { 30, 23, 37 }, { 30, 43, 43 } },
++			{ 3, { 22, 9, 9 }, { 24, 31, 17 } },
++			{ 3, { 38, 51, 51 }, { 24, 17, 31 } } } },
++		// Formation: two ranks of three, with the heading above them.
++		{ "GXFormation", 7, {
++			{ 3, { 30, 21, 39 }, { 4, 12, 12 } },
++			{ 4, { 13, 21, 21, 13 }, { 17, 17, 25, 25 } },
++			{ 4, { 26, 34, 34, 26 }, { 17, 17, 25, 25 } },
++			{ 4, { 39, 47, 47, 39 }, { 17, 17, 25, 25 } },
++			{ 4, { 13, 21, 21, 13 }, { 31, 31, 39, 39 } },
++			{ 4, { 26, 34, 34, 26 }, { 31, 31, 39, 39 } },
++			{ 4, { 39, 47, 47, 39 }, { 31, 31, 39, 39 } } } },
++	};
++
++	// How far (px,py) is inside the convex polygon, shifted by (dx,dy); negative outside.
++	Real insidePoly( const Poly &p, Real px, Real py, Real dx, Real dy )
++	{
++		// Winding sign so that "inside" is positive for every edge.
++		Real area = 0;
++		for( Int e = 0; e < p.count; ++e )
++		{
++			const Int n = ( e + 1 ) % p.count;
++			area += p.x[ e ] * p.y[ n ] - p.x[ n ] * p.y[ e ];
++		}
++		const Real sign = area > 0 ? -1.0f : 1.0f;
++
++		Real d = 1e9f;
++		for( Int e = 0; e < p.count; ++e )
++		{
++			const Int n = ( e + 1 ) % p.count;
++			const Real ax = p.x[ e ] + dx, ay = p.y[ e ] + dy;
++			const Real ex = p.x[ n ] - p.x[ e ], ey = p.y[ n ] - p.y[ e ];
++			const Real len = sqrtf( ex * ex + ey * ey );
++			d = min( d, sign * ( ( px - ax ) * ey - ( py - ay ) * ex ) / len );
++		}
++		return d;
++	}
++
++	// The deepest the point is inside any of the icon's polygons.
++	Real insideIcon( const Icon &icon, Real px, Real py, Real dx, Real dy )
++	{
++		Real d = -1e9f;
++		for( Int i = 0; i < icon.count; ++i )
++			d = max( d, insidePoly( icon.polys[ i ], px, py, dx, dy ) );
++		return d;
++	}
++
++	void registerIcon( const Icon &icon )
++	{
++		if( TheMappedImageCollection->findImageByName( icon.name ) != nullptr )
++			return;
++
++		TextureClass *texture = MSGNEW("TextureClass") TextureClass( TEX, TEX, WW3D_FORMAT_A8R8G8B8, MIP_LEVELS_1 );
++		SurfaceClass *surface = texture ? texture->Get_Surface_Level() : nullptr;
++		if( surface == nullptr || surface->Get_Bytes_Per_Pixel() != 4 )
++		{
++			fprintf( stderr, "[touchmodes] could not create the %s texture\n", icon.name );
++			REF_PTR_RELEASE( surface );
++			REF_PTR_RELEASE( texture );
++			return;
++		}
++
++		int pitch = 0;
++		UnsignedByte *bits = (UnsignedByte *)surface->Lock( &pitch );
++		if( bits == nullptr )
++		{
++			REF_PTR_RELEASE( surface );
++			REF_PTR_RELEASE( texture );
++			return;
++		}
++
++		for( Int y = 0; y < TEX; ++y )
++		{
++			UnsignedInt *row = (UnsignedInt *)( bits + y * pitch );
++			for( Int x = 0; x < TEX; ++x )
++			{
++				if( x >= CELL_W || y >= CELL_H )
++				{
++					row[ x ] = 0;
++					continue;
++				}
++				Real r = 0, g = 0, b = 0;
++				for( Int sy = 0; sy < SS; ++sy )
++				{
++					for( Int sx = 0; sx < SS; ++sx )
++					{
++						const Real px = x + ( sx + 0.5f ) / SS;
++						const Real py = y + ( sy + 0.5f ) / SS;
++
++						// steel background, lighter at the top
++						const Real shade = 62.0f - 34.0f * py / CELL_H;
++						Real cr = shade - 22.0f, cg = shade - 8.0f, cb = shade + 30.0f;
++
++						// drop shadow
++						if( insideIcon( icon, px, py, 2.0f, 2.0f ) >= 0 )
++						{
++							const Real a = 170.0f / 255.0f;
++							cr *= 1 - a; cg *= 1 - a; cb *= 1 - a;
++						}
++
++						// shape: dark rim one pixel wide, cyan fill
++						const Real d = insideIcon( icon, px, py, 0, 0 );
++						if( d >= 1.0f )
++						{
++							cr = 90; cg = 215; cb = 255;
++						}
++						else if( d >= 0 )
++						{
++							cr = 30; cg = 110; cb = 170;
++						}
++
++						// button frame
++						if( px < 1.0f || py < 1.0f || px >= CELL_W - 1.0f || py >= CELL_H - 1.0f )
++						{
++							cr = 120; cg = 140; cb = 190;
++						}
++
++						r += cr; g += cg; b += cb;
++					}
++				}
++				const Real n = (Real)( SS * SS );
++				const UnsignedInt R = (UnsignedInt)clamp( 0.0f, r / n, 255.0f );
++				const UnsignedInt G = (UnsignedInt)clamp( 0.0f, g / n, 255.0f );
++				const UnsignedInt B = (UnsignedInt)clamp( 0.0f, b / n, 255.0f );
++				row[ x ] = 0xFF000000u | ( R << 16 ) | ( G << 8 ) | B;
++			}
++		}
++		surface->Unlock();
++		REF_PTR_RELEASE( surface );
++
++		Image *image = newInstance(Image);
++		image->setName( icon.name );
++		image->setStatus( IMAGE_STATUS_RAW_TEXTURE );
++		image->setRawTextureData( texture );	// the image keeps the reference
++		Region2D uv;
++		uv.lo.x = 0.0f;
++		uv.lo.y = 0.0f;
++		uv.hi.x = (Real)CELL_W / TEX;
++		uv.hi.y = (Real)CELL_H / TEX;
++		image->setUV( &uv );
++		image->setTextureWidth( TEX );
++		image->setTextureHeight( TEX );
++		ICoord2D size;
++		size.x = CELL_W;
++		size.y = CELL_H;
++		image->setImageSize( &size );
++		TheMappedImageCollection->addImage( image );
++	}
++}
++
++void W3DRegisterTouchButtonImages()
++{
++	if( TheMappedImageCollection == nullptr )
++		return;
++	for( size_t i = 0; i < ARRAY_SIZE( kIcons ); ++i )
++		registerIcon( kIcons[ i ] );
++}
 diff --git a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp
 index a37b9014..39546d7c 100644
 --- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp
