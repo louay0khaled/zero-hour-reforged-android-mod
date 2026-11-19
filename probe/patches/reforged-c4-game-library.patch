@@ -71,6 +71,182 @@ index 10a1f1d6..82ca34ad 100644
    # C2's SDL side of Monitors.h and MessageBoxWrapper, on SDL's offscreen video driver.
    # test_gameengine_stubs.cpp: the names the executable supplies, which GCC's larger pull from sdldevice
    # reaches (ld.lld, L1b); clang's does not, and they cost nothing there.
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBar.h b/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBar.h
+index 4d82f338..86c4afc2 100644
+--- a/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBar.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBar.h
+@@ -1372,12 +1372,27 @@ protected:
+ 	Player *m_watchedSelection;													///< the player the selection last named while watching, NULL for nobody
+ 
+ 	WindowLayout *m_buildToolTipLayout;										///< The window that will slide on/display tooltips
+-	Bool m_showBuildToolTipLayout;											///< every frame we test to see if we aregoing to continue showing this or not.
++	Bool m_showBuildToolTipLayout;
++
++	// (C5 touch graft, from the GeneralsX Android port) Where a finger is currently held,
++	// if it is. Reported by the touch layer, in logical display coordinates. A POINT and
++	// not a GameWindow*: the control bar rebuilds its command windows whenever the
++	// selection context changes, so a pointer captured at touch-down goes stale mid-hold,
++	// while a point stays true and can simply be hit-tested again each frame.
++	Bool m_touchHoldActive;
++	ICoord2D m_touchHoldPoint;											///< every frame we test to see if we aregoing to continue showing this or not.
+ public:
+ 	void showBuildTooltipLayout( GameWindow *cmdButton );
+ 	void hideBuildTooltipLayout( void );
+ 	void deleteBuildTooltipLayout( void );
+ 	Bool getShowBuildTooltipLayout( void ){return m_showBuildToolTipLayout;	}
++	void setTouchHoldPoint( Int x, Int y, Bool held )
++	{
++		m_touchHoldActive = held;
++		m_touchHoldPoint.x = x;
++		m_touchHoldPoint.y = y;
++	}
++	Bool isBuildTooltipLayoutVisible() const;	///< the command description popup is on screen (C5 graft)
+ 	void populateBuildTooltipLayout( const CommandButton *commandButton, GameWindow *tooltipWin = NULL );
+ 	/// the same with the prices and figures counted for player rather than the local one
+ 	void populateBuildTooltipLayout( const CommandButton *commandButton, GameWindow *tooltipWin, Player *player );
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/GadgetListBox.h b/GeneralsMD/Code/GameEngine/Include/GameClient/GadgetListBox.h
+index 6f489669..e3ecb6db 100644
+--- a/GeneralsMD/Code/GameEngine/Include/GameClient/GadgetListBox.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameClient/GadgetListBox.h
+@@ -72,6 +72,9 @@ extern void GadgetListboxCreateScrollbar( GameWindow *listbox );
+ extern void GadgetListBoxAddMultiSelect( GameWindow *listbox );
+ extern void GadgetListBoxRemoveMultiSelect( GameWindow *listbox );
+ extern void GadgetListBoxSetListLength( GameWindow *listbox, Int newLength );
++extern void GadgetListBoxTouchScrollBegin( GameWindow *listbox, Int y );
++extern void GadgetListBoxTouchScrollMove( GameWindow *listbox, Int y );
++extern void GadgetListBoxTouchScrollEnd();
+ extern Int  GadgetListBoxGetListLength( GameWindow *listbox );
+ extern Int  GadgetListBoxGetNumEntries( GameWindow *listbox );
+ extern Int  GadgetListBoxGetNumColumns( GameWindow *listbox );
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/GameClient.h b/GeneralsMD/Code/GameEngine/Include/GameClient/GameClient.h
+index 57328881..df599da9 100644
+--- a/GeneralsMD/Code/GameEngine/Include/GameClient/GameClient.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameClient/GameClient.h
+@@ -124,6 +124,9 @@ public:
+ 
+ 	virtual Drawable *firstDrawable( void ) { return m_drawableList; }
+ 
++	virtual GameMessage::Type evaluateForceAttack( Drawable *draw,
++																										const Coord3D *pos,
++																										CommandTranslator::CommandEvaluateType cmdType );
+ 	virtual GameMessage::Type evaluateContextCommand( Drawable *draw, 
+ 																										const Coord3D *pos, 
+ 																										CommandTranslator::CommandEvaluateType cmdType );
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/GameWindowManager.h b/GeneralsMD/Code/GameEngine/Include/GameClient/GameWindowManager.h
+index dcfd853e..b6bb6fea 100644
+--- a/GeneralsMD/Code/GameEngine/Include/GameClient/GameWindowManager.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameClient/GameWindowManager.h
+@@ -326,7 +326,8 @@ public:
+ 	/// @todo just for testing, remov this
+ 	Bool initTestGUI( void );
+ 	
+-	virtual GameWindow *getWindowUnderCursor( Int x, Int y, Bool ignoreEnabled = FALSE );	///< find the top window at the given coordinates
++	virtual GameWindow *getWindowUnderCursor( Int x, Int y, Bool ignoreEnabled = FALSE );
++	virtual GameWindow *getWindowForInputAt( Int x, Int y );	///< (C5 graft) the window a press at (x,y) would actually be routed to, or NULL for none	///< find the top window at the given coordinates
+ 
+ 	//---------------------------------------------------------------------------
+ 	/////////////////////////////////////////////////////////////////////////////
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/InGameUI.h b/GeneralsMD/Code/GameEngine/Include/GameClient/InGameUI.h
+index 3e937858..cbf84300 100644
+--- a/GeneralsMD/Code/GameEngine/Include/GameClient/InGameUI.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameClient/InGameUI.h
+@@ -997,6 +997,31 @@ public:  // ********************************************************************
+ 	virtual void setRadiusCursorNone() { setRadiusCursor(RADIUSCURSOR_NONE, NULL, PRIMARY_WEAPON); }
+ 
+ 	virtual void setInputEnabled( Bool enable );										///< Set the input enabled or disabled
++
++	// GeneralsX @feature Android port 06/09/2026 Touch feedback (C5 graft, ported from
++	// the MYSOREZ host): a finger has no cursor, so the touch layer reports where it
++	// is aiming (setTouchAimPoint), what the pending press would order (the command
++	// icon / order marker), and what it hovers (the health bar). See InGameUI.cpp.
++	void setTouchAimPoint( Int x, Int y, Bool valid );
++	void clearTouchAimPoint() { m_touchAimKnown = FALSE; m_touchAimValid = FALSE; }
++	void setTouchDebugState( const char *phaseName, Int downX, Int downY,
++													 Int lastX, Int lastY, Int pubX, Int pubY, Int fingers );
++	void triggerTouchAttackMoveGuardHint(const Coord3D *worldPos);
++
++	// What an unarmed press on a target would order; TOUCHMARKER_NONE stays silent
++	// because the green ground decal already says everything there.
++	enum TouchOrderMarker
++	{
++		TOUCHMARKER_NONE = 0,
++		TOUCHMARKER_ATTACK,
++		TOUCHMARKER_CAPTURE,
++		TOUCHMARKER_ENTER,
++		TOUCHMARKER_REPAIR,
++	};
++
++	void updateTouchCommandIcon(Int screenX, Int screenY, DrawableID targetID);
++	void setTouchHoverDrawable(DrawableID id);
++
+ 	virtual void clearModifierModes( void );												///< forget every mode a held key puts us in (see the definition)
+ 	virtual Bool getInputEnabled( void ) { LOGIC_CENSUS( CENSUS_CLIENT_READ ); return m_inputEnabled; }	///< Get the current input status
+ 
+@@ -1616,6 +1641,36 @@ protected:
+ 	RadiusDecalTemplate					m_radiusCursors[RADIUSCURSOR_COUNT];
+ 	RadiusDecal									m_curRadiusCursor;
+ 	RadiusDecal									m_curRadiusCursorCentre;	///< the guard marker's shield, apart from its ring so it never stretches
++
++	// GeneralsX @feature Android port 06/09/2026 Touch aim point (C5 graft): where the
++	// finger is pointing, reported by the touch layer; m_touchAimKnown says whether
++	// there is an answer at all -- there is none until a finger actually lands.
++	Bool												m_touchAimKnown;
++	Bool												m_touchAimValid;
++	ICoord2D										m_touchAimPoint;
++
++	// GeneralsX @feature Android port 09/09/2026 Touch command icon / hover feedback.
++	// Both expire on their own timers in preDraw, so a release that never arrives
++	// cannot leave them stuck on screen.
++	const Image *								m_touchCommandIcon;
++	TouchOrderMarker						m_touchOrderMarker;
++	ICoord2D										m_touchCommandIconPos;
++	Int													m_touchCommandIconTimer;
++	Int													m_touchHoverTimer;
++
++	// GeneralsX @feature Android port 06/09/2026 Touch debug overlay state, fed by
++	// the touch layer; drawn in postDraw only while the tester enables it.
++	Bool												m_touchDebugOn;
++	const char *								m_touchDebugPhase;
++	ICoord2D										m_touchDebugDown;
++	ICoord2D										m_touchDebugLast;
++	ICoord2D										m_touchDebugPublished;
++	Int													m_touchDebugFingers;
++
++	TouchOrderMarker computeTouchOrderMarker( const Drawable *targetDraw ) const;
++	const Image *findTouchOrderImage( TouchOrderMarker marker ) const;
++	void drawTouchOrderMarker( TouchOrderMarker marker, Int x, Int y ) const;
++
+ 	RadiusCursorType						m_curRcType;
+ 
+ 	//Floating Text Data
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/View.h b/GeneralsMD/Code/GameEngine/Include/GameClient/View.h
+index afd06b34..3256b9f2 100644
+--- a/GeneralsMD/Code/GameEngine/Include/GameClient/View.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameClient/View.h
+@@ -209,7 +209,22 @@ public:
+ 	virtual void anchorZoomAt( const ICoord2D *pixel ) { }											///< ZoomToCursor: hold the ground under this pixel there while the zoom settles
+ 	virtual void setZoomToDefault( void ) { }														///< Set zoom to default value
+ 	virtual void setZoomToMax( void ) { }																///< Set zoom as far out as the player may zoom by hand
+-	virtual void setZoomToHeight( Real heightAboveGround ) { }								///< Frame the camera at this height above the terrain
++	virtual void setZoomToHeight( Real heightAboveGround ) { }
++
++	enum { ZoomHeightPerSecond = 10 };	///< Reforged Android C5: pinch-zoom calibration (donor View.h)
++
++	// Reforged Android C5: user camera controls for the touch layer, ported
++	// from the donor's doUserAction wrappers. The donor's gate state
++	// (isUserControlLocked / setUserControlled / stopDoingScriptedCamera)
++	// does not exist in this fork; the touch layer itself refuses camera
++	// input while a script owns the camera (gxScriptOwnsCamera), so these
++	// call through directly and always report success.
++	void zoom( Real height ) { setHeightAboveGround( getHeightAboveGround() + height ); }	///< Zoom by a height delta
++	Bool userSetPosition( const Coord3D &pos ) { setPosition( &pos ); return TRUE; }
++	Bool userSetAngle( Real radians ) { setAngle( radians ); return TRUE; }
++	Bool userZoom( Real height ) { zoom( height ); return TRUE; }
++	Bool userLookAt( const Coord3D *o ) { lookAt( o ); return TRUE; }
++	Bool userScrollBy( const Coord2D *delta ) { scrollBy( const_cast<Coord2D *>( delta ) ); return TRUE; }								///< Frame the camera at this height above the terrain
+ 	virtual Real getZoomForHeight( Real heightAboveGround ) { return m_zoom; }		///< the zoom setZoomToHeight would set, without setting it
+ 	void setZoomToStart( Bool shellMap );																	///< the zoom a match opens at: max under StartAtMaxZoom, else START_CAMERA_HEIGHT
+ 	virtual void setOkToAdjustHeight( Bool val ) { m_okToAdjustHeight = val; }	///< Set this to adjust camera height
 diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/ExecutableDirectory.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/ExecutableDirectory.cpp
 index 375a431b..15ef476b 100644
 --- a/GeneralsMD/Code/GameEngine/Source/Common/System/ExecutableDirectory.cpp
@@ -116,6 +292,3489 @@ index aa7efb26..b70ed8a8 100644
  	return ((uintptr_t)p & (~(uintptr_t)0 << 48 | (MEM_BOUND_ALIGNMENT-1))) != 0;
  }
  
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
+index 951d3d8a..7f30fc65 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
+@@ -1274,6 +1274,8 @@ ControlBar::ControlBar( void )
+ 	m_currentControlBarStage = CONTROL_BAR_STAGE_DEFAULT;
+ 	m_buildToolTipLayout = NULL;
+ 	m_showBuildToolTipLayout = FALSE;
++	m_touchHoldActive = FALSE;
++	m_touchHoldPoint.x = m_touchHoldPoint.y = 0;
+ 
+ 	// Added By Sadullah Nader
+ 	// initializing vars to zero
+@@ -2963,6 +2965,28 @@ void ControlBar::update( void )
+ 
+ 
+ 	// every other use of m_buildToolTipLayout is null-guarded; this one was not
++#if defined(__ANDROID__)
++	// (C5 touch graft) A finger held on the bar is re-hit-tested every frame (see
++	// m_touchHoldPoint in the header): the bar rebuilds its command windows whenever
++	// the selection context changes, so the window under the finger is re-found here,
++	// and a push button found -- enabled or disabled, via the ignoreEnabled descent
++	// from the hit container -- has its description shown for as long as the hold
++	// lasts. A disabled button is still a read target: the default hit test does not
++	// descend into disabled windows, so without the second descent the description
++	// would vanish after a second on exactly the buttons a new player holds to read.
++	if (m_touchHoldActive && TheInGameUI && !TheInGameUI->areTooltipsDisabled() && TheWindowManager)
++	{
++		GameWindow *held = TheWindowManager->getWindowUnderCursor(m_touchHoldPoint.x, m_touchHoldPoint.y);
++		if (held != NULL && !BitTest(held->winGetStyle(), GWS_PUSH_BUTTON))
++			held = held->winPointInChild(m_touchHoldPoint.x, m_touchHoldPoint.y, TRUE);
++		if (held != NULL && BitTest(held->winGetStyle(), GWS_PUSH_BUTTON))
++		{
++			showBuildTooltipLayout(held);
++			m_showBuildToolTipLayout = TRUE;
++		}
++	}
++#endif
++
+ 	if( m_buildToolTipLayout && !m_buildToolTipLayout->isHidden())
+ 	{
+ 		m_buildToolTipLayout->runUpdate();
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/ControlBarPopupDescription.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/ControlBarPopupDescription.cpp
+index 7c45adf6..b09a6ed3 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/ControlBarPopupDescription.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/ControlBarPopupDescription.cpp
+@@ -666,6 +666,15 @@ void ControlBarPopupDescriptionUpdateFunc( WindowLayout *layout, void *param )
+ }
+ 
+ 
++// ---------------------------------------------------------------------------------------
++// ---------------------------------------------------------------------------------------
++// (C5 touch graft) Lets touch input tell a hold that was read from one that was not:
++// a finger released while this popup is up was reading, not choosing.
++Bool ControlBar::isBuildTooltipLayoutVisible() const
++{
++	return m_buildToolTipLayout != NULL && !m_buildToolTipLayout->isHidden();
++}
++
+ // ---------------------------------------------------------------------------------------
+ void ControlBar::showBuildTooltipLayout( GameWindow *cmdButton )
+ {
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/Gadget/GadgetListBox.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/Gadget/GadgetListBox.cpp
+index c00c3703..30126687 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/Gadget/GadgetListBox.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/Gadget/GadgetListBox.cpp
+@@ -550,6 +550,61 @@ static Int addEntry( UnicodeString *string, Int color, Int row, Int column, Game
+ // PUBLIC FUNCTIONS ///////////////////////////////////////////////////////////
+ ///////////////////////////////////////////////////////////////////////////////
+ 
++// GadgetListBoxTouchScroll ===================================================
++/** (C5 touch graft, from the GeneralsX Android port) Scroll a list box by dragging a finger
++	through it. A mouse player has the wheel; on a phone the only way was the small arrows or
++	the thumb at the list's edge. The touch layer recognises a drag that started on a list and
++	calls these directly -- a finger on a list is not a mouse, and the window manager's drag
++	messages never reach a list for a touch that has not yet been classified as a press.
++	The list follows the finger pixel by pixel, clamped to the bound the scroll bar's own
++	tracking uses (GSM_SLIDER_TRACK), and the thumb moves with it. */
++//=============================================================================
++static GameWindow *s_touchScrollWindow = NULL;
++static Int s_touchScrollAnchorY = 0;
++static Int s_touchScrollAnchorPos = 0;
++
++void GadgetListBoxTouchScrollBegin( GameWindow *listbox, Int y )
++{
++	ListboxData *list = listbox ? (ListboxData *)listbox->winGetUserData() : NULL;
++	s_touchScrollWindow = list ? listbox : NULL;
++	s_touchScrollAnchorY = y;
++	s_touchScrollAnchorPos = list ? list->displayPos : 0;
++}
++
++void GadgetListBoxTouchScrollMove( GameWindow *listbox, Int y )
++{
++	if( listbox == NULL || listbox != s_touchScrollWindow )
++		return;
++	ListboxData *list = (ListboxData *)listbox->winGetUserData();
++	if( list == NULL || list->endPos <= 0 )
++		return;
++
++	Int maxPos = list->totalHeight - list->displayHeight + 1;
++	if( maxPos < 0 )
++		maxPos = 0;
++	Int pos = s_touchScrollAnchorPos - ( y - s_touchScrollAnchorY );
++	if( pos < 0 )
++		pos = 0;
++	if( pos > maxPos )
++		pos = maxPos;
++	if( pos == list->displayPos )
++		return;
++	list->displayPos = pos;
++
++	// Refresh the scroll bar's range, then move its thumb to the new position.
++	adjustDisplay( listbox, 0, FALSE );
++	if( list->slider != NULL )
++	{
++		SliderData *sData = (SliderData *)list->slider->winGetUserData();
++		TheWindowManager->winSendSystemMsg( list->slider, GSM_SET_SLIDER, ( sData->maxVal - list->displayPos ), 0 );
++	}
++}
++
++void GadgetListBoxTouchScrollEnd()
++{
++	s_touchScrollWindow = NULL;
++}
++
+ // GadgetListBoxInput =========================================================
+ /** Handle input for list box */
+ //=============================================================================
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GameWindowManager.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GameWindowManager.cpp
+index b0f5b0d7..3c3429ff 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GameWindowManager.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GameWindowManager.cpp
+@@ -3779,6 +3779,38 @@ Bool OpenWindowOwnsPoint( Bool isOpen, Int originX, Int originY, Int width, Int
+ //-------------------------------------------------------------------------------------------------
+ /** find the top window at the given coordinates */
+ //-------------------------------------------------------------------------------------------------
++//-------------------------------------------------------------------------------------------------
++/** (C5 touch graft, from the GeneralsX Android port) Answer, without sending anything, the
++	* question winProcessMouseEvent() answers for itself every time it runs: which window does
++	* a press at these coordinates belong to? A NULL result means the press belongs to the game
++	* world. Touch input needs this to decide whether a finger position is a point on the
++	* battlefield at all -- a test that only looked for a leaf push button would call every
++	* dialog that is not made of buttons "battlefield", and drag an armed command's radius
++	* decal around the map behind it.
++	* This manager has no findWindowUnderMouse pass to share; its own routing primitives are
++	* the mouse captor, the grab window and getWindowUnderCursor, so the answer is composed
++	* from those, with the retail WIN_STATUS_NO_INPUT filter (and its combo-box exception)
++	* applied on top. */
++//-------------------------------------------------------------------------------------------------
++GameWindow *GameWindowManager::getWindowForInputAt( Int x, Int y )
++{
++	if( m_mouseCaptor )
++		return m_mouseCaptor->winPointInChild( x, y );
++
++	if( m_grabWindow )
++		return m_grabWindow;
++
++	GameWindow *window = getWindowUnderCursor( x, y, TRUE );
++	if( window && BitTest( window->m_status, WIN_STATUS_NO_INPUT ) )
++	{
++		if( window->winGetParent() && BitTest( window->winGetParent()->winGetStyle(), GWS_COMBO_BOX ) )
++			window = window->winGetParent();
++		else
++			window = NULL;
++	}
++	return window;
++}
++
+ GameWindow *GameWindowManager::getWindowUnderCursor( Int x, Int y, Bool ignoreEnabled )
+ {
+ 	if( m_mouseCaptor )
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GameClient.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GameClient.cpp
+index 84d046c8..c79312d8 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GameClient.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GameClient.cpp
+@@ -1515,6 +1515,21 @@ GameMessage::Type GameClient::evaluateContextCommand( Drawable *draw,
+ 
+ }  // end evaluateContextCommand
+ 
++// ------------------------------------------------------------------------------------------------
++// (C5 touch graft) The force-attack twin of evaluateContextCommand above: the touch
++// layer issues a force attack through the client, exactly as the host's client allows.
++GameMessage::Type GameClient::evaluateForceAttack( Drawable *draw,
++																											const Coord3D *pos,
++																											CommandTranslator::CommandEvaluateType cmdType )
++{
++
++	if( m_commandTranslator )
++		return m_commandTranslator->evaluateForceAttack( draw, pos, cmdType );
++	else
++		return GameMessage::MSG_INVALID;
++
++}  // end evaluateForceAttack
++
+ //-------------------------------------------------------------------------------------------------
+ /** Get the ray effect data for a drawable */
+ void GameClient::getRayEffectData( Drawable *draw, RayEffectData *effectData )
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/InGameUI.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/InGameUI.cpp
+index 1365fad6..41a4679c 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/InGameUI.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/InGameUI.cpp
+@@ -1587,6 +1587,20 @@ InGameUI::InGameUI()
+ 	}  // end for i
+ 
+ 	m_pendingGUICommand = NULL;
++	m_touchAimKnown = FALSE;
++	m_touchAimValid = FALSE;
++	m_touchAimPoint.x = m_touchAimPoint.y = 0;
++	m_touchCommandIcon = NULL;
++	m_touchOrderMarker = TOUCHMARKER_NONE;
++	m_touchCommandIconPos.x = m_touchCommandIconPos.y = 0;
++	m_touchCommandIconTimer = 0;
++	m_touchHoverTimer = 0;
++	m_touchDebugOn = FALSE;
++	m_touchDebugPhase = "";
++	m_touchDebugDown.x = m_touchDebugDown.y = 0;
++	m_touchDebugLast.x = m_touchDebugLast.y = 0;
++	m_touchDebugPublished.x = m_touchDebugPublished.y = 0;
++	m_touchDebugFingers = 0;
+ 
+ 	// allocate an array for the placement icons
+ 	m_placeIcon = NEW Drawable* [ TheGlobalData->m_maxLineBuildObjects ];
+@@ -1995,11 +2009,38 @@ Bool InGameUI::isTimeFrozenWithoutTick( void ) const
+ //-------------------------------------------------------------------------------------------------
+ void InGameUI::handleRadiusCursor()
+ {
++#if defined(__ANDROID__)
++	// GeneralsX @bugfix Android port 06/09/2026 (C5 graft) The ability radius decal is
++	// created once when aiming starts, and several engine paths call
++	// setRadiusCursorNone() unconditionally; on the mouse path the next mouse position
++	// recreates it a frame later, but touch aiming sends no positions, so the first
++	// clear kills it for good. Re-assert the invariant once a frame: while a command
++	// is armed and a finger is aiming it, its radius decal exists.
++	if (m_touchAimKnown && m_pendingGUICommand != NULL && m_curRadiusCursor.isEmpty())
++	{
++		setRadiusCursor(m_pendingGUICommand->getRadiusCursorType(),
++										m_pendingGUICommand->getSpecialPowerTemplate(),
++										m_pendingGUICommand->getWeaponSlot());
++	}
++#endif
+ 	if (!m_curRadiusCursor.isEmpty())
+ 	{
+ 		const MouseIO* mouseIO = TheMouse->getMouseStatus();
+ 		Coord3D pos;
+ 
++		// GeneralsX @feature Android port 06/09/2026 (C5 graft) On touch, the aim point
++		// reported by the gesture replaces the mouse position; before any finger has
++		// pointed there is no aim, and the decal stays where it is (the guard-hint
++		// branch below works off its own stashed position, not the aim).
++		const ICoord2D *aimPixel = &mouseIO->pos;
++		Bool aimBlocked = FALSE;
++#if defined(__ANDROID__)
++		if( m_touchAimKnown )
++			aimPixel = &m_touchAimPoint;
++		else
++			aimBlocked = TRUE;
++#endif
++
+ 		//
+ 		// if the mouse is in the radar window, the position in the world is that which is
+ 		// represented by the radar, otherwise we use the mouse position itself transformed
+@@ -2012,9 +2053,9 @@ void InGameUI::handleRadiusCursor()
+ 												&& ThePlayerList->getLocalPlayer()->hasRadar()
+ 											);
+ 
+-		Bool hasPos = radarOn && TheRadar->screenPixelToWorld( &mouseIO->pos, &pos );
+-		if( !hasPos )// if radar off, or point not on radar
+-			hasPos = TheTacticalView->screenToTerrain( &mouseIO->pos, &pos );
++		Bool hasPos = !aimBlocked && radarOn && TheRadar->screenPixelToWorld( aimPixel, &pos );
++		if( !hasPos && !aimBlocked )// if radar off, or point not on radar
++			hasPos = TheTacticalView->screenToTerrain( aimPixel, &pos );
+ 
+ 
+     if ( TheGlobalData->m_doubleClickAttackMove && m_duringDoubleClickAttackMoveGuardHintTimer > 0 )
+@@ -2046,6 +2087,242 @@ void InGameUI::triggerDoubleClickAttackMoveGuardHint( void )
+ 		m_duringDoubleClickAttackMoveGuardHintTimer = 11;
+ }
+ 
++//-------------------------------------------------------------------------------------------------
++// GeneralsX @feature Android port 06/09/2026 Touch feedback (C5 graft, ported from the
++// MYSOREZ host InGameUI): the aim point, the guard hint, the command icon and the
++// hover health bar a finger cannot produce through the mouse path.
++//-------------------------------------------------------------------------------------------------
++void InGameUI::setTouchAimPoint( Int x, Int y, Bool valid )
++{
++	m_touchAimKnown = TRUE;
++	m_touchAimValid = valid;
++	m_touchAimPoint.x = x;
++	m_touchAimPoint.y = y;
++}
++
++void InGameUI::setTouchDebugState( const char *phaseName, Int downX, Int downY,
++																	 Int lastX, Int lastY, Int pubX, Int pubY, Int fingers )
++{
++	m_touchDebugOn = TRUE;
++	m_touchDebugPhase = (phaseName != nullptr) ? phaseName : "";
++	m_touchDebugDown.x = downX;
++	m_touchDebugDown.y = downY;
++	m_touchDebugLast.x = lastX;
++	m_touchDebugLast.y = lastY;
++	m_touchDebugPublished.x = pubX;
++	m_touchDebugPublished.y = pubY;
++	m_touchDebugFingers = fingers;
++}
++
++void InGameUI::triggerTouchAttackMoveGuardHint(const Coord3D *worldPos)
++{
++	if( worldPos == nullptr )
++		return;
++
++	m_duringDoubleClickAttackMoveGuardHintStashedPosition = *worldPos;
++	m_duringDoubleClickAttackMoveGuardHintTimer = 11;
++
++	// createCommandHint() does this for the mouse, once per frame, off a hint that a
++	// finger never produces. handleRadiusCursor() only draws the stashed position while
++	// the decal exists, so without this the hint was invisible until something else
++	// happened to create a decal -- opening the game menu, for instance, which is exactly
++	// what the report described.
++	setRadiusCursor(RADIUSCURSOR_GUARD_AREA, nullptr, PRIMARY_WEAPON);
++}
++
++InGameUI::TouchOrderMarker InGameUI::computeTouchOrderMarker( const Drawable *targetDraw ) const
++{
++	// Open ground is the case that must stay silent. The green ground decal already says
++	// where the units are going, and an icon on top of it is noise.
++	if( targetDraw == nullptr )
++		return TOUCHMARKER_NONE;
++
++	const Object *obj = targetDraw->getObject();
++	if( obj == nullptr )
++		return TOUCHMARKER_NONE;
++
++	// (m_selectCount rather than getSelectCount(), which is not const.)
++	if( m_selectCount == 0 || !areSelectedObjectsControllable() )
++		return TOUCHMARKER_NONE;
++
++	// The cases where evaluateContextCommand() throws the target away and evaluates a plain
++	// ground order instead. There is then no order-on-an-object to advertise.
++	if( obj->getStatusBits().test( OBJECT_STATUS_MASKED )
++			&& !obj->isKindOf( KINDOF_SHRUBBERY ) && !obj->isKindOf( KINDOF_FORCEATTACKABLE ) )
++		return TOUCHMARKER_NONE;
++	if( obj->isLocallyControlled() && obj->isKindOf( KINDOF_MINE ) )
++		return TOUCHMARKER_NONE;
++	if( isInForceMoveToMode() )
++		return TOUCHMARKER_NONE;
++	if( obj->isLocallyControlled() && isInPreferSelectionMode() )
++		return TOUCHMARKER_NONE;
++	// GeneralsX @feature Android port 24/09/2026 Waypoint mode turns every order into a
++	// waypoint (evaluateContextCommand returns before any of the chain below), so there is no
++	// order on the object to advertise.
++	if( isInWaypointMode() )
++		return TOUCHMARKER_NONE;
++
++	const Bool forceAttack = isInForceAttackMode();
++
++	// --- the chain, in evaluateContextCommand()'s order -------------------------------------
++	if( !forceAttack && canSelectedObjectsDoAction( ACTIONTYPE_RESUME_CONSTRUCTION, obj, SELECTION_ANY ) )
++		return TOUCHMARKER_NONE;																					// not covered, but claims priority
++	if( !forceAttack && canSelectedObjectsDoAction( ACTIONTYPE_DOCK_AT, obj, SELECTION_ALL ) )
++		return TOUCHMARKER_NONE;																					// not covered
++	if( !forceAttack && canSelectedObjectsDoAction( ACTIONTYPE_REPAIR_OBJECT, obj, SELECTION_ANY ) )
++		return TOUCHMARKER_REPAIR;
++	if( !forceAttack && canSelectedObjectsDoAction( ACTIONTYPE_GET_REPAIRED_AT, obj, SELECTION_ANY ) )
++		return TOUCHMARKER_NONE;																					// "go and be repaired", not "repair that"
++	if( !forceAttack && canSelectedObjectsDoAction( ACTIONTYPE_GET_HEALED_AT, obj, SELECTION_ANY ) )
++		return TOUCHMARKER_NONE;																					// likewise
++	if( !forceAttack && canSelectedObjectsDoAction( ACTIONTYPE_HIJACK_VEHICLE, obj, SELECTION_ANY ) )
++		return TOUCHMARKER_NONE;																					// enter-aggressively; no art for it
++	if( !forceAttack && canSelectedObjectsDoAction( ACTIONTYPE_CONVERT_OBJECT_TO_CARBOMB, obj, SELECTION_ANY ) )
++		return TOUCHMARKER_NONE;																					// likewise
++	if( !forceAttack && canSelectedObjectsDoAction( ACTIONTYPE_SABOTAGE_BUILDING, obj, SELECTION_ANY ) )
++		return TOUCHMARKER_NONE;																					// likewise
++	if( !forceAttack && canSelectedObjectsDoAction( ACTIONTYPE_ENTER_OBJECT, obj, SELECTION_ANY, true ) )
++		return TOUCHMARKER_ENTER;
++
++	// The one the whole thing exists for.
++	const CanAttackResult attack = getCanSelectedObjectsAttack( ACTIONTYPE_ATTACK_OBJECT, obj,
++																														 SELECTION_ANY, forceAttack );
++	if( attack == ATTACKRESULT_POSSIBLE || attack == ATTACKRESULT_POSSIBLE_AFTER_MOVING )
++		return TOUCHMARKER_ATTACK;
++
++	if( canSelectedObjectsDoAction( ACTIONTYPE_CAPTURE_BUILDING, obj, SELECTION_ANY ) )
++		return TOUCHMARKER_CAPTURE;
++
++	return TOUCHMARKER_NONE;
++}
++
++const Image *InGameUI::findTouchOrderImage( TouchOrderMarker marker ) const
++{
++	if( marker == TOUCHMARKER_NONE )
++		return nullptr;
++
++	// Capture first: a real button image beats anything else available.
++	if( marker == TOUCHMARKER_CAPTURE && TheControlBar != nullptr )
++	{
++		const DrawableList *selected = getAllSelectedDrawables();
++		const Drawable *srcDraw = (selected != nullptr && !selected->empty()) ? selected->front() : nullptr;
++		const Object *source = srcDraw ? srcDraw->getObject() : nullptr;
++		const CommandSet *set = source ? TheControlBar->findCommandSet( source->getCommandSetString() ) : nullptr;
++		if( set != nullptr )
++		{
++			for( Int i = 0; i < MAX_COMMANDS_PER_SET; i++ )
++			{
++				const CommandButton *button = set->getCommandButton( i );
++				if( button == nullptr || button->getCommandType() != GUI_COMMAND_SPECIAL_POWER )
++					continue;
++				const SpecialPowerTemplate *spTemplate = button->getSpecialPowerTemplate();
++				if( spTemplate == nullptr )
++					continue;
++				const SpecialPowerType spType = spTemplate->getSpecialPowerType();
++				if( spType == SPECIAL_INFANTRY_CAPTURE_BUILDING || spType == SPECIAL_BLACKLOTUS_CAPTURE_BUILDING )
++				{
++					if( const Image *buttonImage = button->getButtonImage() )
++						return buttonImage;
++				}
++			}
++		}
++	}
++
++	if( TheMouse == nullptr || TheMappedImageCollection == nullptr )
++		return nullptr;
++
++	Mouse::MouseCursor cursor;
++	switch( marker )
++	{
++		case TOUCHMARKER_ATTACK:	cursor = Mouse::ATTACK_OBJECT;		break;
++		case TOUCHMARKER_CAPTURE:	cursor = Mouse::CAPTUREBUILDING;	break;
++		case TOUCHMARKER_ENTER:		cursor = Mouse::ENTER_FRIENDLY;		break;
++		case TOUCHMARKER_REPAIR:	cursor = Mouse::DO_REPAIR;				break;
++		default:									return nullptr;
++	}
++
++	// Only the declared mapping is followed. The Texture = name (a .tga for the DX8 cursor
++	// path) and the cursor's own INI name are NOT tried as image names: a mapped image that
++	// happens to share one of those names is not the same picture, and drawing the wrong
++	// icon under a finger is worse than drawing none.
++	const CursorInfo &info = TheMouse->m_cursorInfo[ cursor ];
++	if( info.imageName.isEmpty() )
++		return nullptr;
++
++	return TheMappedImageCollection->findImageByName( info.imageName );
++}
++
++void InGameUI::drawTouchOrderMarker( TouchOrderMarker marker, Int x, Int y ) const
++{
++	if( TheDisplay == nullptr )
++		return;
++
++	Color color;
++	switch( marker )
++	{
++		case TOUCHMARKER_ATTACK:	color = GameMakeColor( 255,  48,  48, 255 ); break;	// red -- the attack arrow
++		case TOUCHMARKER_CAPTURE:	color = GameMakeColor( 255, 200,  48, 255 ); break;
++		case TOUCHMARKER_ENTER:		color = GameMakeColor(  64, 220,  80, 255 ); break;
++		case TOUCHMARKER_REPAIR:	color = GameMakeColor(  80, 200, 255, 255 ); break;
++		default:									return;
++	}
++
++	// Sits above the touch point, like the icon, so the finger does not cover it.
++	const Int halfWidth = 15;
++	const Int height		= 13;
++	const Int tipY			= y - 14;
++	const Real width		= 3.0f;
++
++	TheDisplay->drawLine( x - halfWidth, tipY - height, x, tipY, width, color );
++	TheDisplay->drawLine( x + halfWidth, tipY - height, x, tipY, width, color );
++}
++
++void InGameUI::updateTouchCommandIcon(Int screenX, Int screenY, DrawableID targetID)
++{
++	const Image *image = nullptr;
++	TouchOrderMarker marker = TOUCHMARKER_NONE;
++
++	if( m_pendingGUICommand != nullptr )
++	{
++		// An armed ability owns the answer outright: the player pressed a specific button to
++		// get here, so that button's own picture is the truthful thing to show.
++		image = m_pendingGUICommand->getButtonImage();
++	}
++	else if( TheGameClient != nullptr )
++	{
++		// Nothing armed: the press is an implicit order, and what it would be depends only on
++		// what is under the finger.
++		const Drawable *target = (targetID != INVALID_DRAWABLE_ID)
++			? TheGameClient->findDrawableByID( targetID )
++			: nullptr;
++
++		marker = computeTouchOrderMarker( target );
++		if( marker != TOUCHMARKER_NONE )
++		{
++			image = findTouchOrderImage( marker );
++			if( image != nullptr )
++				marker = TOUCHMARKER_NONE;	// real art found; the drawn fallback is not needed
++		}
++	}
++
++	m_touchCommandIcon = image;
++	m_touchOrderMarker = marker;
++	m_touchCommandIconPos.x = screenX;
++	m_touchCommandIconPos.y = screenY;
++	// A few frames, refreshed on every frame the finger is still down. Expiring on its own
++	// means the release does not have to be noticed anywhere -- and a release that never
++	// arrives (the touch layer's recurring hazard) cannot leave the icon stuck on screen.
++	m_touchCommandIconTimer = (image != nullptr || marker != TOUCHMARKER_NONE) ? 3 : 0;
++}
++
++void InGameUI::setTouchHoverDrawable(DrawableID id)
++{
++	m_mousedOverDrawableID = id;
++	// Longer than the icon: the point is that the health bar stays readable for a moment
++	// after the finger lifts, which is when the player is actually looking at it.
++	m_touchHoverTimer = (id != INVALID_DRAWABLE_ID) ? 45 : 0;
++}
++
+ 
+ //-------------------------------------------------------------------------------------------------
+ /** Handle the placement "icons" that appear at the cursor when we're putting down a 
+@@ -3123,6 +3400,15 @@ void InGameUI::handleBuildPlacements( void )
+ 
+ 			// location is the mouse position
+ 			loc = mouseIO->pos;
++#if defined(__ANDROID__)
++			// GeneralsX @feature Android port 06/09/2026 (C5 graft) On touch there is no
++			// pointer between gestures: the ghost follows the aim point the touch layer
++			// reports, and before a finger has pointed anywhere nothing is drawn at all.
++			if( m_touchAimKnown )
++				loc = m_touchAimPoint;
++			else
++				return;
++#endif
+ 
+ 		}  // end else
+ 
+@@ -3383,6 +3669,24 @@ static Int radarFrameTop( void );
+ //-------------------------------------------------------------------------------------------------
+ void InGameUI::preDraw( void )
+ {
++#if defined(__ANDROID__)
++	// GeneralsX @feature Android port 09/09/2026 (C5 graft) The touch feedback aids
++	// expire on their own: nothing on a touchscreen reliably reports "the finger
++	// left", so a release that never arrives cannot leave them stuck on screen.
++	if( m_touchCommandIconTimer > 0 )
++	{
++		if( --m_touchCommandIconTimer <= 0 )
++		{
++			m_touchCommandIcon = NULL;
++			m_touchOrderMarker = TOUCHMARKER_NONE;
++		}
++	}
++	if( m_touchHoverTimer > 0 )
++	{
++		if( --m_touchHoverTimer <= 0 )
++			m_mousedOverDrawableID = INVALID_DRAWABLE_ID;
++	}
++#endif
+ 
+ 	// handle any "icons" for the act of building things and placing them in the world
+ 	handleBuildPlacements();
+@@ -7582,6 +7886,153 @@ void InGameUI::disregardDrawable( Drawable *draw )
+ void InGameUI::postDraw( void )
+ {
+ 	// drawHudOverlay is NOT called here - it goes on top of everything, see W3DInGameUI::draw
++#if defined(__ANDROID__) || (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
++	// GeneralsX @feature Android port 09/09/2026 The pending command's own icon, under the
++	// finger. Drawn here rather than as part of the world so it is never occluded and never
++	// scales with the camera -- it belongs to the finger, not to the ground. Offset up and
++	// left of the touch point by half its size so the finger does not cover it.
++	if( m_touchCommandIcon != nullptr && TheDisplay != nullptr )
++	{
++		const Int size = 48;
++		const Int x = m_touchCommandIconPos.x - size / 2;
++		const Int y = m_touchCommandIconPos.y - size - (size / 4);
++		TheDisplay->drawImage( m_touchCommandIcon, x, y, x + size, y + size );
++	}
++	else if( m_touchOrderMarker != TOUCHMARKER_NONE )
++	{
++		// An implicit order -- an attack, most often -- that the installed data had no
++		// picture for. See drawTouchOrderMarker(): a drawn marker, not the game's art.
++		drawTouchOrderMarker( m_touchOrderMarker, m_touchCommandIconPos.x, m_touchCommandIconPos.y );
++	}
++#endif
++
++#if defined(__ANDROID__) || (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
++	// GeneralsX @feature Android port 06/09/2026 Draw the targeting reticle a touchscreen
++	// has no cursor to carry.
++	//
++	// With an ability armed, the shape of the mouse cursor was the ONLY thing telling the
++	// player whether the point under it would accept the order: createCommandHint() picks
++	// getCursorName() or getInvalidCursorName() from the hint message and calls
++	// setMouseCursor() with it. On Android that cursor is an SDL system cursor
++	// (SDL3Mouse::setCursor) and a touchscreen never draws one, so the whole valid/invalid
++	// channel simply vanished -- a player would drop a fuel-air bomb or a spy drone blind
++	// and find out where it went afterwards. Nothing here restores the cursor; it draws the
++	// answer directly, at the point the finger is actually pointing at.
++	//
++	// Not colour alone: valid draws inward ticks, invalid draws an X across the box, so it
++	// reads on a small bright screen and without colour vision.
++	if( m_mouseMode == MOUSEMODE_GUI_COMMAND && m_pendingGUICommand != nullptr && m_touchAimKnown )
++	{
++		const Bool needsATarget =
++			m_pendingGUICommand->isContextCommand() ||
++			m_pendingGUICommand->getCommandType() == GUI_COMMAND_SPECIAL_POWER ||
++			m_pendingGUICommand->getCommandType() == GUI_COMMAND_SPECIAL_POWER_FROM_SHORTCUT ||
++			BitTest( m_pendingGUICommand->getOptions(), COMMAND_OPTION_NEED_TARGET );
++
++		if( needsATarget )
++		{
++			const ICoord2D pos = m_touchAimPoint;
++			const Color mainColor = m_touchAimValid ? GameMakeColor( 80, 255, 80, 255 )
++																							: GameMakeColor( 255, 48, 48, 255 );
++			const Color dropColor = GameMakeColor( 0, 0, 0, 255 );
++			const Int r = 22;			// half-size of the reticle box, in logical pixels
++			const Int gap = 8;		// centre kept clear so the target stays visible
++			const Real lineW = 2.0f;
++
++			// black outline first, so the reticle survives whatever it is drawn over
++			TheDisplay->drawOpenRect( pos.x - r - 1, pos.y - r - 1, r * 2 + 3, r * 2 + 3, lineW, dropColor );
++			TheDisplay->drawOpenRect( pos.x - r, pos.y - r, r * 2 + 1, r * 2 + 1, lineW, mainColor );
++
++			if( m_touchAimValid )
++			{
++				TheDisplay->drawLine( pos.x, pos.y - r, pos.x, pos.y - gap, lineW, mainColor );
++				TheDisplay->drawLine( pos.x, pos.y + gap, pos.x, pos.y + r, lineW, mainColor );
++				TheDisplay->drawLine( pos.x - r, pos.y, pos.x - gap, pos.y, lineW, mainColor );
++				TheDisplay->drawLine( pos.x + gap, pos.y, pos.x + r, pos.y, lineW, mainColor );
++			}
++			else
++			{
++				TheDisplay->drawLine( pos.x - r, pos.y - r, pos.x + r, pos.y + r, lineW, mainColor );
++				TheDisplay->drawLine( pos.x + r, pos.y - r, pos.x - r, pos.y + r, lineW, mainColor );
++			}
++		}
++	}
++#endif
++
++#if defined(__ANDROID__) || (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
++	// GeneralsX @feature Android port 06/09/2026 Touch-input debug overlay, off unless
++	// the tester turns it on in the launcher's Diagnostics section.
++	//
++	// It exists because the hard bugs here are all disagreements between three positions
++	// that are the same thing on a desktop and different things on a touchscreen: where
++	// the finger is, where the engine thinks the pointer is (TheMouse's own position,
++	// which drives the placement ghost and the ability radius), and where the camera is
++	// anchored (LookAtTranslator's, which drives scrolling). A log cannot show that --
++	// the disagreement only matters mid-gesture, while the player's finger is on the
++	// screen and their eyes are on the game.
++	if( m_touchDebugOn )
++	{
++		const MouseIO *mio = TheMouse ? TheMouse->getMouseStatus() : nullptr;
++		const Color colFinger    = GameMakeColor(  80, 255,  80, 255 );  // where the finger is now
++		const Color colAnchor    = GameMakeColor(  80, 160, 255, 255 );  // where it went down
++		const Color colCursor    = GameMakeColor( 255, 220,  40, 255 );  // engine pointer position
++		const Color colPublished = GameMakeColor( 255,  80, 255, 255 );  // last position we sent
++		const Color colBack      = GameMakeColor(   0,   0,   0, 160 );
++
++		// Each marker is a different SHAPE as well as a different colour -- they routinely
++		// sit on top of each other, which is exactly the case worth being able to read.
++		// finger: filled square
++		TheDisplay->drawFillRect( m_touchDebugLast.x - 6, m_touchDebugLast.y - 6, 13, 13, colFinger );
++		// anchor: hollow square
++		TheDisplay->drawOpenRect( m_touchDebugDown.x - 11, m_touchDebugDown.y - 11, 23, 23, 2.0f, colAnchor );
++		// engine cursor: long cross
++		if( mio != nullptr )
++		{
++			TheDisplay->drawLine( mio->pos.x - 20, mio->pos.y, mio->pos.x + 20, mio->pos.y, 2.0f, colCursor );
++			TheDisplay->drawLine( mio->pos.x, mio->pos.y - 20, mio->pos.x, mio->pos.y + 20, 2.0f, colCursor );
++		}
++		// last published position: diagonal cross
++		TheDisplay->drawLine( m_touchDebugPublished.x - 14, m_touchDebugPublished.y - 14,
++													m_touchDebugPublished.x + 14, m_touchDebugPublished.y + 14, 2.0f, colPublished );
++		TheDisplay->drawLine( m_touchDebugPublished.x + 14, m_touchDebugPublished.y - 14,
++													m_touchDebugPublished.x - 14, m_touchDebugPublished.y + 14, 2.0f, colPublished );
++
++
++		static DisplayString *debugText = nullptr;
++		if( debugText == nullptr && TheDisplayStringManager != nullptr && TheFontLibrary != nullptr )
++		{
++			debugText = TheDisplayStringManager->newDisplayString();
++			if( debugText != nullptr )
++			{
++				debugText->setFont( TheFontLibrary->getFont( AsciiString("Arial"), 12, FALSE ) );
++			}
++		}
++
++		if( debugText != nullptr )
++		{
++			// (C5 graft: the fork's LookAtTranslator has no camera-mode debug text
++			// and no RMB scroll anchor, so the line carries positions only.)
++
++			AsciiString lineA;
++			lineA.format( "TOUCH %s f=%d | finger %d,%d | down %d,%d | sent %d,%d | cursor %d,%d | uiScroll %d sel %d | view %dx%d",
++									 m_touchDebugPhase, m_touchDebugFingers,
++									 m_touchDebugLast.x, m_touchDebugLast.y,
++									 m_touchDebugDown.x, m_touchDebugDown.y,
++									 m_touchDebugPublished.x, m_touchDebugPublished.y,
++									 mio ? mio->pos.x : -1, mio ? mio->pos.y : -1,
++									 m_isScrolling ? 1 : 0, m_isSelecting ? 1 : 0,
++									 TheDisplay->getWidth(), TheDisplay->getHeight() );
++			UnicodeString line;
++			line.translate( lineA );
++			debugText->setText( line );
++
++			const Int textW = debugText->getWidth();
++			const Int textH = debugText->getFont() ? debugText->getFont()->height : 14;
++			TheDisplay->drawFillRect( 2, 2, textW + 8, textH + 4, colBack );
++			debugText->draw( 6, 4, GameMakeColor( 255, 255, 255, 255 ), GameMakeColor( 0, 0, 0, 255 ) );
++		}
++	}
++#endif
+ 	m_hudCellDrawnPass = m_hudCellPass;
+ 	drawProductionList();
+ 	drawClassicMessages();
+diff --git a/GeneralsMD/Code/GameEngineDevice/Include/SdlDevice/GameClient/SdlTouch.h b/GeneralsMD/Code/GameEngineDevice/Include/SdlDevice/GameClient/SdlTouch.h
+new file mode 100644
+index 00000000..caa51505
+--- /dev/null
++++ b/GeneralsMD/Code/GameEngineDevice/Include/SdlDevice/GameClient/SdlTouch.h
+@@ -0,0 +1,16 @@
++/*
++** SdlTouch.h -- Reforged Android C5 touch graft entry points.
++**
++** The native touch layer (ported from the MYSOREZ/GeneralsX Android port)
++** lives in SdlTouch.cpp. The SDL event pump routes every SDL_EVENT_FINGER_*
++** event to SdlTouch_handleEvent instead of the mouse path, and calls
++** SdlTouch_applyPendingCameraMotion once per frame after the event drain.
++*/
++
++#pragma once
++
++struct SDL_Window;
++union SDL_Event;
++
++void SdlTouch_handleEvent(SDL_Window *window, const SDL_Event &event);
++void SdlTouch_applyPendingCameraMotion();
+diff --git a/GeneralsMD/Code/GameEngineDevice/Include/SdlDevice/GameClient/TouchInput.h b/GeneralsMD/Code/GameEngineDevice/Include/SdlDevice/GameClient/TouchInput.h
+new file mode 100644
+index 00000000..6fed18fd
+--- /dev/null
++++ b/GeneralsMD/Code/GameEngineDevice/Include/SdlDevice/GameClient/TouchInput.h
+@@ -0,0 +1,147 @@
++/*
++**	Command & Conquer Generals Zero Hour(tm)
++**	Copyright 2025 Electronic Arts Inc.
++**
++**	This program is free software: you can redistribute it and/or modify
++**	it under the terms of the GNU General Public License as published by
++**	the Free Software Foundation, either version 3 of the License, or
++**	(at your option) any later version.
++**
++**	This program is distributed in the hope that it will be useful,
++**	but WITHOUT ANY WARRANTY; without even the implied warranty of
++**	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++**	GNU General Public License for more details.
++**
++**	You should have received a copy of the GNU General Public License
++**	along with this program.  If not, see <http://www.gnu.org/licenses/>.
++*/
++
++/*
++** TouchInput.h
++**
++** GeneralsX @feature Android port 06/09/2026 Native touch input: battlefield
++** gestures expressed as what the player meant, resolved by the engine's own rules,
++** with no synthesized pointer anywhere.
++**
++** WHY THIS EXISTS
++**
++** Until now a touch was turned into a stream of MSG_RAW_MOUSE_POSITION /
++** MSG_RAW_MOUSE_*_BUTTON_* messages and handed to the translator chain, which is
++** written around a pointer: something that has a position even when nothing is
++** pressed, that hovers, that can be parked near a screen edge, and whose button
++** releases are guaranteed to arrive. A finger has none of those properties. Every
++** control bug reported on this port came out of that gap -- a cursor left sitting on
++** a button so the placement ghost drew there, a camera scroll latched by a
++** right-button-up that a higher-priority translator legitimately destroyed, an
++** ability radius that froze because a pan publishes no positions. Each was fixed
++** individually; each fix produced the next report. The premise was wrong, not the
++** patches.
++**
++** WHAT REPLACES IT
++**
++** The engine's decision-making does NOT require a pointer. It is already reachable
++** from a screen point and a world position, and one part of the engine already uses
++** it that way: a click on the radar minimap issues real orders through
++** evaluateContextCommand() without a single MSG_RAW_MOUSE_* (ControlBarCallback.cpp).
++** This module is that same path, for the battlefield:
++**
++**   TheTacticalView->pickDrawable()          screen point -> object under the finger
++**   TheTacticalView->screenToTerrain()       screen point -> world position
++**   TheGameClient->evaluateContextCommand()  (object, world) -> the actual order
++**   TheInGameUI->selectDrawable() et al      selection
++**
++** Note especially evaluateContextCommand's EVALUATE_ONLY mode: it answers "would this
++** be a legal order" WITHOUT issuing it. That is the real source of truth for target
++** feedback, which previously had to be read back out of which cursor bitmap the engine
++** had chosen.
++**
++** WHAT IS DELIBERATELY NOT HERE
++**
++** Taps on the control bar and menus still go through the ordinary button messages.
++** That is not a leftover: a tap on a button IS a click, the window manager's handling
++** of it is correct, and nothing about it was ever the problem.
++**
++** Nothing here invents a message. Everything below MSG_BEGIN_NETWORK_MESSAGES is the
++** multiplayer and replay protocol, and the orders this module produces are the same
++** MSG_DO_* the mouse path produced, issued by the same engine code.
++*/
++
++#pragma once
++
++#include "Lib/BaseType.h"
++
++class Drawable;
++
++namespace TouchInput
++{
++
++	/// TRUE while a GUI command (ability, special power) is armed and waiting for a target.
++	Bool hasArmedCommand();
++
++	/// TRUE if the current selection can actually be given orders by the local player.
++	Bool hasControllableSelection();
++
++	/**
++		A tap on the battlefield, in logical display coordinates.
++
++		Resolution order, and why:
++		 1. A command armed -> the tap is its target. Nothing else can be meant.
++		 2. Something the local player owns under the finger -> select it, UNLESS the
++				engine says the current selection has a more specific interaction with it
++				than "walk over there" (enter it, repair it, ...), in which case that is
++				obviously what was meant. EVALUATE_ONLY answers that; we do not guess.
++		 3. Anything else, with a controllable selection -> a context order there.
++		 4. Otherwise -> clear the selection.
++	*/
++	void tap(Int x, Int y);
++
++	/// Second tap in the same spot: select every unit of that type on screen.
++	void doubleTap(Int x, Int y);
++
++	/// A finger has started aiming an armed command: create its radius decal and record
++	/// the first aim point. Sending no position messages means nothing else will.
++	void beginAiming(Int x, Int y);
++
++	/// Would the armed command accept this point? Does NOT issue it. For target feedback.
++	///
++	/// There is deliberately no "fire it" counterpart here. An armed command is committed
++	/// as a real click by the TARGETING phase, because GUICommandTranslator -- which owns
++	/// guard, evacuate and the rest, and which is what clears the mode on completion --
++	/// acts on MSG_MOUSE_LEFT_CLICK and nothing else. Dispatching those by hand would mean
++	/// reimplementing the engine's own command rules, which is what this module exists to
++	/// avoid. The aiming is still native; only the commit is a click.
++	Bool armedTargetValid(Int x, Int y);
++
++	/// Tell the control bar that a finger is held at this point, so it can keep the held
++	/// button's description alive (ControlBar::update). Routed through here rather than
++	/// called directly because ControlBar.h does not compile standalone from the device
++	/// layer's include order.
++	void reportUiHold(Int x, Int y, Bool held);
++
++	/// TRUE while the command description popup is on screen. A finger lifted from a
++	/// command button then was reading it, not choosing it.
++	Bool isDescriptionShown();
++
++	/// Take a held button's press back the way a mouse does -- the pointer leaves the held
++	/// button, which clears its pressed state, so the release that follows is "not meant for
++	/// this button" (GadgetPushButton GWM_LEFT_UP) and nothing is built, bought or armed.
++	/// Returns TRUE when the press was taken back. Call before the release.
++	Bool withdrawReadButtonPress();
++
++	/// Back out of an armed command or a pending building placement. Deselects otherwise.
++	void cancelOrDeselect();
++
++	/// A held finger on the minimap moves the camera there, and nothing else.
++	///
++	/// The mouse has two answers for a click on the radar and touch had only one. A left
++	/// click orders the selected army to that point; a right click just looks at it
++	/// (ControlBarCallback.cpp:262). A tap can only be the left one, so with anything
++	/// selected there was no way to look at the map at all -- worse, the attempt sent the
++	/// army across it. A press-and-hold is the natural second answer, and it is free: the
++	/// long-press gesture explicitly ignores points the window manager owns.
++	///
++	/// Returns TRUE when the point was on the radar and the camera was moved, so the
++	/// caller knows to consume the touch instead of replaying it as a click.
++	Bool lookAtRadarPoint(Int x, Int y);
++
++}  // namespace TouchInput
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
+index 9a804e2f..0a8f902f 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
+@@ -280,8 +280,38 @@ SdlGpuFrame::~SdlGpuFrame()
+ 	SDL_DestroyGPUDevice(GpuDevice);
+ }
+ 
++// (C5 smoothness, v1.24) ZH_RENDER_SCALE: the scene renders into this frame's offscreen
++// targets and Present_Into upscales them to the swapchain, so scaling the targets scales
++// the whole pipeline's fill cost -- 0.75 takes 44% of the pixels away. Read once; the
++// launcher sets it before the engine starts. Default 1.0 = unchanged. The stored
++// BackWidth/BackHeight carry the scaled size, so viewports, the present log line and
++// every consumer stay consistent with the textures actually created.
++static float Sdl_Render_Scale()
++{
++	static float scale = -1.0f;
++	if (scale < 0.0f) {
++		scale = 1.0f;
++		const char *env = getenv("ZH_RENDER_SCALE");
++		if (env != NULL && env[0] != '\0') {
++			const float v = (float)atof(env);
++			if (v >= 0.5f && v <= 1.0f)
++				scale = v;
++		}
++		if (scale < 1.0f)
++			fprintf(stderr, "SdlGpuFrame: ZH_RENDER_SCALE=%.2f\n", scale);
++	}
++	return scale;
++}
++
+ bool SdlGpuFrame::Create_Targets(unsigned int width, unsigned int height)
+ {
++	const float renderScale = Sdl_Render_Scale();
++	if (renderScale < 1.0f) {
++		width = (unsigned int)(width * renderScale + 0.5f);
++		height = (unsigned int)(height * renderScale + 0.5f);
++		if (width < 1) width = 1;
++		if (height < 1) height = 1;
++	}
+ 	SDL_GPUTextureCreateInfo info;
+ 	SDL_zero(info);
+ 	info.type = SDL_GPU_TEXTURETYPE_2D;
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/Common/SdlGameEngine.cpp b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/Common/SdlGameEngine.cpp
+index fcca0bb1..8d1db874 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/Common/SdlGameEngine.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/Common/SdlGameEngine.cpp
+@@ -31,6 +31,7 @@
+ #include "SdlDevice/Common/SdlMessageBox.h"
+ #include "SdlDevice/GameClient/SdlInput.h"
+ #include "SdlDevice/GameClient/SdlMouse.h"
++#include "SdlDevice/GameClient/SdlTouch.h"
+ #include "W3DDevice/GameClient/W3DGameClient.h"
+ #include "PosixDevice/Common/PosixFileResolutionDump.h"
+ #include "MilesAudioDevice/MilesAudioManager.h"
+@@ -368,6 +369,9 @@ void SdlGameEngine::serviceWindowsOS( void )
+ 				break;
+ 		}
+ 	}
++#if defined(__ANDROID__)
++	SdlTouch_applyPendingCameraMotion();	// (C5) per-frame touch camera work: SdlTouch.h
++#endif
+ }
+ 
+ // Win32GameEngine's factories, the same W3D classes (decision 8); the radar too: W3DRadar, and
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/SdlInput.cpp b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/SdlInput.cpp
+index 2cf14d1c..a43f0bef 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/SdlInput.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/SdlInput.cpp
+@@ -26,6 +26,7 @@
+ #include "SdlDevice/GameClient/SdlKeyTable.h"
+ #include "SdlDevice/GameClient/SdlKeyboard.h"
+ #include "SdlDevice/GameClient/SdlMouse.h"
++#include "SdlDevice/GameClient/SdlTouch.h"
+ 
+ #include <SDL3/SDL.h>
+ 
+@@ -162,6 +163,10 @@ Bool SdlInput_dispatch( const SDL_Event &event )
+ 
+ 		case SDL_EVENT_MOUSE_MOTION:
+ 		{
++#if defined(__ANDROID__)
++			if (event.motion.which == SDL_TOUCH_MOUSEID)
++				return TRUE;		// (C5) a finger is not a mouse: SdlTouch owns it, synthesis dropped
++#endif
+ 			if (SdlMouse::active() == NULL)
+ 				return TRUE;
+ 			Int x, y;
+@@ -173,6 +178,10 @@ Bool SdlInput_dispatch( const SDL_Event &event )
+ 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
+ 		case SDL_EVENT_MOUSE_BUTTON_UP:
+ 		{
++#if defined(__ANDROID__)
++			if (event.button.which == SDL_TOUCH_MOUSEID)
++				return TRUE;		// (C5) a finger is not a mouse: SdlTouch owns it, synthesis dropped
++#endif
+ 			SdlMouse::Button button;
+ 			switch (event.button.button)
+ 			{
+@@ -206,6 +215,15 @@ Bool SdlInput_dispatch( const SDL_Event &event )
+ 			return TRUE;
+ 		}
+ 
++#if defined(__ANDROID__)
++		case SDL_EVENT_FINGER_DOWN:
++		case SDL_EVENT_FINGER_MOTION:
++		case SDL_EVENT_FINGER_UP:
++		case SDL_EVENT_FINGER_CANCELED:
++			SdlTouch_handleEvent( NULL, event );		// (C5) the touch machine: SdlTouch.h
++			return TRUE;
++#endif
++
+ 		case SDL_EVENT_WINDOW_MOUSE_ENTER:
+ 		case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+ 			return TRUE;		// SdlMouse::update asks SDL's mouse focus each frame, as Win32Mouse asks Windows
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/SdlTouch.cpp b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/SdlTouch.cpp
+new file mode 100644
+index 00000000..29c9141c
+--- /dev/null
++++ b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/SdlTouch.cpp
+@@ -0,0 +1,1908 @@
++/*
++** SdlTouch.cpp -- Reforged Android C5 touch graft.
++**
++** The native touch layer ported from the MYSOREZ/GeneralsX Android port
++** (SDL3GameEngine.cpp's touch machine + TouchInput), adapted to this fork:
++** display-share coordinate mapping (no pillarbox), the InGameUI aim point
++** as the single preview feed (no touch cursor object), the fork's
++** LookAtTranslator expressions for the scroll latch, and no pointer modes.
++** See the wave-8 record (C5, sections 246-255b) for the port catalog.
++*/
++
++#include "SdlDevice/GameClient/SdlTouch.h"
++#include "SdlDevice/GameClient/TouchInput.h"
++
++#include "Common/GameType.h"
++#include "Common/GlobalData.h"
++#include "Common/MessageStream.h"
++#include "Common/Override.h"
++#include "GameClient/ControlBar.h"
++#include "GameClient/Display.h"
++#include "GameClient/Drawable.h"
++#include "GameClient/Gadget.h"
++#include "GameClient/GadgetListBox.h"
++#include "GameClient/GameWindow.h"
++#include "GameClient/GameWindowManager.h"
++#include "GameClient/InGameUI.h"
++#include "GameClient/Keyboard.h"
++#include "GameClient/LookAtXlat.h"
++#include "GameClient/Mouse.h"
++#include "GameClient/Shell.h"
++#include "GameClient/View.h"
++#include "GameLogic/GameLogic.h"
++
++#include <SDL3/SDL.h>
++
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++
++// The donor traces through the GeneralsX GX_TRACE macro, which this engine does
++// not have; its diagnostic channel is stderr, captured by the shell into
++// rfxgame-stderr.txt, so the traces land there.
++#define GX_TRACE(...) fprintf(stderr, __VA_ARGS__)
++
++//                                          right-click (fast "cancel selection")
++//
++// GeneralsX @bugfix Android port 01/08/2026, again Movement now ALWAYS wins
++// over hold-duration, no matter when it happens. The previous cut fired the
++// long-press right-click proactively the instant LONG_PRESS_MS elapsed
++// (600ms) while the finger was still down, and any further drag from there
++// upgraded to a selection-box drag instead of a pan -- so a completely
++// ordinary drag that started with as little as half a second's hesitation
++// (touch down, get oriented, THEN start moving -- unremarkable human
++// timing) silently turned into "select a box of units" instead of "pan the
++// camera", with no camera movement and no obvious visual cue why. Reported
++// as "I drag with one finger like every other Android RTS and the camera
++// just doesn't move, I'm stuck standing at my base". Fixed by resolving the
++// long-press ONLY at release: if the finger crosses the pan dead zone at
++// ANY time before lifting, however long it sat still first, it's a pan --
++// long-press right-click only fires if the finger never moved at all,
++// checked once, when it lifts. This removes single-finger press-and-hold-
++// then-drag box-select entirely (it's what directly conflicted with "any
++// drag pans") -- if box-select turns out to still be wanted, it needs its
++// own separate gesture, not sharing single-finger drag with panning.
++//
++// GeneralsX @feature Android port 01/08/2026, again Two-finger tap-to-
++// cancel is back: dropped in an earlier pass as "redundant with the
++// single-finger long-press", but it's faster and more natural for
++// "cancel/deselect" than reaching for a long-press, and was asked back
++// explicitly. This does NOT reintroduce the old pan-vs-zoom classifier --
++// TWOFINGER still always applies both pan and zoom every frame,
++// unconditionally. This only ADDS a check at release: if neither finger
++// moved more than TWO_FINGER_TAP_MAX_PX from where it landed, the whole
++// gesture is also a tap -> fire right-click at the landing centroid.
++//
++// GeneralsX @bugfix Android port 01/08/2026 Previous revisions tried to
++// classify a two-finger gesture as EITHER pan OR zoom (a "one finger
++// anchored, the other drags vertically" heuristic with a commit distance,
++// a displacement ratio, and a co-directionality check) before applying
++// anything -- built to fix an OLDER architecture where zoom was a discrete
++// wheel-tick and any accidental pan alongside it was jarring. That
++// architecture is gone: pan and zoom are now both continuous, real-pixel,
++// 1:1 camera control, so feeding both signals every frame -- exactly the way
++// a normal two-finger touch UI (map apps, browsers, Rusted Warfare) already
++// works -- is simply correct. A little pan drift from two hands never moving
++// in perfect lockstep during a pinch is imperceptible next to the zoom
++// itself; the classifier was solving a problem this architecture doesn't
++// have, and its heuristics were exactly why zoom worked "sometimes" --
++// real symmetric two-hand pinches (both fingers moving, neither "anchored")
++// routinely failed the ratio check and were misclassified as pan.
++//
++// GeneralsX @bugfix Android port 01/08/2026 A prior revision added a fixed
++// settle window (re-anchoring the pan reference point for the first 100ms
++// after touch-down) to keep ordinary hold-still tremor from hijacking a tap
++// into a pan. That timer could also silently eat an entire quick, deliberate
++// flick if the whole gesture finished inside the window -- reported as
++// "can't pan with my finger at all". Removed in favor of the simplest
++// standard approach: a single dead-zone distance (TAP_DEAD_ZONE_PX) decides
++// tap vs. drag, no timer involved, matching how every ordinary Android touch
++// UI (not just this engine) already disambiguates the two.
++// ---------------------------------------------------------------------------
++namespace {
++
++struct TouchState {
++	enum Phase {
++		IDLE,        // no fingers tracked
++		PENDING,     // finger1 down, gesture identity not yet known, nothing sent
++		PANNING,     // finger1 dragged past the dead zone -- direct camera pan, no mouse involved
++		TWOFINGER,   // two fingers down -- direct camera pan (centroid) + zoom (spread), once per frame
++		MOMENTUM,    // finger lifted after a fast pan -- coasting with decaying velocity, no finger involved
++		PLACING,     // finger1 dragged past the dead zone while a building placement is pending --
++		             // anchor already sent, drag now sets rotation angle (see PlaceEventTranslator.cpp)
++		SELECTING,   // finger1 held past SELECT_HOLD_MS, THEN dragged past the dead zone -- area
++		             // selection box, anchor already sent (see SelectionXlat.cpp)
++		TARGETING,   // finger1 landed on the battlefield while a GUI command (ability,
++		             // special power) was armed -- the finger IS the aiming reticle: every
++		             // motion publishes a position so the radius decal, the validity hint and
++		             // the on-screen reticle follow it, and release fires the command there.
++		             // See the FINGER_DOWN case for why this cannot be left to PENDING.
++		LIST_SCROLL, // finger1 landed on a list box and dragged past the dead zone -- the list
++		             // follows the finger (GadgetListBoxTouchScroll*), nothing is sent to the
++		             // window manager, and the release selects nothing.
++		UI_PRESS     // finger1 landed directly on a GameWindow (button, panel, etc.) --
++		             // LEFT_BUTTON_DOWN already sent immediately at touch-down, motion is
++		             // ignored entirely (frozen at the anchor) until release/cancel sends
++		             // LEFT_BUTTON_UP at that same anchor point. See the FINGER_DOWN
++		             // @bugfix comment below for why UI touches skip the PENDING
++		             // classification battlefield touches go through.
++	};
++
++	Phase phase = IDLE;
++	SDL_FingerID finger1 = 0;
++	SDL_FingerID finger2 = 0;
++	float downX = 0.0f, downY = 0.0f;   // finger1 down position (window points), fixed until release
++	float lastX = 0.0f, lastY = 0.0f;   // finger1 latest position (pixels)
++	Uint64 downTicks = 0;
++	GameWindow *listBox = nullptr;      // list box under finger1 at touch-down, see LIST_SCROLL
++	Bool deferredPress = FALSE;         // UI_PRESS on a fire-on-down button: press sent at release
++
++	// GeneralsX @feature Android port 01/08/2026 Native touch camera control:
++	// pan/zoom go straight to TheTacticalView (userScrollBy/userZoom), driven
++	// by real per-frame finger deltas -- no synthetic mouse motion, no
++	// wheel-tick/RMB-drag translation. See applyCameraPan()/applyCameraZoom().
++	float panLastPxX = 0.0f, panLastPxY = 0.0f; // last processed finger1 pixel pos, single-finger PANNING
++
++	// GeneralsX @feature Android port 02/08/2026 Momentum (inertia): the
++	// finger's velocity at release, in pixels per SECOND, carried over as the
++	// coasting phase's starting velocity -- see applyPendingCameraMotion()'s
++	// MOMENTUM branch.
++	float panVelX = 0.0f, panVelY = 0.0f;
++	// A virtual "finger" position that MOMENTUM advances by panVelX/Y each
++	// frame (screenToTerrain needs real screen coordinates to project, even
++	// though no finger is actually there anymore).
++	float momentumX = 0.0f, momentumY = 0.0f;
++	Uint64 momentumLastNs = 0;          // when MOMENTUM last advanced
++
++	// GeneralsX @bugfix Android port 28/09/2026 The finger's recent path while PANNING,
++	// as timestamped touch samples, so the release velocity comes from the finger rather
++	// than from the rendered frame -- see panReleaseVelocity().
++	static const int PAN_SAMPLES = 16;
++	float panSampleX[PAN_SAMPLES] = {};
++	float panSampleY[PAN_SAMPLES] = {};
++	Uint64 panSampleNs[PAN_SAMPLES] = {};
++	int panSampleCount = 0;             // valid samples, newest at index (panSampleNext - 1)
++	int panSampleNext = 0;
++
++	// TWOFINGER tracking: both fingers' current pixel positions (updated on
++	// every motion event), plus the last-processed centroid/spread so
++	// applyPendingCameraMotion() can diff against them once per frame -- no
++	// classification, both signals are always live.
++	float f1px = 0.0f, f1py = 0.0f, f2px = 0.0f, f2py = 0.0f;
++	float twoCentroidLastX = 0.0f, twoCentroidLastY = 0.0f;
++	float twoDistLastPx = 0.0f;
++	// GeneralsX @feature Android port 09/09/2026 Two-finger twist -> camera rotation.
++	// twoAngleLastRad is the angle of the finger-to-finger vector on the previous frame;
++	// twoTwistAccumRad is how far the gesture has twisted in total since it began, used
++	// only to decide whether the player MEANT to rotate (see applyPendingCameraMotion).
++	float twoAngleLastRad = 0.0f;
++	float twoTwistAccumRad = 0.0f;
++	Bool twoRotateArmed = FALSE;
++
++	// TWOFINGER tap-to-cancel: frozen landing position of each finger (unlike
++	// f1px/f2px above, never overwritten by later motion), so release can
++	// tell "barely moved, that was a tap" from "that was a real pan/zoom".
++	float twoDownX1 = 0.0f, twoDownY1 = 0.0f, twoDownX2 = 0.0f, twoDownY2 = 0.0f;
++
++	// Double-tap tracking (single-finger taps only).
++	bool   hasLastTap = false;
++	Uint64 lastTapTicks = 0;
++	float  lastTapX = 0.0f, lastTapY = 0.0f;
++};
++
++TouchState s_touch;
++
++const Uint64 LONG_PRESS_MS = 600;
++
++// GeneralsX @feature Android port 02/08/2026 Area-selection's hold-then-drag
++// threshold is deliberately its own (shorter) constant, not LONG_PRESS_MS --
++// tester feedback found reusing the full long-press delay felt too laggy
++// before a selection box would even start responding to the drag. Kept
++// separate from LONG_PRESS_MS so the right-click-issues-a-command timing
++// (a released tap, not a drag) is untouched.
++const Uint64 SELECT_HOLD_MS = 250;
++
++// GeneralsX @feature Android port 01/08/2026 Single dead-zone distance is the
++// ONLY thing deciding tap vs. drag -- no settle timer (see the file-header
++// @bugfix comment for why a timer was tried and removed). 16px doubles as
++// both the standard Android touch-slop range and enough slack to absorb
++// stationary-hold tremor while waiting out LONG_PRESS_MS for a long-press.
++const float TAP_DEAD_ZONE_PX = 16.0f;
++
++// Double-tap: select all of the clicked unit's type on screen, matching the
++// PC's double-click. 350ms/40px roughly matches Android's own
++// ViewConfiguration.getDoubleTapTimeout() plus slack for finger imprecision
++// (two separate taps land less precisely than one continuous drag).
++const Uint64 DOUBLE_TAP_MS = 350;
++const float DOUBLE_TAP_DIST_PX = 40.0f;
++
++// Two-finger tap-to-cancel: both fingers must stay within this distance of
++// where they landed for the whole gesture to count as a tap (-> right-click)
++// instead of a pan/zoom. A bit more generous than TAP_DEAD_ZONE_PX since two
++// simultaneous fingers naturally drift a little more than one.
++const float TWO_FINGER_TAP_MAX_PX = 24.0f;
++
++// GeneralsX @feature Android port 02/08/2026 Momentum (inertia): releasing a
++// single-finger pan while it's still moving fast coasts for a bit,
++// decelerating, instead of the camera stopping dead the instant the finger
++// lifts -- matches how map/browser-style touch scrolling normally feels.
++// FRICTION is a per-frame multiplier (not per-second -- applyPendingCameraMotion
++// runs once per rendered frame, so this is frame-rate-dependent same as the
++// rest of this file's per-frame camera application).
++//
++// GeneralsX @bugfix Android port 28/09/2026 Reported on a 240 fps phone: the camera
++// sometimes stopped dead on release instead of coasting, depending on direction. All three
++// numbers were per rendered FRAME and the release speed was the finger's movement during
++// the last frame. At 240 fps the touch panel (120-240 Hz) delivers no sample in many
++// frames, so that last-frame delta was often exactly zero -- no coast at all -- or one
++// axis of it was, and when a coast did start, 0.92 per frame decayed four times faster in
++// wall time than at 60 fps. Everything is now per SECOND, with the values the 60 fps tuning
++// had (2 and 0.5 px/frame at 60 fps, 0.92 per 1/60 s), and the release speed is measured
++// over the finger's own timestamped samples (panReleaseVelocity).
++const float MOMENTUM_MIN_START_PX_PER_SEC = 120.0f;  // below this release speed, don't bother coasting
++const float MOMENTUM_STOP_PX_PER_SEC = 30.0f;        // below this, coasting has died down enough to stop
++const float MOMENTUM_FRICTION_PER_60TH = 0.92f;      // velocity *= this per 1/60 s while coasting
++const Uint64 PAN_VELOCITY_WINDOW_NS = 80000000;      // release speed: finger path over the last 80 ms
++const Uint64 PAN_REST_BEFORE_LIFT_NS = 100000000;    // no sample for 100 ms before lifting = finger stopped
++
++const float ZOOM_PX_PER_TICK = 40.0f; // calibration only -- see ZOOM_HEIGHT_PER_PIXEL below
++
++// GeneralsX @feature Android port 01/08/2026 Native camera control constants.
++// Pan and zoom call TheTacticalView directly (userScrollBy/userSetPosition,
++// userZoom) every touch-motion event. No fake cursor, no click/drag timing
++// heuristics sized for a physical mouse -- the finger IS the camera control.
++//
++// GeneralsX @bugfix Android port 01/08/2026 The first cut passed the
++// finger's raw NORMALIZED (0..1 window-fraction) per-frame delta straight
++// into userScrollBy(); the second cut fixed that to a real PIXEL delta
++// divided by W3DView::scrollBy()'s own SCROLL_RESOLUTION=250 constant,
++// reasoning that matching scrollBy()'s own internal divisor was sufficient.
++// It wasn't: real device logs (GX_TRACE'd applyCameraPan calls during an
++// actual on-device drag) showed userScrollBy() being called every motion
++// event, never locked, with a nonzero delta each time -- and the camera's
++// getPosition2D() moving by roughly 0.02-0.1 world units per call against a
++// position around 1300-2000. A drag summing to 500+ screen pixels only
++// moved the camera a few TENTHS of a world unit total: real motion, just
++// three-plus orders of magnitude too small to ever be visible. scrollBy()'s
++// SCROLL_RESOLUTION constant was tuned against the OLD PC RMB-drag path
++// (LookAtXlat.cpp's SCROLL_RMB, its own separate SCROLL_AMT/SCROLL_MULTIPLIER
++// constants, called every FRAME while held, not once per motion event) --
++// matching just the one constant it shares was nowhere near enough to
++// reproduce that path's actual feel, and nobody had verified the real
++// on-screen result until now.
++//
++// Fixed by abandoning scrollBy()'s pixel-based formula entirely in favor of
++// the same ground projection the engine already uses elsewhere for exactly
++// this purpose (SelectionXlat.cpp's mouseover-terrain hint):
++// View::screenToTerrain(). Project the finger's previous and current screen
++// position to world/terrain coordinates using the CURRENT (not-yet-moved)
++// camera, and move the camera by the difference -- this is dimensionally
++// exact by construction (it's asking "where does this screen point actually
++// sit on the ground", not guessing a pixel-to-world ratio) and adapts
++// automatically to zoom level, camera angle, and screen resolution, unlike
++// a fixed constant. Applied via userSetPosition() (a direct position
++// setter) rather than userScrollBy(), since scrollBy()'s own pixel-delta
++// reinterpretation is exactly what we're bypassing.
++//
++// ZOOM_HEIGHT_PER_PIXEL: calibrated against the exact sensitivity the old
++// discrete wheel-tick zoom already used and was tuned for (ZOOM_PX_PER_TICK
++// pixels of pinch movement == one wheel tick == View::ZoomHeightPerSecond
++// world-height-units), just made continuous instead of stepped. Zoom's
++// calibration was never in question -- it doesn't route through scrollBy()
++// at all, and real device logs confirm userZoom() moves the camera by a
++// visible amount (single-digit to low-double-digit world-height-units) on
++// every call.
++const float ZOOM_HEIGHT_PER_PIXEL = (float)View::ZoomHeightPerSecond / ZOOM_PX_PER_TICK;
++
++// Applies a camera pan by projecting the finger's previous and current
++// screen position onto the ground (View::screenToTerrain) and moving the
++// camera by the resulting world-space difference -- see the @bugfix comment
++// above for why this replaced a pixel-delta formula. Sign: the ground point
++// that was under the finger before should be under the finger after (drag-
++// the-map feel), so the camera moves by (worldAtOldScreenPos -
++// worldAtNewScreenPos), using the CURRENT camera for both projections.
++// GeneralsX @bugfix Android port 09/09/2026 The script owns the camera during a
++// cinematic, and a finger drag must not fight it.
++//
++// Reported from device: during cutscenes the camera can still be dragged, which
++// breaks the scripted follow the mission authors wrote. Two distinct ways the
++// script takes the camera, and both have to be honoured:
++//
++//   - isCameraMovementFinished() is false while a scripted rotate, pitch, zoom or
++//     move-along-waypoint-path is running. The engine's own keyboard rotate path
++//     already gates on exactly this (CommandXlat.cpp), so this is the idiomatic
++//     test, not a new invention.
++//   - getCameraLock()/getCameraLockDrawable() are set while the camera is pinned to
++//     an object -- the "follow that unit" shot.
++//
++// Deliberately not a blanket "no input during cutscenes": selection and orders are
++// left alone, because the player is still allowed to give them. Only the camera is
++// handed back to the script.
++static Bool gxScriptOwnsCamera(void)
++{
++	if (!TheTacticalView) {
++		return FALSE;
++	}
++
++	// GeneralsX @bugfix Android port 09/09/2026 The camera-state tests below are not
++	// enough on their own, and a device report said so: in some missions the camera could
++	// still be dragged during a cutscene. They only catch a script that is ACTIVELY moving
++	// the camera. A cutscene that holds a fixed shot, or one that has finished its move and
++	// is playing out dialogue, sets none of them -- and neither does a scripted move whose
++	// own state is cleared while it runs (resetCamera does exactly that).
++	//
++	// What every cutscene does do is call the Disable Input script action, and on the PC
++	// that is precisely what stops the mouse from scrolling: LookAtTranslator::setScrolling
++	// returns immediately when getInputEnabled() is false (LookAtXlat.cpp:87). The touch
++	// path calls TheTacticalView directly and never goes near that translator, so it never
++	// inherited the rule. Ask the same question here and the behaviour matches the desktop
++	// build for every cutscene, not just the ones that happen to be moving the camera.
++	if (TheInGameUI != NULL && !TheInGameUI->getInputEnabled()) {
++		return TRUE;
++	}
++
++	if (!TheTacticalView->isCameraMovementFinished()) {
++		return TRUE;
++	}
++	if (TheTacticalView->getCameraLock() != INVALID_ID) {
++		return TRUE;
++	}
++	return TheTacticalView->getCameraLockDrawable() != NULL;
++}
++
++void applyCameraPan(float fromPxX, float fromPxY, float toPxX, float toPxY)
++{
++	if (!TheTacticalView) {
++		GX_TRACE("applyCameraPan: TheTacticalView is null, dropping from(%.2f,%.2f) to(%.2f,%.2f)\n",
++		         fromPxX, fromPxY, toPxX, toPxY);
++		return;
++	}
++	if (TheShell && TheShell->isShellActive()) {
++		// GeneralsX @bugfix Android port 02/08/2026 The shell (main menu,
++		// including the front-end's decorative background map/cutscene) has
++		// its own real TacticalView/camera sitting behind the menu widgets --
++		// dragging/pinching on a menu screen has no business moving THAT
++		// camera, but nothing here was checking game state at all, so it
++		// did. Same check WindowXlat.cpp already uses to know the shell owns
++		// input right now.
++		//
++		// GeneralsX @feature Android port 02/08/2026 Traced (was a silent
++		// return before): device logs showed pan attempts going completely
++		// unanswered -- no trace at all -- for a long stretch right at the
++		// start of a session, then working perfectly for the rest of a very
++		// long log with zero further gaps. That pattern (blocked once, early,
++		// never again) points at TheShell still being marked active during
++		// loading/match-start, not anything about being "near the command
++		// center" -- this line turns that inference into a direct fact.
++		GX_TRACE("applyCameraPan: blocked, TheShell->isShellActive()==true\n");
++		return;
++	}
++	if (gxScriptOwnsCamera()) {
++		GX_TRACE("applyCameraPan: blocked, the script owns the camera (cinematic)\n");
++		return;
++	}
++	// GeneralsX @bugfix Android port 28/09/2026 Sub-pixel steps. screenToTerrain() takes
++	// whole pixels, and at 240 fps a coast or a slow drag moves well under one pixel per
++	// frame: truncating both ends made most frames move nothing and every few frames jump a
++	// pixel. Project a stretched copy of the step instead (at least PAN_PROJECT_MIN_PX long,
++	// same direction) and scale the world delta back down -- the projection is locally
++	// linear over a few pixels, so this is the step's true size.
++	const float PAN_PROJECT_MIN_PX = 16.0f;
++	const float stepX = toPxX - fromPxX;
++	const float stepY = toPxY - fromPxY;
++	const float stepLen = SDL_max(SDL_fabsf(stepX), SDL_fabsf(stepY));
++	if (stepLen <= 0.0f) {
++		return;
++	}
++	const float stretch = (stepLen < PAN_PROJECT_MIN_PX) ? (PAN_PROJECT_MIN_PX / stepLen) : 1.0f;
++	ICoord2D fromScreen, toScreen;
++	fromScreen.x = (Int)SDL_lroundf(fromPxX);
++	fromScreen.y = (Int)SDL_lroundf(fromPxY);
++	toScreen.x = (Int)SDL_lroundf(fromPxX + stepX * stretch);
++	toScreen.y = (Int)SDL_lroundf(fromPxY + stepY * stretch);
++
++	Coord3D worldFrom, worldTo;
++	const Bool fromOk = TheTacticalView->screenToTerrain(&fromScreen, &worldFrom);
++	const Bool toOk = TheTacticalView->screenToTerrain(&toScreen, &worldTo);
++	if (!fromOk || !toOk) {
++		// Finger is pointing off the playable terrain (past the map edge,
++		// or above the horizon at a steep camera angle) -- skip this one
++		// increment rather than pan by a bogus/undefined amount.
++		GX_TRACE("applyCameraPan: screenToTerrain failed fromOk=%d toOk=%d screen(%d,%d)->(%d,%d)\n",
++		         (int)fromOk, (int)toOk, fromScreen.x, fromScreen.y, toScreen.x, toScreen.y);
++		return;
++	}
++
++	// GeneralsX @bugfix Android port 02/08/2026 CONFIRMED root cause of the
++	// "freezes unpredictably anywhere on the map, resumes later" reports
++	// (device logs plus a 4-way parallel code audit, not a guess): View::
++	// setPosition() -- what userSetPosition() calls -- is a bare `m_pos =
++	// pos`. It never sets W3DView::m_recalcCamera, unlike the PC mouse-
++	// drag path's scrollBy() (W3DView.cpp), which explicitly does. W3DView
++	// ::update() only rebuilds the actual 3D camera transform (and, inside
++	// that, only there invalidates screenToTerrain()'s per-pixel location
++	// cache) when m_recalcCamera is true -- otherwise it can stay false for
++	// an arbitrary number of frames (it only flips true incidentally, e.g.
++	// when zoom or ground-height settling crosses their own thresholds,
++	// which has nothing to do with where the camera is). While it's false,
++	// our screenToTerrain() calls keep projecting against the SAME stale
++	// transform/cache even though m_pos has already moved -- so
++	// worldFrom-worldTo collapses toward zero and the pan visibly stops,
++	// until something unrelated finally flips the flag and it lurches back
++	// to life. Exactly matches "unpredictable in time, not tied to
++	// location". Fixed by forcing the recalculation ourselves every time we
++	// actually move the camera, via the same public forceRedraw() the
++	// engine already exposes for this.
++	//
++	// GeneralsX @bugfix Android port 02/08/2026, reverted 02/08/2026 The same
++	// audit also found that Generals' mission/skirmish scripting can call
++	// View::setCameraLock() directly (ScriptActions.cpp, e.g. a "follow
++	// this unit" cinematic trigger) to re-aim the camera at a locked object
++	// every frame, and that doUserAction() never clears m_cameraLock, only
++	// m_scriptedState. An earlier revision of this fix defensively cleared
++	// any active camera lock here so touch dragging couldn't get stuck
++	// fighting one -- but the PC mouse-drag path (userScrollBy(), same
++	// doUserAction gating) has exactly the same non-clearing behavior, so a
++	// real camera-lock cutscene ALREADY can't be broken out of with the
++	// mouse either -- that's presumably intentional (a cutscene is supposed
++	// to hold the camera). Forcibly releasing it only from touch would have
++	// made touch behave inconsistently with mouse and defeated real
++	// cutscene camera locks whenever one actually fires, not just the
++	// hypothetical stray one this was guarding against -- never actually
++	// confirmed to be the cause here. Reverted; forceRedraw() below is the
++	// confirmed, sufficient fix.
++
++	Coord3D pos;
++	TheTacticalView->getPosition(&pos);
++	pos.x += (worldFrom.x - worldTo.x) / stretch;
++	pos.y += (worldFrom.y - worldTo.y) / stretch;
++	TheTacticalView->userSetPosition(pos);
++	TheTacticalView->forceRedraw();
++}
++
++// Applies a one-frame camera zoom from a change in inter-finger pixel
++// distance. Fingers moving apart (distance growing) zooms in.
++void applyCameraZoom(float distDeltaPx)
++{
++	if (!TheTacticalView || distDeltaPx == 0.0f) {
++		return;
++	}
++	if (TheShell && TheShell->isShellActive()) {
++		// See the matching check in applyCameraPan() above.
++		GX_TRACE("applyCameraZoom: blocked, TheShell->isShellActive()==true\n");
++		return;
++	}
++	if (gxScriptOwnsCamera()) {
++		GX_TRACE("applyCameraZoom: blocked, the script owns the camera (cinematic)\n");
++		return;
++	}
++	const Real zoomDelta = -distDeltaPx * ZOOM_HEIGHT_PER_PIXEL;
++	TheTacticalView->userZoom(zoomDelta);
++	GX_TRACE("applyCameraZoom: distDeltaPx=%.2f zoomDelta=%.4f locked=%d\n",
++	         distDeltaPx, zoomDelta, 0 /* this engine's View carries no user-control lock state */);
++}
++
++// GeneralsX @feature Android port 09/09/2026 Camera rotation, the last thing the
++// mouse-and-keyboard build could do that touch could not.
++//
++// userSetAngle() rather than rotateCamera(): rotateCamera() is the SCRIPTED,
++// eased-over-N-frames rotation, and driving it once per frame from a gesture would
++// fight itself. userSetAngle() is the direct, immediate yaw the keyboard's own rotate
++// ends up at, and going through the user* wrapper means an engine user-control lock
++// still holds -- the same reason pan and zoom use userSetPosition()/userZoom().
++void applyCameraRotate(float deltaRad)
++{
++	if (!TheTacticalView || deltaRad == 0.0f) {
++		return;
++	}
++	if (TheShell && TheShell->isShellActive()) {
++		return;
++	}
++	if (gxScriptOwnsCamera()) {
++		return;
++	}
++	TheTacticalView->userSetAngle(TheTacticalView->getAngle() + (Real)deltaRad);
++}
++
++// GeneralsX @feature Android port 01/08/2026 These three functions are the
++// ENTIRE touch->engine bridge for anything that isn't direct camera control:
++// each pushes exactly the GameMessage a real mouse would have produced for
++// the same physical action, straight onto TheMessageStream, and nothing
++// else. No SDL_Event mouse structs, no SDL3Mouse involvement, no persisted
++// position -- see the file-header comment above for why this is what "no
++// mouse emulation" means concretely in this engine.
++
++ICoord2D touchPixel(float x, float y)
++{
++	ICoord2D p;
++	p.x = (Int)x;
++	p.y = (Int)y;
++	return p;
++}
++
++// GeneralsX @bugfix Android port 03/08/2026, narrowed 04/08/2026 A raw
++// getWindowUnderCursor() hit is not by itself proof a touch landed on
++// real, click-blocking UI. First attempt walked the SEE_THRU ancestor
++// chain (mirroring SelectionXlat.cpp's own obscured-object check), but
++// that still wasn't narrow enough -- tester confirmed taps on the
++// battlefield to issue a move order (voice-ack plays, unit doesn't move,
++// no waypoint marker) were STILL swallowed after that fix, meaning
++// something non-see-through and NOT actually a button was still getting
++// hit somewhere across the battlefield (likely a full/near-full-screen
++// tracking or hover-hint window that's legitimately opaque for its own
++// purposes but was never meant to intercept a touch-down).
++//
++// The bug this whole mechanism exists to fix is specifically about
++// PUSHBUTTON hold-timing (see the FINGER_DOWN @bugfix comment below), so
++// narrow it to exactly that instead of "any opaque window": only a leaf
++// window whose own STYLE includes GWS_PUSH_BUTTON counts as a real UI
++// press. getWindowUnderCursor() already recurses to the deepest child at
++// the touch point (winPointInChild), so this is checking the actual
++// clicked widget, not some container it happens to sit inside -- no
++// SEE_THRU/ancestor walk needed, and nothing that isn't an actual button
++// (background/tracking windows, panel containers, sliders, etc.) can ever
++// match, however large its footprint.
++Bool isRealUiHit(GameWindow *hit)
++{
++	return hit != nullptr && BitTest(hit->winGetStyle(), GWS_PUSH_BUTTON);
++}
++
++// GeneralsX @bugfix Android port 07/09/2026 The question above ("is this a button
++// I should press immediately?") is deliberately narrow. It is the WRONG question
++// for the other consumer of a UI test: "does this finger position mean a point on
++// the battlefield?" -- reported as, with a unit selected and Guard armed, opening
++// the generals-promotions dialog and tapping inside it dragging the guard radius
++// around the map behind the dialog. That dialog is not made of push buttons, so
++// isRealUiHit() said "battlefield" for every tap in it.
++//
++// Ask the window manager the same thing winProcessMouseEvent() asks itself instead:
++// which window does a press here belong to? A null answer -- and only a null answer
++// -- means the press belongs to the world. That covers dialogs, list boxes, sliders
++// and panels alike, and it excludes WIN_STATUS_NO_INPUT windows (the decorative
++// full-screen tracking/hint windows that made an earlier, wider attempt at this test
++// swallow battlefield taps), because winProcessMouseEvent() excludes them too.
++Bool touchPointBelongsToUi(Real px, Real py)
++{
++	return TheWindowManager != nullptr &&
++	       TheWindowManager->getWindowForInputAt((Int)px, (Int)py) != nullptr;
++}
++
++// GeneralsX @feature Android port 27/09/2026 The list box (map list, replays, a combo box's
++// drop-down, lobby lists) a finger at this point would scroll, or null. The hit window itself
++// or the nearest ancestor that is a list; the scroll bar's arrows and thumb are push buttons
++// and never get here -- they take the UI_PRESS path first.
++GameWindow *listBoxAt(Real px, Real py)
++{
++	if (TheWindowManager == nullptr) {
++		return nullptr;
++	}
++	for (GameWindow *w = TheWindowManager->getWindowUnderCursor((Int)px, (Int)py); w != nullptr; w = w->winGetParent()) {
++		if (BitTest(w->winGetStyle(), GWS_SCROLL_LISTBOX)) {
++			return w;
++		}
++	}
++	return nullptr;
++}
++
++// Hover/position hint -- WindowXlat.cpp uses this to set GUI hilite state,
++// SelectionXlat.cpp uses it to build the selection-box drag region, and
++// LookAtXlat.cpp uses it to know where a drag/edge-scroll anchor is. A real
++// mouse's equivalent (Mouse::createStreamMessages()) sends this every
++// frame from a persisted position; here it's sent only exactly when a real
++// finger event gives us a real position to report.
++// GeneralsX @bugfix Android port 06/09/2026 The last position actually PUBLISHED
++// to the engine, in logical display units. The engine's edge-scroll latch keys on
++// this and only this (LookAtXlat.cpp:335 assigns m_currentPos from the message
++// argument), so anything asking "is the engine about to scroll?" has to ask about
++// this value -- not about where the finger is, which is a different thing entirely
++// during a pan, when no position is published at all.
++float s_lastPublishedX = 0.0f;
++float s_lastPublishedY = 0.0f;
++
++// GeneralsX @feature Android port 06/09/2026 See touchDebugEnabled(). Declared here
++// because everything that emits a message wants to log it, and those come first.
++Bool touchDebugEnabled();
++
++void pushMousePosition(float x, float y)
++{
++	if (!TheMessageStream) {
++		return;
++	}
++	GameMessage *msg = TheMessageStream->appendMessage(GameMessage::MSG_RAW_MOUSE_POSITION);
++	msg->appendPixelArgument(touchPixel(x, y));
++	msg->appendIntegerArgument(TheKeyboard ? TheKeyboard->getModifierFlags() : 0);
++	s_lastPublishedX = x;
++	s_lastPublishedY = y;
++	if (touchDebugEnabled()) {
++		fprintf(stderr, "[gxtouch] send POSITION %d,%d\n", (Int)x, (Int)y);
++	}
++}
++
++// Button down/up/double-click -- MetaEventTranslator (MetaEvent.cpp) turns a
++// DOWN+UP pair into the semantic MSG_MOUSE_LEFT_CLICK/RIGHT_CLICK
++// SelectionXlat.cpp actually acts on; MSG_RAW_MOUSE_LEFT_DOUBLE_CLICK
++// instead marks the NEXT up as a double-click (matching real click
++// semantics exactly -- see the double-tap handling below for why DOUBLE_
++// CLICK is sent instead of, not in addition to, a DOWN).
++// GeneralsX @bugfix Android port 07/09/2026 Tell the window manager the pointer is gone.
++//
++// Reported: the Guard button stayed visually pressed after the command was issued.
++// GadgetPushButton clears a check-like button's WIN_STATE_SELECTED on GWM_MOUSE_LEAVING
++// (GadgetPushButton.cpp:120-138), not on the button-up -- on a mouse that arrives by
++// itself the moment the pointer travels to the map. A finger travels nowhere: it lifts,
++// and m_currMouseRgn stays parked on that button for the rest of the match, so the button
++// stays lit and every later hover decision is made about a widget nobody is touching.
++//
++// The truthful statement after a lift is not "the pointer moved somewhere else", it is
++// "there is no pointer". An off-screen position says exactly that: getWindowUnderCursor()
++// finds nothing there, so winProcessMouseEvent's enter/leave tail sends MOUSE_LEAVING to
++// whatever held the region and clears it. Nothing else reads it -- screen-edge scrolling,
++// the one thing that used to care where an unattended pointer sat, is off on touch.
++//
++// Must come AFTER the button-up: the leave tail only runs while m_grabWindow is null, and
++// the up is what clears the grab.
++void resetPanSamples()
++{
++	s_touch.panSampleCount = 0;
++	s_touch.panSampleNext = 0;
++}
++
++void recordPanSample(float x, float y, Uint64 ns)
++{
++	const int i = s_touch.panSampleNext;
++	s_touch.panSampleX[i] = x;
++	s_touch.panSampleY[i] = y;
++	s_touch.panSampleNs[i] = ns;
++	s_touch.panSampleNext = (i + 1) % TouchState::PAN_SAMPLES;
++	if (s_touch.panSampleCount < TouchState::PAN_SAMPLES) {
++		++s_touch.panSampleCount;
++	}
++}
++
++// The finger's velocity at liftNs, in pixels per second: the straight line from the oldest
++// sample inside PAN_VELOCITY_WINDOW_NS to the newest one. Zero when the finger rested before
++// lifting -- a deliberate stop must stay a stop.
++void panReleaseVelocity(Uint64 liftNs, float &velX, float &velY)
++{
++	velX = velY = 0.0f;
++	if (s_touch.panSampleCount < 2) {
++		return;
++	}
++	const int n = TouchState::PAN_SAMPLES;
++	const int newest = (s_touch.panSampleNext - 1 + n) % n;
++	const Uint64 newestNs = s_touch.panSampleNs[newest];
++	if (liftNs > newestNs && liftNs - newestNs > PAN_REST_BEFORE_LIFT_NS) {
++		return;
++	}
++	int oldest = newest;
++	for (int k = 1; k < s_touch.panSampleCount; ++k) {
++		const int i = (newest - k + n) % n;
++		if (newestNs - s_touch.panSampleNs[i] > PAN_VELOCITY_WINDOW_NS) {
++			break;
++		}
++		oldest = i;
++	}
++	if (oldest == newest) {
++		return;
++	}
++	const float dt = (float)(newestNs - s_touch.panSampleNs[oldest]) * 1.0e-9f;
++	if (dt <= 0.0f) {
++		return;
++	}
++	velX = (s_touch.panSampleX[newest] - s_touch.panSampleX[oldest]) / dt;
++	velY = (s_touch.panSampleY[newest] - s_touch.panSampleY[oldest]) / dt;
++}
++
++void pushPointerGone()
++{
++	pushMousePosition(-1.0f, -1.0f);
++}
++
++void pushMouseButton(GameMessage::Type type, float x, float y)
++{
++	if (!TheMessageStream) {
++		return;
++	}
++	GameMessage *msg = TheMessageStream->appendMessage(type);
++	msg->appendPixelArgument(touchPixel(x, y));
++	msg->appendIntegerArgument(TheKeyboard ? TheKeyboard->getModifierFlags() : 0);
++	msg->appendIntegerArgument((Int)SDL_GetTicks()); // unread by every consumer, kept for schema parity
++	if (touchDebugEnabled()) {
++		fprintf(stderr, "[gxtouch] send BUTTON type=%d at %d,%d\n", (int)type, (Int)x, (Int)y);
++	}
++}
++void handleTouchEvent(SDL_Window *window, const SDL_Event &event)
++{
++	int winW = 0, winH = 0;
++	SDL_GetWindowSize(window, &winW, &winH);
++	float px = event.tfinger.x * (float)winW;
++	float py = event.tfinger.y * (float)winH;
++
++	// Reforged Android: px/py above are in REAL window pixel space; every
++	// consumer below expects LOGICAL game-resolution space. This fork has no
++	// pillarbox and no virtual backbuffer -- the SDL GPU present stretches
++	// the game over the whole window, so the finger's share of the window is
++	// its share of the display. Input always maps against the DISPLAY size,
++	// never the (render-scale) backbuffer. Identical to the window size
++	// when they match.
++	{
++		if (TheDisplay && TheDisplay->getWidth() > 0 && TheDisplay->getHeight() > 0) {
++			px = event.tfinger.x * (float)TheDisplay->getWidth();
++			py = event.tfinger.y * (float)TheDisplay->getHeight();
++		}
++	}
++
++	// GeneralsX @bugfix Android port 06/09/2026 Publish the live finger position
++	// as the value preview drawing reads. InGameUI::handleRadiusCursor() (the
++	// ability radius) and InGameUI::handleBuildPlacements() (the placement icon)
++	// take it straight from TheMouse->getMouseStatus()->pos every frame in
++	// preDraw(), and with nothing writing it on a touch device both drew in the
++	// top-left corner.
++	//
++	// setTouchCursorPos() writes that field and NOTHING else. No
++	// MSG_RAW_MOUSE_POSITION is emitted here and none should be: that message is
++	// the event driving GUI hilite, the selection box and the edge-scroll anchor,
++	// and two earlier attempts that emitted one every frame had to be reverted for
++	// giving the game a cursor that outlived the finger.
++	//
++	// Here, at the top of the real-event handler, and deliberately not inside
++	// touchPixel(): that helper is also called with synthesized coordinates -- the
++	// touch-down point replayed at release, a pinch centroid, and the window
++	// centre used to park the edge-scroll anchor -- and the preview would jump to
++	// those instead of tracking the finger. This runs only for an actual
++	// SDL_EVENT_FINGER_* with the finger's own coordinates.
++	//
++	// GeneralsX @bugfix Android port 06/09/2026 Not for touches that land on the
++	// UI. A tap on a build button would otherwise leave the cursor position sitting
++	// ON that button, and InGameUI::handleBuildPlacements() would dutifully draw
++	// the placement ghost there -- reported as "it tries to put the building behind
++	// the button I just pressed". The same applies to the ability radius. The
++	// battlefield is the only place this position means anything, so only the
++	// battlefield writes it; a UI touch leaves it at the last spot the player
++	// actually pointed at in the world.
++	//
++	const Bool touchIsOnUi =
++		(s_touch.phase == TouchState::UI_PRESS) ||
++		touchPointBelongsToUi(px, py);
++
++	// Reforged Android: this fork's SdlMouse has no touch cursor field;
++	// the InGameUI aim point below is the single preview feed.
++
++	// GeneralsX @bugfix Android port 06/09/2026 Report the same point as the aim point.
++	// Anything that draws a preview where the player is pointing -- the ability radius, the
++	// building placement ghost -- reads this instead of the mouse object now, so it has to
++	// be fed by every real battlefield finger position, not only while an ability is armed.
++	// Validity only means something with a command armed; when none is, it is unread.
++	if (TheInGameUI && !touchIsOnUi) {
++		TheInGameUI->setTouchAimPoint((Int)px, (Int)py,
++		                              TouchInput::hasArmedCommand()
++		                                ? TouchInput::armedTargetValid((Int)px, (Int)py)
++		                                : FALSE);
++	}
++
++	// GeneralsX @feature Android port 02/08/2026 Unconditional per-event trace
++	// -- reported "panning freezes mid-drag near my command center/units,
++	// have to lift and re-place my finger". Static review of applyCameraPan()
++	// found nothing that treats a drawable (building/unit) differently from
++	// bare terrain, and the previous log showed no run of degenerate
++	// (near-zero) deltas that would explain a freeze -- so either events stop
++	// arriving from SDL entirely during the freeze (an OS/driver-level
++	// thing), or something resets s_touch.phase away from PANNING that this
++	// file's existing traces don't cover. Logging every raw event (not just
++	// the ones that end up calling applyCameraPan) answers which.
++	GX_TRACE("handleTouchEvent: type=%u finger=%llu phase=%d px(%.2f,%.2f)\n",
++	         (unsigned)event.type, (unsigned long long)event.tfinger.fingerID, (int)s_touch.phase, px, py);
++
++	switch (event.type) {
++	case SDL_EVENT_FINGER_DOWN:
++		if (s_touch.phase == TouchState::IDLE || s_touch.phase == TouchState::MOMENTUM) {
++			// GeneralsX @bugfix Android port 03/08/2026 A finger landing
++			// directly on a GUI window (button, panel, etc.) skips the whole
++			// PENDING classification below and gets a REAL, immediate
++			// LEFT_BUTTON_DOWN instead -- reported: holding a group-panel
++			// button did nothing (no add/clear), because PENDING defers ALL
++			// button output until either release (short tap) or SELECT_HOLD_MS
++			// (250ms) elapses AND a subsequent motion event promotes it to
++			// SELECTING. That gap meant the engine's own WIN_STATE_SELECTED
++			// on the button only ever started accumulating 0-250ms+ (jitter-
++			// dependent, not deterministic) after the real physical touch-down,
++			// silently eating a chunk of every hold's actual duration -- and if
++			// no motion event ever landed in that window (plausible on some
++			// hardware), release before LONG_PRESS_MS(600ms) elapsed would fall
++			// through to PENDING's own release-still-PENDING branch, which
++			// issues a RIGHT-click at the press point instead of a left one.
++			// None of that PENDING ambiguity (pan vs. select-box vs. rally-
++			// point-click vs. building-placement) applies to a touch that
++			// starts on a widget -- a UI press is unambiguous the instant it
++			// happens, exactly like a real mouse press over a button, so route
++			// it straight to the engine instead of deferring it.
++			GameWindow *uiHit = TheWindowManager
++				? TheWindowManager->getWindowUnderCursor((Int)px, (Int)py)
++				: nullptr;
++			// GeneralsX @bugfix Android port 28/09/2026 A DISABLED button is a UI press too.
++			// getWindowUnderCursor() does not descend into disabled windows, so on a command
++			// the player cannot use yet (missing prerequisite) or has already used (purchased
++			// upgrade) it returned the command panel behind it, this test said "not UI", and
++			// the touch went down the battlefield path -- the control bar was never told a
++			// finger was held there and could not keep the button's description up. Descend
++			// from the hit container, and from it only, with ignoreEnabled: a global
++			// ignoreEnabled hit test would also find disabled overlay windows such as the
++			// description popup itself. The press is still delivered as a mouse press, which
++			// the window manager routes by its own enabled-only hit test, so a disabled
++			// button stays unpressable exactly as with a mouse.
++			if (uiHit != nullptr && !isRealUiHit(uiHit)) {
++				GameWindow *disabledHit = uiHit->winPointInChild((Int)px, (Int)py, TRUE);
++				if (isRealUiHit(disabledHit) && !BitTest(disabledHit->winGetStatus(), WIN_STATUS_ENABLED)) {
++					uiHit = disabledHit;
++				}
++			}
++			if (isRealUiHit(uiHit)) {
++				s_touch.finger1 = event.tfinger.fingerID;
++				s_touch.phase = TouchState::UI_PRESS;
++				s_touch.downX = s_touch.lastX = px;
++				s_touch.downY = s_touch.lastY = py;
++				s_touch.downTicks = SDL_GetTicks();
++				pushMousePosition(px, py);
++				// GeneralsX @bugfix Android port 28/09/2026 Reported: holding a command button
++				// to read its description bought the upgrade (or queued the unit) at once. The
++				// control bar's command buttons act on the DOWN (WIN_STATUS_ON_MOUSE_DOWN, set
++				// from the WND data), so no handling of the release could take it back. A finger
++				// cannot hover, so the hold is its only way to ask "what is this?" -- hold the
++				// press back for such a button and decide at release: a tap sends down and up
++				// together, a hold released while the description is up sends neither. The
++				// description does not need the press: ControlBar::update() follows the hold
++				// POINT (reportUiHold below), not the button's pressed state.
++				s_touch.deferredPress =
++					BitTest(uiHit->winGetStyle(), GWS_PUSH_BUTTON) &&
++					BitTest(uiHit->winGetStatus(), WIN_STATUS_ON_MOUSE_DOWN) &&
++					BitTest(uiHit->winGetStatus(), WIN_STATUS_ENABLED) &&
++					!BitTest(uiHit->winGetStatus(), WIN_STATUS_CHECK_LIKE);
++				if (!s_touch.deferredPress) {
++					pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_DOWN, px, py);
++				}
++				// GeneralsX @feature Android port 06/09/2026 Tell the control bar a finger is
++				// down here, so it can keep the held button's description alive. It re-hit-tests
++				// this point every frame rather than trusting a window pointer or a widget state
++				// that its own rebuilds invalidate. See ControlBar::update().
++				TouchInput::reportUiHold((Int)px, (Int)py, TRUE);
++				break;
++			}
++
++			// GeneralsX @feature Android port 06/09/2026 An armed ability turns the
++			// finger into the aiming reticle, with its own phase.
++			//
++			// Without this, a targeting drag fell into PENDING's classification and
++			// came out as one of two wrong things: held-then-dragged became SELECTING
++			// (a selection box, drawn over the battlefield while an ability was armed),
++			// dragged straight away became PANNING (the camera moves, the ability is
++			// still armed, and PANNING publishes no positions at all -- so the radius
++			// decal froze while the reticle kept following the finger, reported as
++			// "the area appears and disappears"). Neither is a targeting gesture, and
++			// PENDING cannot be taught to tell them apart, because at touch-down they
++			// look identical.
++			//
++			// An armed command removes the ambiguity entirely -- there is nothing else
++			// a battlefield touch can mean while one is pending -- so classify on that
++			// instead of on the gesture. Position only, no button: the command must
++			// not fire until the finger lifts, which is what makes drag-to-aim work.
++			// Cancel is unchanged: a second finger still goes through the two-finger
++			// path and right-clicks, which SelectionXlat turns into a GUI-command
++			// cancel.
++			// GeneralsX @bugfix Android port 07/09/2026 ...but only for a finger on the
++			// battlefield. An armed command does not make the whole screen a targeting
++			// surface: with Guard armed and the generals-promotions dialog open, taps
++			// inside the dialog were being read as aiming, publishing a pointer position
++			// on the dialog when the finger lifted. A touch the window manager would route
++			// to a widget goes down the PENDING path instead, whose release asks the
++			// manager first and stops there when the manager takes the input.
++			if (TheInGameUI && TheInGameUI->getGUICommand() != nullptr && !touchPointBelongsToUi(px, py)) {
++				s_touch.finger1 = event.tfinger.fingerID;
++				s_touch.phase = TouchState::TARGETING;
++				s_touch.downX = s_touch.lastX = px;
++				s_touch.downY = s_touch.lastY = py;
++				s_touch.downTicks = SDL_GetTicks();
++				TouchInput::beginAiming((Int)px, (Int)py);
++				break;
++			}
++
++			// A finger touching down during MOMENTUM grabs the map and stops
++			// the coast immediately -- same as tapping a map mid-fling on any
++			// touch device.
++			//
++			// Defer BUTTON output: a finger landing could become a tap, a pan,
++			// a long-press, or the first finger of a two-finger gesture. A
++			// premature LMB down+up is a real click to the game (e.g. it sets
++			// a rally point when a production building is selected).
++			s_touch.finger1 = event.tfinger.fingerID;
++			s_touch.phase = TouchState::PENDING;
++			s_touch.downX = s_touch.lastX = px;
++			s_touch.downY = s_touch.lastY = py;
++			s_touch.downTicks = SDL_GetTicks();
++			s_touch.listBox = listBoxAt(px, py);
++			// Move the cursor to the touch point NOW (motion clicks nothing, so the
++			// deferred-tap protection is intact). This lets the GUI process hover
++			// over the next frame(s) before the tap commits — hover-driven widgets
++			// (e.g. the Generals Challenge general buttons, which are checkboxes
++			// that ignore a click unless WIN_STATE_HILITED was set by a prior
++			// mouse-enter) then accept the click. Real mice hover before clicking;
++			// without this, a synthetic tap teleports + clicks in one instant and
++			// the widget is never hilited, so only the default/first item responds.
++			//
++			// GeneralsX @refactor Android port 06/09/2026 Menus only now. In a game the
++			// battlefield tap is resolved natively (TouchInput) and needs no pointer, while
++			// in-game buttons take the UI_PRESS path above -- so publishing a position here
++			// would only put a phantom pointer on the battlefield, where the placement ghost
++			// and the ability radius would then follow it. The hover priming still matters
++			// in the shell, where those hover-driven checkboxes live and where there is no
++			// battlefield to contaminate.
++			//
++			// GeneralsX @bugfix Android port 06/09/2026 First attempt gated this on
++			// TheShell->isShellActive(), and the device log then showed it publishing
++			// positions during an actual match (logic=83ms frames, control bar up). The
++			// shell-active flag is not the question being asked -- ask the game logic
++			// instead. isInGame() alone is not enough either: the main menu's battle
++			// backdrop is a running game by that measure, and that is precisely a case
++			// where the priming IS wanted, so the shell game has to be excluded explicitly.
++			const Bool inRealGame = (TheGameLogic != nullptr && TheGameLogic->isInGame() &&
++			                         !TheGameLogic->isInShellGame());
++			if (!inRealGame) {
++				pushMousePosition(px, py);
++			}
++		}
++		else if (s_touch.phase == TouchState::PENDING || s_touch.phase == TouchState::PANNING ||
++		         s_touch.phase == TouchState::TARGETING) {
++			// Second finger: always becomes direct two-finger pan+zoom
++			// immediately, no classification -- see the file-header comment
++			// for why. A finger landing mid-PANNING (drag-then-pinch without
++			// lifting first) picks it up the same way.
++			s_touch.finger2 = event.tfinger.fingerID;
++			s_touch.f1px = s_touch.lastX;  // finger1's current pixel pos
++			s_touch.f1py = s_touch.lastY;
++			s_touch.f2px = px;             // finger2's landing pixel pos
++			s_touch.f2py = py;
++			s_touch.twoDownX1 = s_touch.f1px;
++			s_touch.twoDownY1 = s_touch.f1py;
++			s_touch.twoDownX2 = s_touch.f2px;
++			s_touch.twoDownY2 = s_touch.f2py;
++			s_touch.twoCentroidLastX = (s_touch.f1px + s_touch.f2px) * 0.5f;
++			s_touch.twoCentroidLastY = (s_touch.f1py + s_touch.f2py) * 0.5f;
++			{
++				const float ddx = s_touch.f2px - s_touch.f1px, ddy = s_touch.f2py - s_touch.f1py;
++				s_touch.twoDistLastPx = SDL_sqrtf(ddx * ddx + ddy * ddy);
++				s_touch.twoAngleLastRad = SDL_atan2f(ddy, ddx);
++				s_touch.twoTwistAccumRad = 0.0f;
++				s_touch.twoRotateArmed = FALSE;
++			}
++			s_touch.phase = TouchState::TWOFINGER;
++		}
++		else if (s_touch.phase == TouchState::PLACING) {
++			// GeneralsX @feature Android port 02/08/2026 A second finger
++			// landing while already rotating a pending building has no other
++			// meaning here (PLACING deliberately doesn't support two-finger
++			// pan/zoom -- see the file-header design note), so treat it as an
++			// immediate cancel instead of ignoring it: the only way to back
++			// out mid-rotation would otherwise be dragging to an illegal spot,
++			// releasing, and THEN doing a separate two-finger tap. This also
++			// clears the anchor/ghost icon (setPlacementStart(nullptr) +
++			// destroyPlacementIcons() inside placeBuildAvailable()), so
++			// finger1's subsequent motion/up events land as harmless no-ops.
++			if (TheInGameUI) {
++				TheInGameUI->placeBuildAvailable(nullptr, nullptr);
++			}
++			s_touch.phase = TouchState::IDLE;
++		}
++		else if (s_touch.phase == TouchState::SELECTING) {
++			// GeneralsX @feature Android port 02/08/2026 A second finger during
++			// an in-progress selection box has no other meaning here either,
++			// but unlike PLACING there's no clean "abort" to call into --
++			// SelectionTranslator only clears its internal drag-lock state
++			// (TheTacticalView->setMouseLock, TheInGameUI->setSelecting) from
++			// its MSG_RAW_MOUSE_LEFT_BUTTON_UP handler, so leaving that message
++			// unsent would leave the camera/selection state stuck. Finalize
++			// with whatever box has been drawn so far instead of leaving it
++			// hanging -- selecting the "wrong" units this way is trivially
++			// undone by tapping again, unlike a half-placed building.
++			pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_UP, s_touch.lastX, s_touch.lastY);
++			s_touch.phase = TouchState::IDLE;
++		}
++		// TWOFINGER with a third finger: ignored
++		break;
++
++	case SDL_EVENT_FINGER_MOTION:
++		if (event.tfinger.fingerID == s_touch.finger1) {
++			s_touch.lastX = px;
++			s_touch.lastY = py;
++			if (s_touch.phase == TouchState::PANNING) {
++				recordPanSample(px, py, event.tfinger.timestamp);
++			}
++			if (s_touch.phase == TouchState::TWOFINGER) {
++				s_touch.f1px = px;
++				s_touch.f1py = py;
++			}
++		} else if (s_touch.phase == TouchState::TWOFINGER && event.tfinger.fingerID == s_touch.finger2) {
++			s_touch.f2px = px;
++			s_touch.f2py = py;
++		} else {
++			break;
++		}
++
++		if (s_touch.phase == TouchState::PENDING && event.tfinger.fingerID == s_touch.finger1) {
++			const float moved = SDL_fabsf(px - s_touch.downX) + SDL_fabsf(py - s_touch.downY);
++			if (moved >= TAP_DEAD_ZONE_PX) {
++				// GeneralsX @feature Android port 27/09/2026 A drag that started on a list
++				// scrolls the list, not the camera. Re-hit-tested at the press point rather than
++				// trusting the pointer taken at touch-down: a screen change in between destroys
++				// windows, and a stale list must not be touched.
++				if (s_touch.listBox != nullptr && listBoxAt(s_touch.downX, s_touch.downY) == s_touch.listBox) {
++					GadgetListBoxTouchScrollBegin(s_touch.listBox, (Int)s_touch.downY);
++					GadgetListBoxTouchScrollMove(s_touch.listBox, (Int)py);
++					s_touch.phase = TouchState::LIST_SCROLL;
++				} else
++				if (TheInGameUI && TheInGameUI->getPendingPlaceType()) {
++					// GeneralsX @feature Android port 02/08/2026 Building
++					// placement: a drag past the dead zone while a build is
++					// pending is the rotate gesture, not a camera pan. Send the
++					// button-down NOW, at the ORIGINAL press point (downX/downY)
++					// -- exactly like a real mouse press, which fires before any
++					// drag -- so PlaceEventTranslator anchors the building where
++					// the finger first touched, not where it dragged to.
++					// PlaceEventTranslator.cpp's MSG_RAW_MOUSE_LEFT_BUTTON_DOWN
++					// case calls TheInGameUI->setPlacementStart() and consumes
++					// the message (DESTROY_MESSAGE), so this can't also register
++					// as an ordinary click/select.
++					GX_TRACE("handleTouchEvent: PENDING->PLACING moved=%.2f anchor(%.2f,%.2f)\n",
++					         moved, s_touch.downX, s_touch.downY);
++					pushMousePosition(s_touch.downX, s_touch.downY);
++					pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_DOWN, s_touch.downX, s_touch.downY);
++					// Feed the current position immediately too, so the
++					// rotation angle starts responding without waiting for the
++					// next motion event.
++					pushMousePosition(px, py);
++					s_touch.phase = TouchState::PLACING;
++				} else if ((SDL_GetTicks() - s_touch.downTicks) >= SELECT_HOLD_MS) {
++					// GeneralsX @feature Android port 02/08/2026 Area selection:
++					// held past SELECT_HOLD_MS WITHOUT crossing the dead zone,
++					// then dragged -- draw a selection box instead of panning.
++					// Quick drags (the vastly more common case) are unaffected:
++					// this branch is only reachable once SELECT_HOLD_MS has
++					// already elapsed. Deliberately shorter than LONG_PRESS_MS
++					// (the release-without-moving command threshold below) --
++					// they're different gestures (drag vs. release) so there's
++					// no ambiguity in letting SELECT_HOLD_MS elapse first: a
++					// held-still finger still has exactly two possible
++					// eventual outcomes depending on what happens next
++					// (release after LONG_PRESS_MS -> command, drag after
++					// SELECT_HOLD_MS -> select), never both.
++					//
++					// Unlike the long-press-cancels-nothing lesson learned
++					// earlier in this file (see the FINGER_UP PENDING case's
++					// @bugfix comment): that bug was caused by dispatching an
++					// action PREMATURELY, mid-hold, before knowing whether a
++					// drag would follow -- corrupting whatever the drag was
++					// later interpreted as. This is different: nothing at all
++					// is sent until this exact moment, when the drag has
++					// genuinely already started, so there's no premature
++					// dispatch to corrupt anything.
++					//
++					// SelectionXlat.cpp's MSG_RAW_MOUSE_LEFT_BUTTON_DOWN handler
++					// just records the anchor; its MSG_RAW_MOUSE_POSITION
++					// handler is what actually starts drawing the box once past
++					// TheMouse->m_dragTolerance -- both already exist and are
++					// shared with the desktop mouse path, same as
++					// PlaceEventTranslator above.
++					GX_TRACE("handleTouchEvent: PENDING->SELECTING moved=%.2f anchor(%.2f,%.2f)\n",
++					         moved, s_touch.downX, s_touch.downY);
++					pushMousePosition(s_touch.downX, s_touch.downY);
++					pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_DOWN, s_touch.downX, s_touch.downY);
++					pushMousePosition(px, py);
++					s_touch.phase = TouchState::SELECTING;
++				} else {
++					// Movement always wins, however long the finger sat still
++					// first -- see the file-header @bugfix comment for why this
++					// no longer depends on whether LONG_PRESS_MS has elapsed.
++					// Straight to a direct camera pan (TheTacticalView->
++					// userScrollBy, see applyCameraPan) -- no message stream
++					// involvement at all.
++					GX_TRACE("handleTouchEvent: PENDING->PANNING moved=%.2f at (%.2f,%.2f)\n", moved, px, py);
++					s_touch.phase = TouchState::PANNING;
++					s_touch.panLastPxX = px;
++					s_touch.panLastPxY = py;
++					resetPanSamples();
++					recordPanSample(px, py, event.tfinger.timestamp);
++				}
++			}
++		}
++		else if (s_touch.phase == TouchState::LIST_SCROLL && event.tfinger.fingerID == s_touch.finger1) {
++			if (listBoxAt(s_touch.downX, s_touch.downY) == s_touch.listBox) {
++				GadgetListBoxTouchScrollMove(s_touch.listBox, (Int)py);
++			}
++		}
++		else if (s_touch.phase == TouchState::SELECTING && event.tfinger.fingerID == s_touch.finger1) {
++			// Every motion event feeds SelectionXlat's MSG_RAW_MOUSE_POSITION
++			// case (grows the selection-box hint rectangle) directly -- message
++			// traffic, not a direct camera call, so no per-frame staleness
++			// concern, same reasoning as the PLACING case below.
++			pushMousePosition(px, py);
++		}
++		else if (s_touch.phase == TouchState::TARGETING && event.tfinger.fingerID == s_touch.finger1) {
++			// GeneralsX @refactor Android port 06/09/2026 Aiming asks the engine a question
++			// instead of feeding it a fake pointer. armedTargetValid() runs the SAME
++			// evaluation the order will run, in EVALUATE_ONLY mode, so the reticle cannot
++			// disagree with what release actually does. Publishing a position here is what
++			// used to latch the edge scroll and drag the GUI hilite around.
++			if (TheInGameUI) {
++				TheInGameUI->setTouchAimPoint((Int)px, (Int)py,
++				                              TouchInput::armedTargetValid((Int)px, (Int)py));
++			}
++		}
++		else if (s_touch.phase == TouchState::PLACING && event.tfinger.fingerID == s_touch.finger1) {
++			// Every motion event feeds PlaceEventTranslator's
++			// MSG_RAW_MOUSE_POSITION case (setPlacementEnd -> rotation angle)
++			// directly -- this is message-stream traffic, not a direct camera
++			// call, so there's no per-frame screenToTerrain staleness concern
++			// (see applyPendingCameraMotion()'s header comment, which is about
++			// a completely different code path).
++			pushMousePosition(px, py);
++		}
++		// PANNING and TWOFINGER don't apply the camera effect here -- see
++		// applyPendingCameraMotion() below for why (screenToTerrain-based
++		// staleness when several motion events land in the same render
++		// frame).
++		break;
++
++	case SDL_EVENT_FINGER_UP:
++	case SDL_EVENT_FINGER_CANCELED:
++		if (event.tfinger.fingerID != s_touch.finger1 &&
++		    !(s_touch.phase == TouchState::TWOFINGER && event.tfinger.fingerID == s_touch.finger2)) {
++			break;
++		}
++		{
++			// Set when a TWOFINGER lift should continue as a single-finger
++			// pan with the remaining finger, instead of resetting to IDLE --
++			// matches any standard two-finger touch UI (lifting one finger
++			// mid-pinch keeps panning with the other).
++			bool continueAsSinglePan = false;
++			// Set when a fast PANNING release should coast into MOMENTUM
++			// instead of stopping dead -- unlike continueAsSinglePan, this
++			// still needs the edge-scroll guard below (no real finger
++			// remains), just not the phase reset to IDLE.
++			bool startedMomentum = false;
++
++			switch (s_touch.phase) {
++				case TouchState::PENDING:
++					// A CANCELED touch (incoming call, notification shade, palm
++					// rejection) must not become a committed tap — that would be a
++					// phantom select/command/rally-point click at the cancel point.
++					if (event.type == SDL_EVENT_FINGER_CANCELED) {
++						break;
++					}
++					// GeneralsX @feature Android port 08/09/2026 A long press on the minimap
++					// moves the camera there instead. This has to be tested BEFORE the
++					// deselect branch below and before the window-manager replay further
++					// down, because both would otherwise claim it: the replay turns every
++					// radar touch into a left button down, and a left button down on the
++					// radar with units selected is an ORDER, not a look
++					// (ControlBarCallback.cpp:300). That is the bug this fixes -- with an
++					// army selected the player could not move the camera from the minimap
++					// at all, and the attempt marched the army across the map.
++					//
++					// Mouse parity, not an invention: on the radar a left click orders and a
++					// right click looks (ControlBarCallback.cpp:262). A tap is the left one;
++					// this is the right one.
++					if ((SDL_GetTicks() - s_touch.downTicks) >= LONG_PRESS_MS &&
++					    TouchInput::lookAtRadarPoint((Int)s_touch.downX, (Int)s_touch.downY)) {
++						break;
++					}
++
++					// GeneralsX @bugfix Android port 07/09/2026 ...and not for a press that
++					// landed on UI the window manager owns. Dwelling on a dialog is not a
++					// battlefield gesture, and cancelOrDeselect() there would throw away the
++					// armed command the player is holding the dialog open to use.
++					if ((SDL_GetTicks() - s_touch.downTicks) >= LONG_PRESS_MS &&
++					    !(TheInGameUI && TheInGameUI->getPendingPlaceType()) &&
++					    !touchPointBelongsToUi(s_touch.downX, s_touch.downY)) {
++						// Still PENDING at release means it never crossed the pan
++						// dead zone (crossing it is what moves phase to PANNING) --
++						// held still for the whole long-press threshold, right-click
++						// (issue command) at the press point. Resolved HERE, on
++						// release, not proactively while still held -- see the
++						// file-header @bugfix comment for why: firing it early and
++						// letting a LATER drag "upgrade" the gesture is what broke
++						// ordinary panning whenever a real drag started after a
++						// brief pause.
++						//
++						// Suppressed while a building placement is pending: the
++						// natural "press, study the spot, release" pause would
++						// otherwise fire this and cancel the whole placement
++						// (right-click always cancels pending placement, see
++						// CommandXlat.cpp) instead of placing the building at the
++						// default angle. Falling through to the plain-tap logic
++						// below (unaffected by hold duration) places it instead --
++						// see PlaceEventTranslator.cpp's MSG_RAW_MOUSE_LEFT_BUTTON_DOWN
++						// case, which anchors and immediately accepts a same-point
++						// click.
++						// GeneralsX @refactor Android port 06/09/2026 Was a synthesized right-click.
++						// It is now the thing a right-click was being borrowed FOR: back out of
++						// an armed command or a pending building, else clear the selection. The
++						// right-click detour is what let a destroyed RIGHT_BUTTON_UP leave the
++						// camera scrolling forever -- see TouchInput.h.
++						TouchInput::cancelOrDeselect();
++						break;
++					}
++					{
++						// GeneralsX @bugfix Android port 06/09/2026 Reported: with the generals
++						// powers panel open, a tap inside it closed the panel AND set the
++						// command centre's rally point on the ground underneath -- a click
++						// straight through the UI.
++						//
++						// The old synthetic-click path was protected for free: WindowXlat runs
++						// at priority 10, hands the click to the window manager, and destroys
++						// the message when the manager reports WIN_INPUT_USED, so CommandXlat
++						// never saw it. Resolving the tap natively skipped that entirely, and
++						// only touches on an actual GWS_PUSH_BUTTON leaf were being diverted
++						// (isRealUiHit) -- a panel background, a list, a slider are none of
++						// those.
++						//
++						// So ask the window manager the same question it would have been asked,
++						// directly, with no message and no phantom pointer: a balanced
++						// down-then-up at the finger's own point, which is exactly what a tap
++						// is. If it takes the input, the tap was for the UI and the battlefield
++						// must not also act on it. This cannot swallow battlefield taps -- every
++						// tap went through this same call before this branch existed, and orders
++						// worked.
++						if (TheWindowManager) {
++							ICoord2D uiPoint;
++							uiPoint.x = (Int)s_touch.downX;
++							uiPoint.y = (Int)s_touch.downY;
++
++							// GeneralsX @bugfix Android port 07/09/2026 Hover first, and it has to
++							// be its own pass. Reported: promotions in the generals menu could not
++							// be bought even when unlocked, and the pause menu ignored Exit/Return.
++							//
++							// winProcessMouseEvent() does its enter/leave tracking at the very END
++							// of the function, and only `if (m_grabWindow == nullptr)`
++							// (GameWindowManager.cpp:1267). So a bare LEFT_DOWN reaches the widget
++							// while it is still un-hilited, and the same call then sets m_grabWindow
++							// -- which means GWM_MOUSE_ENTERING is never sent at all. A widget that
++							// ignores a click unless WIN_STATE_HILITED was set by a prior
++							// mouse-enter (the generals-promotion and Challenge checkboxes are
++							// exactly that) therefore never sees a usable click.
++							//
++							// A real mouse cannot press a widget it was not already over, so give
++							// the manager that move first. GWM_MOUSE_POS is not forwarded to windows
++							// unless a static flag says so, but that does not matter here: what is
++							// wanted is the region-tracking tail, which sends MOUSE_ENTERING and
++							// updates m_currMouseRgn. Being a direct call, it is synchronous -- the
++							// hilite is set before the DOWN on the next line, with no frame gap and
++							// no message in the stream.
++							TheWindowManager->winProcessMouseEvent(GWM_MOUSE_POS, &uiPoint, nullptr);
++
++							// GeneralsX @feature Android port 13/09/2026 A long press on shell UI
++							// is a right-click.
++							//
++							// The menus still expect one. The lobby's player menu -- profile,
++							// add friend, mute -- opens from GLM_RIGHT_CLICKED, which only a
++							// GWM_RIGHT_UP produces, and a touchscreen never sends one; the menu
++							// was unreachable in principle, as was every other right-click
++							// affordance in the shell.
++							//
++							// It belongs HERE rather than in the UI_PRESS branch above, which was
++							// the first place I put it and the wrong one: isRealUiHit() admits
++							// only GWS_PUSH_BUTTON, so a list, a panel or a slider never takes
++							// that path at all -- which is exactly why this direct-to-manager
++							// exchange exists. A list is also the only thing with a right-click
++							// menu to open, and pressing a button is not a gesture that wants one.
++							//
++							// Shell only, because in-game a long press already means
++							// cancelOrDeselect -- a synthesized right-click there was what once
++							// left the camera scrolling forever (see TouchInput.h).
++							const Bool shellLongPress =
++								(TheShell && TheShell->isShellActive()) &&
++								(SDL_GetTicks() - s_touch.downTicks) >= LONG_PRESS_MS;
++
++							const GameWindowMessage downMsg = shellLongPress ? GWM_RIGHT_DOWN : GWM_LEFT_DOWN;
++							const GameWindowMessage upMsg   = shellLongPress ? GWM_RIGHT_UP   : GWM_LEFT_UP;
++
++							const WinInputReturnCode usedDown =
++								TheWindowManager->winProcessMouseEvent(downMsg, &uiPoint, nullptr);
++							const WinInputReturnCode usedUp =
++								TheWindowManager->winProcessMouseEvent(upMsg, &uiPoint, nullptr);
++
++							// ...and the pointer is gone again, same reason as pushPointerGone().
++							// Direct call rather than a message because this whole exchange is
++							// synchronous; the up above has already cleared the grab.
++							ICoord2D nowhere;
++							nowhere.x = -1;
++							nowhere.y = -1;
++							TheWindowManager->winProcessMouseEvent(GWM_MOUSE_POS, &nowhere, nullptr);
++
++							if (usedDown == WIN_INPUT_USED || usedUp == WIN_INPUT_USED) {
++								break;
++							}
++						}
++
++						// Double-tap: select all of the clicked unit's type on
++						// screen, matching the PC's double-click. MetaEventTranslator
++						// (MetaEvent.cpp) turns MSG_RAW_MOUSE_LEFT_DOUBLE_CLICK +
++						// the next BUTTON_UP into MSG_MOUSE_LEFT_DOUBLE_CLICK, which
++						// SelectionXlat.cpp already fully handles -- we only need to
++						// count taps correctly and send DOUBLE_CLICK instead of DOWN
++						// for the second tap (matching exactly what a real double-
++						// click's second press already does at this message level:
++						// it never re-sends DOWN either, see MetaEvent.cpp).
++						const float distFromLastTap = SDL_fabsf(s_touch.downX - s_touch.lastTapX)
++						                             + SDL_fabsf(s_touch.downY - s_touch.lastTapY);
++						const bool isDoubleTap = s_touch.hasLastTap
++							&& (SDL_GetTicks() - s_touch.lastTapTicks) <= DOUBLE_TAP_MS
++							&& distFromLastTap <= DOUBLE_TAP_DIST_PX;
++
++						// GeneralsX @refactor Android port 06/09/2026 Was a synthesized click at the
++						// press point. Now the tap is resolved against the engine's own rules --
++						// pick, evaluate, order or select -- with no pointer invented on the way.
++						// See TouchInput.h for why the click detour had to go.
++						//
++						// EXCEPT while a building placement is pending. Reported: picking a
++						// structure at a dozer and tapping the ground walked the dozer there
++						// instead of building. Placement is not a context order at all -- it is
++						// PlaceEventTranslator's own press/drag/release state machine, which
++						// anchors on the button-down and commits MSG_DOZER_CONSTRUCT on the
++						// click, with ~150 lines of angle and line-build rules in between.
++						// A press-and-release on a spot is exactly what a click faithfully
++						// represents here, and the drag-to-rotate path (PLACING) already feeds
++						// that same translator, so placement stays whole on one mechanism
++						// rather than being half reimplemented.
++						if (TheInGameUI && TheInGameUI->getPendingPlaceType()) {
++							pushMousePosition(s_touch.downX, s_touch.downY);
++							pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_DOWN, s_touch.downX, s_touch.downY);
++							pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_UP, s_touch.downX, s_touch.downY);
++						} else if (isDoubleTap) {
++							TouchInput::doubleTap((Int)s_touch.downX, (Int)s_touch.downY);
++						} else {
++							TouchInput::tap((Int)s_touch.downX, (Int)s_touch.downY);
++						}
++
++						// A completed double-tap starts a fresh sequence rather
++						// than chaining into a false "triple click".
++						s_touch.hasLastTap = !isDoubleTap;
++						if (!isDoubleTap) {
++							s_touch.lastTapTicks = SDL_GetTicks();
++							s_touch.lastTapX = s_touch.downX;
++							s_touch.lastTapY = s_touch.downY;
++						}
++					}
++					break;
++				case TouchState::PANNING:
++					{
++						// GeneralsX @feature Android port 02/08/2026 Momentum: a
++						// fast release coasts, decelerating, instead of stopping
++						// dead the instant the finger lifts -- see
++						// applyPendingCameraMotion()'s MOMENTUM branch, which
++						// keeps calling applyCameraPan() with decaying velocity.
++						// No message stream involvement either way -- nothing to
++						// release.
++						panReleaseVelocity(event.tfinger.timestamp, s_touch.panVelX, s_touch.panVelY);
++						const float speed = SDL_fabsf(s_touch.panVelX) + SDL_fabsf(s_touch.panVelY);
++						if (speed >= MOMENTUM_MIN_START_PX_PER_SEC) {
++							s_touch.momentumX = s_touch.lastX;
++							s_touch.momentumY = s_touch.lastY;
++							s_touch.momentumLastNs = SDL_GetTicksNS();
++							s_touch.phase = TouchState::MOMENTUM;
++							startedMomentum = true;
++						}
++					}
++					break;
++				case TouchState::TWOFINGER:
++					// GeneralsX @feature Android port 01/08/2026, again Brought
++					// back: if neither finger moved more than TWO_FINGER_TAP_MAX_PX
++					// from where it landed, the whole gesture was a two-finger tap
++					// -> right-click at the landing centroid (a fast "cancel
++					// selection", asked back after an earlier pass dropped it as
++					// "redundant" with the long-press). Otherwise, direct camera
++					// control already applied via applyPendingCameraMotion() --
++					// nothing to release -- and if the OTHER finger is still down, keep
++					// controlling the camera with it.
++					if (event.type != SDL_EVENT_FINGER_CANCELED) {
++						const float move1 = SDL_fabsf(s_touch.f1px - s_touch.twoDownX1) + SDL_fabsf(s_touch.f1py - s_touch.twoDownY1);
++						const float move2 = SDL_fabsf(s_touch.f2px - s_touch.twoDownX2) + SDL_fabsf(s_touch.f2py - s_touch.twoDownY2);
++						if (move1 < TWO_FINGER_TAP_MAX_PX && move2 < TWO_FINGER_TAP_MAX_PX) {
++							// GeneralsX @refactor Android port 06/09/2026 Also a cancel, not a
++							// right-click. Same reason as the long press above.
++							TouchInput::cancelOrDeselect();
++						} else {
++							if (event.tfinger.fingerID == s_touch.finger1) {
++								s_touch.finger1 = s_touch.finger2;
++								s_touch.lastX = s_touch.panLastPxX = s_touch.f2px;
++								s_touch.lastY = s_touch.panLastPxY = s_touch.f2py;
++							} else {
++								s_touch.panLastPxX = s_touch.lastX;
++								s_touch.panLastPxY = s_touch.lastY;
++							}
++							s_touch.finger2 = 0;
++							s_touch.phase = TouchState::PANNING;
++							resetPanSamples();
++							recordPanSample(s_touch.lastX, s_touch.lastY, event.tfinger.timestamp);
++							continueAsSinglePan = true;
++						}
++					}
++					break;
++				case TouchState::PLACING:
++					// GeneralsX @feature Android port 02/08/2026 Building
++					// placement release. A normal lift sends the button-up,
++					// which MetaEventTranslator (MetaEvent.cpp) turns into the
++					// semantic MSG_MOUSE_LEFT_CLICK that PlaceEventTranslator's
++					// click case actually commits (MSG_DOZER_CONSTRUCT) or, if
++					// the spot turned out illegal, resets the anchor to try
++					// again WITHOUT leaving placement mode -- exactly the same
++					// as a real mouse press-drag-release.
++					//
++					// A CANCELED touch (incoming call, notification shade, palm
++					// rejection) never sends a matching up, so there is no
++					// later event to resolve the anchor this file already
++					// committed on the dead-zone crossing -- back out of
++					// placement mode entirely instead, same conservative
++					// no-phantom-action rule as the PENDING case above.
++					if (event.type == SDL_EVENT_FINGER_CANCELED) {
++						if (TheInGameUI) {
++							TheInGameUI->placeBuildAvailable(nullptr, nullptr);
++						}
++					} else {
++						pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_UP, px, py);
++					}
++					break;
++				case TouchState::SELECTING:
++					// GeneralsX @feature Android port 02/08/2026 Area-selection
++					// release. Unlike PLACING, a CANCELED touch here also sends
++					// the button-up rather than backing out of anything --
++					// SelectionTranslator has no equivalent to
++					// placeBuildAvailable(nullptr, nullptr) to cleanly release
++					// its internal drag-lock state (TheTacticalView->
++					// setMouseLock(TRUE) only gets cleared from its own
++					// MSG_RAW_MOUSE_LEFT_BUTTON_UP handler), so never sending it
++					// would leave the camera/selection state stuck rather than
++					// just under- or over-selecting -- a strictly worse outcome
++					// than finalizing with whatever box was drawn so far.
++					pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_UP, px, py);
++					break;
++				case TouchState::TARGETING:
++					// GeneralsX @feature Android port 06/09/2026 Release fires the ability
++					// where the finger let go. A CANCELED touch (incoming call, palm
++					// rejection) must not: leave the command armed and send nothing, so the
++					// player aims again rather than having a superweapon land wherever the
++					// OS interrupted them.
++					if (event.type != SDL_EVENT_FINGER_CANCELED) {
++						// GeneralsX @bugfix Android port 07/09/2026 A long press gets you out.
++						// Reported: issuing Guard left the player stuck in targeting mode with
++						// no way back. Introducing this phase took the escape away without
++						// noticing: a long press is the cancel gesture everywhere else in the
++						// game, but it lives in PENDING, and an armed command routes every
++						// battlefield touch here instead -- where release unconditionally fired.
++						// Tapping again just re-fires, and if the target is one the command
++						// rejects, nothing clears it either (CommandXlat only nulls the pending
++						// command on a VALID DO_COMMAND), so the mode is genuinely inescapable
++						// apart from the two-finger tap.
++						//
++						// Same rule PENDING uses for its own escape: held past the threshold AND
++						// never crossed the dead zone. Aiming an area ability means moving, so a
++						// deliberate aim cannot be swallowed by this; pressing and waiting is
++						// what "get me out of here" looks like on a touchscreen.
++						const float movedFromDown = SDL_fabsf(px - s_touch.downX) + SDL_fabsf(py - s_touch.downY);
++						if ((SDL_GetTicks() - s_touch.downTicks) >= LONG_PRESS_MS &&
++						    movedFromDown < TAP_DEAD_ZONE_PX) {
++							TouchInput::cancelOrDeselect();
++						} else {
++							// GeneralsX @bugfix Android port 07/09/2026 An armed command commits
++							// as a real click, and this one is not a retreat from native input --
++							// it is the same judgement building placement already gets.
++							//
++							// Reported: Guard stayed armed after being used, its button still lit.
++							// evaluateContextCommand() dispatches only the CONTEXT commands --
++							// special powers, hijack, carbomb, sabotage, fire weapon, combat drop
++							// (CommandXlat.cpp:1712-1763). Guard, evacuate and the rest belong to
++							// GUICommandTranslator (priority 40), which acts on MSG_MOUSE_LEFT_CLICK
++							// and nothing else, and which is also what reports COMMAND_COMPLETE and
++							// so clears the mode. Sending no click meant that whole class of
++							// commands was never issued and never cleared -- the mode could only be
++							// escaped, never completed.
++							//
++							// Dispatching them by hand would mean reimplementing doGuardCommand()
++							// and its siblings, which is reintroducing game rules by hand: exactly
++							// what the native path exists to avoid. The click is how the engine
++							// dispatches an armed command, so let it. Special powers are unaffected
++							// -- GUICommandTranslator returns KEEP_MESSAGE for them and the same
++							// click reaches CommandXlat's evaluateContextCommand, which is the
++							// desktop path verbatim.
++							//
++							// The AIM stays native: the radius circle and the valid/invalid answer
++							// still come from armedTargetValid()/setTouchAimPoint() with no messages
++							// at all. Only the commit is a click, at the point the finger let go.
++							pushMousePosition(px, py);
++							pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_DOWN, px, py);
++							pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_UP, px, py);
++						}
++					}
++					break;
++				case TouchState::LIST_SCROLL:
++					// The drag was a scroll: nothing to select, nothing to click.
++					GadgetListBoxTouchScrollEnd();
++					s_touch.listBox = nullptr;
++					break;
++				case TouchState::UI_PRESS:
++				{
++					// GeneralsX @bugfix Android port 03/08/2026 Release at the
++					// ORIGINAL anchor (downX/downY), not wherever the finger
++					// ended up (lastX/lastY) -- matches the PENDING tap case
++					// above, and guarantees this always lands back on the same
++					// widget the press started on even if the finger drifted a
++					// few pixels during a long hold, which is exactly the kind
++					// of natural tremor that used to cancel a hold gesture via
++					// GWM_MOUSE_LEAVING when this path went through PENDING's
++					// deferred classification instead.
++					//
++					// GeneralsX @bugfix Android port 28/09/2026 Reported: holding a button to
++					// read its description before buying still bought it. The hold has to keep
++					// the button pressed -- that is what the description poll watches -- so the
++					// release used to complete a click, and the old answer undid the INTENT
++					// afterwards (cancelOrDeselect): that could back out of a building placement
++					// but not out of a purchase or a queued unit, and with nothing armed it
++					// deselected the builder instead. Undo the MECHANICS: a long hold released
++					// while the description is up takes the press back before the up, exactly as
++					// a mouse sliding off the button does, so the button never fires. A tap, or
++					// a hold released before the description appeared, still acts.
++					//
++					// A fire-on-down button (see the finger-down case) got no press yet: the
++					// tap is sent whole here, unless the hold was a read or the OS took the
++					// touch away.
++					const Bool readHold = (SDL_GetTicks() - s_touch.downTicks) >= LONG_PRESS_MS &&
++						TouchInput::isDescriptionShown();
++					pushMousePosition(s_touch.downX, s_touch.downY);
++					if (s_touch.deferredPress) {
++						if (!readHold && event.type != SDL_EVENT_FINGER_CANCELED) {
++							pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_DOWN, s_touch.downX, s_touch.downY);
++							pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_UP, s_touch.downX, s_touch.downY);
++						}
++					} else {
++						if (readHold) {
++							TouchInput::withdrawReadButtonPress();
++						}
++						pushMouseButton(GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_UP, s_touch.downX, s_touch.downY);
++					}
++					s_touch.deferredPress = FALSE;
++
++					pushPointerGone();
++					TouchInput::reportUiHold(0, 0, FALSE);
++					break;
++				}
++				default:
++					break;
++			}
++
++			if (!continueAsSinglePan) {
++				// GeneralsX @refactor Android port 06/09/2026 The edge-scroll guard that used
++				// to live here is gone, along with the mode it was guarding: screen-edge
++				// scrolling is now off on touch platforms outright (canScrollAtScreenEdge).
++				//
++				// It only ever existed to undo a hazard this file created -- a position
++				// message left near an edge that no finger would ever follow up. It undid it
++				// by sending ANOTHER position message with no finger behind it, at the screen
++				// centre, which is what dragged the GUI hilite onto whatever widget sat there
++				// after a release. With the mode gone the hazard is gone, and so is the last
++				// place this file moved a pointer the player was not touching.
++				if (!startedMomentum) {
++					s_touch.phase = TouchState::IDLE;
++				}
++			}
++		}
++		break;
++	}
++}
++
++// GeneralsX @feature Android port 06/09/2026 Touch-input debug overlay feed.
++//
++// Enabled by a gx_touch_debug.txt marker in the game folder (the launcher's Diagnostics
++// section writes it) or a GX_TOUCH_DEBUG env var -- the same opt-in shape as gx_trace.txt,
++// resolved once. The marker path is relative on purpose: the engine chdir()s into the
++// selected game data folder long before any touch arrives.
++Bool touchDebugEnabled()
++{
++	static const bool enabled = []() {
++		const char *env = getenv("GX_TOUCH_DEBUG");
++		if (env != nullptr && env[0] != '\0' && env[0] != '0') {
++			return true;
++		}
++		FILE *marker = fopen("gx_touch_debug.txt", "r");
++		if (marker != nullptr) {
++			fclose(marker);
++			return true;
++		}
++		return false;
++	}();
++	return enabled ? TRUE : FALSE;
++}
++
++const char *touchPhaseName(TouchState::Phase phase)
++{
++	switch (phase) {
++		case TouchState::IDLE:      return "IDLE";
++		case TouchState::PENDING:   return "PENDING";
++		case TouchState::PANNING:   return "PANNING";
++		case TouchState::TWOFINGER: return "TWOFINGER";
++		case TouchState::MOMENTUM:  return "MOMENTUM";
++		case TouchState::PLACING:   return "PLACING";
++		case TouchState::SELECTING: return "SELECTING";
++		case TouchState::TARGETING: return "TARGETING";
++		case TouchState::LIST_SCROLL: return "LIST_SCROLL";
++		case TouchState::UI_PRESS:  return "UI_PRESS";
++	}
++	return "?";
++}
++
++// Pushed every frame, not only on touch events: the state worth seeing -- a camera scroll
++// still latched with no finger on the screen -- is precisely the state in which no touch
++// event is arriving to refresh it.
++void publishTouchDebug()
++{
++	if (!touchDebugEnabled() || TheInGameUI == nullptr) {
++		return;
++	}
++	Int fingers = 0;
++	if (s_touch.phase == TouchState::TWOFINGER) {
++		fingers = 2;
++	} else if (s_touch.phase != TouchState::IDLE && s_touch.phase != TouchState::MOMENTUM) {
++		fingers = 1;
++	}
++	TheInGameUI->setTouchDebugState(touchPhaseName(s_touch.phase),
++	                                (Int)s_touch.downX, (Int)s_touch.downY,
++	                                (Int)s_touch.lastX, (Int)s_touch.lastY,
++	                                (Int)s_lastPublishedX, (Int)s_lastPublishedY,
++	                                fingers);
++
++	// Log the touch phase, but only when it CHANGES. A camera
++	// that moves on its own has some mode latched; what the log has to show is the exact
++	// moment it latched and what the touch layer had just done -- which a per-frame dump
++	// would bury and a per-event dump would miss entirely, since the latch outlives the
++	// gesture that caused it.
++	static TouchState::Phase lastLoggedPhase = TouchState::IDLE;
++	const Bool phaseChanged = (s_touch.phase != lastLoggedPhase);
++	if (phaseChanged) {
++		fprintf(stderr, "[gxtouch] phase=%s finger=%d,%d down=%d,%d sent=%d,%d\n",
++		        touchPhaseName(s_touch.phase),
++		        (Int)s_touch.lastX, (Int)s_touch.lastY,
++		        (Int)s_touch.downX, (Int)s_touch.downY,
++		        (Int)s_lastPublishedX, (Int)s_lastPublishedY);
++		lastLoggedPhase = s_touch.phase;
++	}
++}
++
++// GeneralsX @bugfix Android port 02/08/2026 Reported: panning freezes mid-
++// drag (finger stays down and moving) specifically in visually busy areas
++// (near the player's own or the enemy's buildings/units), reproducible by
++// dragging out of that area (works again) and back in (freezes again) --
++// present well into a match, not just at session start, and predates the
++// shell-active gate. handleTouchEvent() used to call applyCameraPan()/
++// applyCameraZoom() directly from inside the FINGER_MOTION case, once per
++// SDL touch event -- but pollSDL3Events() drains ALL queued SDL events in
++// a single `while (SDL_PollEvent())` pass each frame, and a busier scene
++// (more to render -> lower FPS -> touch events queue up faster than frames
++// render) means MULTIPLE motion events for the same drag land in the same
++// frame. View::screenToTerrain() casts against the 3D camera's actual
++// transform (W3DView::m_3DCamera, updated once per frame by
++// updateCameraTransform(), gated on m_recalcCamera) -- NOT against
++// View::m_pos directly. userSetPosition() updates m_pos immediately, but
++// the camera transform screenToTerrain() actually rays against stays stale
++// until the NEXT frame's update() runs. So the first pan call in a frame
++// projects correctly, but a second, third, etc. call for more motion
++// events queued in that SAME frame would ray against the now-outdated
++// (pre-this-frame's-moves) transform -- computing a wrong, often near-zero
++// world delta, exactly like the camera "wasn't moving" for those events.
++// Fixed by moving the actual camera-effect application out of the per-
++// event handler and into this function, called ONCE per frame (see its
++// call site in pollSDL3Events()) using whatever position/centroid/spread
++// the drained events left s_touch in -- guaranteeing at most one
++// screenToTerrain "from/to" pair per frame, always against a transform
++// that's consistent for both projections.
++// GeneralsX @bugfix Android port 06/09/2026 No finger on the screen means no pointer,
++// and no pointer means a pointer-driven scroll cannot be legitimate.
++//
++// Two of the engine's scroll modes exist because a pointer is being HELD somewhere:
++// SCROLL_RMB (right button down, scroll away from the anchor) and SCROLL_SCREENEDGE
++// (pointer parked within 3px of an edge). Both stop when a later event says the pointer
++// moved or was released. On a touchscreen there is no such stream: once either latches
++// with no finger down, nothing routine clears it, and the camera scrolls until something
++// unrelated -- the pause menu -- happens to reset it. That is the reported runaway.
++//
++// One specific way it latches is fixed at the source (SelectionXlat.cpp destroying the
++// right-button-up that would have stopped it), but that is one path among several, and
++// each is a message any higher-priority translator may swallow for its own good reasons.
++// So rather than chase them one at a time, assert the invariant directly, once a frame:
++// fingers off the glass, pointer scroll off. SCROLL_KEY is untouched -- an attached
++// keyboard is a real source and its own key-up will stop it.
++//
++// Touch platforms only. On desktop this same file runs with a real mouse, where
++// s_touch.phase is permanently IDLE and this would cancel every legitimate edge scroll.
++void enforceNoPointerScrollWithoutFinger()
++{
++#if defined(__ANDROID__) || (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
++	if (TheLookAtTranslator == nullptr) {
++		return;
++	}
++	// GeneralsX @bugfix Android port 05/10/2026 Not with a pointer chosen (GXMouseMode.h): then
++	// there IS a pointer with no finger down, it rests at the edge, and this cancelled every edge
++	// scroll the moment it started (owner's report, twice). The touch state machine is not even
++	// running in that mode, so its phase says nothing.
++	//
++	const Bool noFinger = (s_touch.phase == TouchState::IDLE || s_touch.phase == TouchState::MOMENTUM);
++	if (noFinger && TheLookAtTranslator->isMovingCamera()) {
++		fprintf(stderr, "[gxtouch] cancelling pointer scroll with no finger down\n");
++		// This engine's LookAtTranslator keeps its scroll controls private; its
++		// public unstick lever is resetModes(), which stops the scroll and
++		// clears every camera mode -- the same end state the donor reached
++		// through setScrolling(SCROLL_NONE).
++		TheLookAtTranslator->resetModes();
++	}
++#endif
++}
++
++// GeneralsX @feature Android port 09/09/2026 The two things a finger loses that a mouse
++// pointer had: it cannot hover, and it has no cursor to change shape.
++//
++//   - Health bars. Drawable::drawHealthBar shows the bar for a drawable that is selected or
++//     that TheInGameUI calls its moused-over drawable, and that id is fed by
++//     MSG_MOUSEOVER_DRAWABLE_HINT -- a message a finger never produces, so tapping a unit
++//     told the player nothing about its condition. Point it at whatever is under the finger.
++//   - Which order is pending. Touch already draws the ability's ground decal, but that decal
++//     is the same green square for every ability, where the mouse had a distinct cursor per
++//     command. Pin the command button's own image under the finger instead, so the picture
++//     the player pressed to get here is the picture they are holding.
++//
++// Both are refreshed here, every frame the finger is down, and both expire on their own in
++// InGameUI::preDraw(). That matters more than it looks: a touch release is the one event
++// this layer cannot count on receiving, and every bug in it so far has been something that
++// latched on a press and waited for a release to clear it.
++static void updateTouchTargetFeedback()
++{
++#if defined(__ANDROID__) || (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
++	if (TheInGameUI == nullptr || TheTacticalView == nullptr) {
++		return;
++	}
++	const Bool fingerDown = (s_touch.phase != TouchState::IDLE && s_touch.phase != TouchState::MOMENTUM);
++	if (!fingerDown) {
++		return;
++	}
++	if (TheShell && TheShell->isShellActive()) {
++		return;
++	}
++	if (touchPointBelongsToUi(s_touch.lastX, s_touch.lastY)) {
++		return;
++	}
++
++	ICoord2D pixel;
++	pixel.x = (Int)s_touch.lastX;
++	pixel.y = (Int)s_touch.lastY;
++
++	Drawable *under = TheTacticalView->pickDrawable(&pixel, TheInGameUI->isInForceAttackMode(),
++	                                                (PickType)PICK_TYPE_SELECTABLE);
++	const DrawableID underID = under ? under->getID() : INVALID_DRAWABLE_ID;
++	TheInGameUI->setTouchHoverDrawable(underID);
++
++	// GeneralsX @feature Android port 09/09/2026 The target is only handed over in PENDING --
++	// the phase where letting go actually issues an order. Once the gesture has become a pan,
++	// a two-finger zoom or a selection box, releasing gives no order at all, and whatever the
++	// finger happens to be sliding over is not about to be attacked; advertising an order
++	// there would be a lie that flickers on and off as the map moves underneath. The pending
++	// GUI command's own icon is unaffected and still follows the finger in every phase, as
++	// before: that one is the player's own armed choice, not a guess about the target.
++	const DrawableID orderTargetID =
++		(s_touch.phase == TouchState::PENDING) ? underID : INVALID_DRAWABLE_ID;
++
++	// The icon comes from TheInGameUI: either the pending command's button image, or -- with
++	// nothing armed -- whatever the implicit order on this target turns out to be. Asking it
++	// to do the lookup keeps ControlBar.h out of this file (that header does not compile
++	// standalone here) and puts the intent test next to the predicates it has to call.
++	TheInGameUI->updateTouchCommandIcon(pixel.x, pixel.y, orderTargetID);
++#endif
++}
++
++void applyPendingCameraMotion()
++{
++	publishTouchDebug();
++	enforceNoPointerScrollWithoutFinger();
++	updateTouchTargetFeedback();
++
++	if (s_touch.phase == TouchState::PANNING) {
++		applyCameraPan(s_touch.panLastPxX, s_touch.panLastPxY, s_touch.lastX, s_touch.lastY);
++		s_touch.panLastPxX = s_touch.lastX;
++		s_touch.panLastPxY = s_touch.lastY;
++	}
++	else if (s_touch.phase == TouchState::TWOFINGER) {
++		// Both signals, every frame, unconditionally -- see the file-header
++		// @bugfix comment above (the OLDER one) for why this replaced the
++		// old pan-vs-zoom classifier.
++		const float cx = (s_touch.f1px + s_touch.f2px) * 0.5f;
++		const float cy = (s_touch.f1py + s_touch.f2py) * 0.5f;
++		applyCameraPan(s_touch.twoCentroidLastX, s_touch.twoCentroidLastY, cx, cy);
++		s_touch.twoCentroidLastX = cx;
++		s_touch.twoCentroidLastY = cy;
++
++		const float dx = s_touch.f2px - s_touch.f1px, dy = s_touch.f2py - s_touch.f1py;
++		const float dist = SDL_sqrtf(dx * dx + dy * dy);
++		applyCameraZoom(dist - s_touch.twoDistLastPx);
++		s_touch.twoDistLastPx = dist;
++
++		// GeneralsX @feature Android port 09/09/2026 Twist the two fingers, rotate the
++		// camera. The angle of the finger-to-finger vector was already being computed and
++		// thrown away; this is the delta of it, wrapped into (-pi, pi] so the seam at the
++		// half-turn does not produce a spin.
++		//
++		// It has to be armed, not applied immediately. Two fingers never pinch or drag
++		// perfectly parallel, so every zoom carries a degree or two of incidental twist,
++		// and applying that would make the camera creep whenever the player zooms. So
++		// accumulate the twist and only start rotating once the gesture has clearly asked
++		// for it; from then on the gesture is 1:1 and stays armed for its lifetime.
++		const float angle = SDL_atan2f(dy, dx);
++		float twist = angle - s_touch.twoAngleLastRad;
++		while (twist > PI)  { twist -= 2.0f * PI; }
++		while (twist < -PI) { twist += 2.0f * PI; }
++		s_touch.twoAngleLastRad = angle;
++
++		if (s_touch.twoRotateArmed) {
++			applyCameraRotate(twist);
++		}
++		else {
++			const float TWIST_ARM_RAD = 0.14f;   // ~8 degrees of deliberate twist
++			s_touch.twoTwistAccumRad += twist;
++			if (SDL_fabsf(s_touch.twoTwistAccumRad) >= TWIST_ARM_RAD) {
++				s_touch.twoRotateArmed = TRUE;
++				GX_TRACE("two-finger twist armed after %.3f rad\n",
++				         (double)s_touch.twoTwistAccumRad);
++			}
++		}
++	}
++	else if (s_touch.phase == TouchState::MOMENTUM) {
++		// GeneralsX @feature Android port 02/08/2026 Coast with the velocity
++		// the finger had at release, decaying every frame, using a virtual
++		// "finger" (momentumX/Y) that applyCameraPan()'s screenToTerrain
++		// projection still needs real screen coordinates for -- no actual
++		// finger is down during this phase.
++		// Advanced by elapsed time, not by frame, so the coast covers the same distance
++		// over the same time at 30, 60 or 240 fps. A long stall (a loading hitch) is
++		// clamped rather than applied as one jump.
++		const Uint64 nowNs = SDL_GetTicksNS();
++		float dt = (float)(nowNs - s_touch.momentumLastNs) * 1.0e-9f;
++		s_touch.momentumLastNs = nowNs;
++		if (dt > 0.05f) {
++			dt = 0.05f;
++		}
++		const float newX = s_touch.momentumX + s_touch.panVelX * dt;
++		const float newY = s_touch.momentumY + s_touch.panVelY * dt;
++		applyCameraPan(s_touch.momentumX, s_touch.momentumY, newX, newY);
++		s_touch.momentumX = newX;
++		s_touch.momentumY = newY;
++		const float friction = SDL_powf(MOMENTUM_FRICTION_PER_60TH, dt * 60.0f);
++		s_touch.panVelX *= friction;
++		s_touch.panVelY *= friction;
++		const float speed = SDL_fabsf(s_touch.panVelX) + SDL_fabsf(s_touch.panVelY);
++		if (speed < MOMENTUM_STOP_PX_PER_SEC) {
++			s_touch.phase = TouchState::IDLE;
++		}
++	}
++}
++
++} // anonymous namespace
++
++
++// ---------------------------------------------------------------------------
++// External entry points (SdlTouch.h). The machine above lives in an
++// anonymous namespace, exactly as in the donor TU; these wrappers are the
++// only symbols this file exports.
++// ---------------------------------------------------------------------------
++
++void SdlTouch_handleEvent(SDL_Window *window, const SDL_Event &event)
++{
++	handleTouchEvent(window, event);
++}
++
++void SdlTouch_applyPendingCameraMotion()
++{
++	applyPendingCameraMotion();
++}
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/TouchInput.cpp b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/TouchInput.cpp
+new file mode 100644
+index 00000000..9805d4a3
+--- /dev/null
++++ b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/TouchInput.cpp
+@@ -0,0 +1,561 @@
++/*
++**	Command & Conquer Generals Zero Hour(tm)
++**	Copyright 2025 Electronic Arts Inc.
++**
++**	This program is free software: you can redistribute it and/or modify
++**	it under the terms of the GNU General Public License as published by
++**	the Free Software Foundation, either version 3 of the License, or
++**	(at your option) any later version.
++**
++**	This program is distributed in the hope that it will be useful,
++**	but WITHOUT ANY WARRANTY; without even the implied warranty of
++**	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++**	GNU General Public License for more details.
++**
++**	You should have received a copy of the GNU General Public License
++**	along with this program.  If not, see <http://www.gnu.org/licenses/>.
++*/
++
++/*
++** TouchInput.cpp -- see TouchInput.h for why this exists.
++*/
++
++#include "SdlDevice/GameClient/TouchInput.h"
++
++#include "Common/GameType.h"
++#include "Common/MessageStream.h"
++#include "Common/AcademyStats.h"
++#include "Common/GameCommon.h"
++#include "Common/Player.h"
++#include "Common/PlayerList.h"
++#include "Common/Radar.h"
++#include "Common/ThingTemplate.h"
++#include "Common/GlobalData.h"
++#include "GameClient/CommandXlat.h"
++#include "GameClient/ControlBar.h"
++#include "GameClient/Display.h"
++#include "GameClient/Drawable.h"
++#include "GameClient/GameClient.h"
++#include "GameClient/GameWindow.h"
++#include "GameClient/GameWindowManager.h"
++#include "GameClient/InGameUI.h"
++#include "GameClient/SelectionInfo.h"
++#include "GameClient/SelectionXlat.h"
++#include "GameClient/View.h"
++#include "GameLogic/Object.h"
++
++namespace
++{
++
++	/**
++		The object under a screen point, as the ORDER path sees it.
++
++		Mirrors what CommandXlat does before every evaluateContextCommand() call: pick with
++		the context's pick types, then discard a corpse. A dead unit left in the pick result
++		blocks positional orders -- you would aim past the wreck and the order would be read
++		as "interact with the wreck" instead of "go there".
++	*/
++	Drawable *pickForOrder(const ICoord2D &pixel)
++	{
++		if (TheTacticalView == nullptr || TheInGameUI == nullptr)
++			return nullptr;
++
++		const Bool forceAttack = TheInGameUI->isInForceAttackMode();
++		const UnsignedInt pickType = getPickTypesForContext(forceAttack);
++		Drawable *draw = TheTacticalView->pickDrawable(&pixel, forceAttack, (PickType)pickType);
++
++		const Object *obj = draw ? draw->getObject() : nullptr;
++		if (obj == nullptr || (obj->isEffectivelyDead() && !obj->isKindOf(KINDOF_ALWAYS_SELECTABLE)))
++			return nullptr;
++
++		return draw;
++	}
++
++	/// The object under a screen point that the player could SELECT, or null.
++	Drawable *pickForSelection(const ICoord2D &pixel)
++	{
++		if (TheTacticalView == nullptr)
++			return nullptr;
++
++		Drawable *draw = TheTacticalView->pickDrawable(&pixel, FALSE, PICK_TYPE_SELECTABLE);
++		if (!CanSelectDrawable(draw, FALSE))
++			return nullptr;
++
++		return draw;
++	}
++
++	/**
++		Replace the whole selection with this one drawable, and tell the logic about it.
++
++		The selection is game state, not a local highlight: it travels over the network and
++		into replays. Skipping the message would make the unit look selected and take no
++		orders.
++
++		GeneralsX @bugfix Android port 06/09/2026 playSound exists because the two message
++		types are not interchangeable, and this first shipped using the wrong one. Reported:
++		tapping a unit or a building was silent, where a click makes it answer.
++
++		MSG_CREATE_SELECTED_GROUP is what an ordinary click sends
++		(SelectionXlat.cpp:900) and is what produces the voice response or the building's
++		select sound. MSG_CREATE_SELECTED_GROUP_NO_SOUND exists for exactly one caller --
++		the double-click path, which selects one unit and then widens the selection to every
++		matching unit on screen; that second step sends the sound-carrying message itself,
++		so the first one has to stay quiet or the unit answers twice.
++	*/
++	void selectOnly(Drawable *draw, Bool playSound)
++	{
++		if (draw == nullptr || TheInGameUI == nullptr)
++			return;
++
++		TheInGameUI->deselectAllDrawables();
++		TheInGameUI->selectDrawable(draw);
++
++		Object *obj = draw->getObject();
++		if (obj != nullptr && TheMessageStream != nullptr)
++		{
++			GameMessage *msg = TheMessageStream->appendMessage(
++				playSound ? GameMessage::MSG_CREATE_SELECTED_GROUP
++									: GameMessage::MSG_CREATE_SELECTED_GROUP_NO_SOUND);
++			msg->appendBooleanArgument(TRUE);
++			msg->appendObjectIDArgument(obj->getID());
++		}
++	}
++
++	/**
++		Does the current selection have a MORE SPECIFIC interaction with this object than
++		simply moving to where it stands?
++
++		This is the one genuinely ambiguous tap on a touchscreen. Tapping something the
++		player owns usually means "select that instead". But tapping your own transport
++		while infantry is selected means "get in", and tapping your own damaged tank while
++		a repair vehicle is selected means "repair it" -- and on a mouse those are separate
++		buttons, which a finger does not have.
++
++		Rather than guess, ask the engine. evaluateContextCommand in EVALUATE_ONLY mode
++		returns the order that WOULD be issued without issuing it. If that order is a plain
++		move (or nothing), the tap carries no special meaning and is a selection. If it is
++		anything else, the engine has already decided the two objects interact, and that is
++		what the player meant.
++	*/
++	Bool selectionInteractsWith(Drawable *draw, const Coord3D &pos)
++	{
++		if (draw == nullptr || TheGameClient == nullptr)
++			return FALSE;
++
++		const GameMessage::Type t =
++			TheGameClient->evaluateContextCommand(draw, &pos, CommandTranslator::EVALUATE_ONLY);
++
++		switch (t)
++		{
++			case GameMessage::MSG_INVALID:
++			case GameMessage::MSG_DO_MOVETO:
++			case GameMessage::MSG_DO_ATTACKMOVETO:
++			// GeneralsX @feature Android port 24/09/2026 Waypoint mode (the touch Alt button,
++			// issue #25) turns every order into a waypoint, so a tap on your own unit would
++			// always "interact". With Alt held, a click on your own unit still selects it.
++			case GameMessage::MSG_ADD_WAYPOINT:
++				return FALSE;
++			default:
++				return TRUE;
++		}
++	}
++
++	/// Issue the context order for a point, exactly as the click path does.
++	void issueContextOrder(Drawable *draw, const Coord3D &pos)
++	{
++		if (TheGameClient == nullptr || TheInGameUI == nullptr)
++			return;
++
++		// Force attack is answered in tap() before this is reached (forceAttackTap).
++		TheGameClient->evaluateContextCommand(draw, &pos, CommandTranslator::DO_COMMAND);
++
++		TheInGameUI->clearAttackMoveToMode();
++	}
++
++	/**
++		GeneralsX @feature Android port 24/09/2026 The tap after the force-attack button was
++		pressed (issue #25).
++
++		A mouse player force-attacks by clicking with Ctrl held, and CommandXlat answers that
++		click with evaluateForceAttack() instead of evaluateContextCommand()
++		(CommandXlat.cpp, the MSG_MOUSE_RIGHT_CLICK case) -- which is what lets the target be
++		your own unit or bare ground. Do exactly that, with the same pick.
++
++		GeneralsX @tweak Android port 05/10/2026 The mode stays on after the order -- the issue's
++		author asked for a mode, so artillery can be aimed shot after shot -- the way Ctrl stays
++		down for as long as the key is held. The button or cancelOrDeselect() turns it off.
++
++		Returns FALSE when the mode is not armed, or armed with nothing controllable selected --
++		then there is nothing to order, the mode is dropped, and the tap is an ordinary one.
++	*/
++	Bool forceAttackTap(const ICoord2D &pixel)
++	{
++		if (TheInGameUI == nullptr || !TheInGameUI->isInForceAttackMode())
++			return FALSE;
++
++		if (!TheInGameUI->areSelectedObjectsControllable())
++		{
++			TheInGameUI->setForceAttackMode(FALSE);
++			return FALSE;
++		}
++
++		Coord3D pos;
++		if (TheTacticalView != nullptr && TheGameClient != nullptr &&
++				TheTacticalView->screenToTerrain(&pixel, &pos))
++		{
++			TheGameClient->evaluateForceAttack(pickForOrder(pixel), &pos, CommandTranslator::DO_COMMAND);
++		}
++		// Off the terrain: keep the mode armed, the player simply missed the map.
++		return TRUE;
++	}
++
++}  // anonymous namespace
++
++namespace TouchInput
++{
++
++	Bool hasArmedCommand()
++	{
++		return (TheInGameUI != nullptr && TheInGameUI->getGUICommand() != nullptr);
++	}
++
++	Bool hasControllableSelection()
++	{
++		return (TheInGameUI != nullptr && TheInGameUI->areSelectedObjectsControllable());
++	}
++
++	//-------------------------------------------------------------------------------------
++	Bool skipMovieIfPlaying()
++	{
++		// GeneralsX @bugfix Android port 06/09/2026 Reported: the intro could no longer be
++		// skipped by tapping, only with the system Back gesture.
++		//
++		// Skipping a movie was never handled by the translator chain at all -- WindowXlat
++		// watches for a raw MSG_RAW_MOUSE_LEFT_BUTTON_DOWN that nothing else consumed and
++		// calls stopMovie() on it (WindowXlat.cpp, the movie branch). The moment battlefield
++		// taps stopped synthesizing that button, the only way to reach that branch was gone.
++		// Handled here instead, before anything else: while a movie is up, the only thing a
++		// tap anywhere can mean is "skip it".
++		if (TheDisplay != nullptr && TheDisplay->isMoviePlaying() &&
++				TheGlobalData != nullptr && TheGlobalData->m_allowExitOutOfMovies)
++		{
++			TheDisplay->stopMovie();
++			return TRUE;
++		}
++		return FALSE;
++	}
++
++	//-------------------------------------------------------------------------------------
++	void beginAiming(Int x, Int y)
++	{
++		// GeneralsX @bugfix Android port 06/09/2026 Reported: no circle when aiming an
++		// ability -- the satellite scan simply went off with no radius shown.
++		//
++		// The radius decal is created by setRadiusCursor(), which on the mouse path is
++		// called from createCommandHint() every time a MSG_RAW_MOUSE_POSITION produces a
++		// fresh hint. Native aiming sends no position messages, so no hint was ever
++		// created, so setRadiusCursor() was never called and m_curRadiusCursor stayed
++		// empty. Create it here, at the moment a finger actually starts aiming -- which is
++		// also the right moment: not when the button is pressed (there is nowhere to draw
++		// it yet) and not on every motion (it only needs creating once).
++		if (TheInGameUI == nullptr)
++			return;
++
++		const CommandButton *command = TheInGameUI->getGUICommand();
++		if (command == nullptr)
++			return;
++
++		TheInGameUI->setRadiusCursor(command->getRadiusCursorType(),
++																 command->getSpecialPowerTemplate(),
++																 command->getWeaponSlot());
++		TheInGameUI->setTouchAimPoint(x, y, armedTargetValid(x, y));
++	}
++
++	//-------------------------------------------------------------------------------------
++	void tap(Int x, Int y)
++	{
++		if (skipMovieIfPlaying())
++			return;
++
++		if (TheInGameUI == nullptr || TheTacticalView == nullptr)
++			return;
++
++		ICoord2D pixel;
++		pixel.x = x;
++		pixel.y = y;
++
++		// 1. An armed command owns the tap outright -- but it is not dispatched here.
++		// A battlefield touch with a command armed enters the TARGETING phase, which
++		// commits it as a real click on release, because GUICommandTranslator (guard,
++		// evacuate, ...) acts on nothing else. See the comment at that call site. This
++		// branch exists so a tap arriving by some other route cannot fall through and
++		// be read as a move order.
++		if (hasArmedCommand())
++			return;
++
++		// 1b. The force-attack button owns the next tap the same way: whatever is under the
++		//     finger, your own units included, is the target -- never a selection.
++		if (forceAttackTap(pixel))
++			return;
++
++		Coord3D pos;
++		const Bool onTerrain = TheTacticalView->screenToTerrain(&pixel, &pos);
++
++		// 2. Something of the player's own under the finger.
++		Drawable *selectable = pickForSelection(pixel);
++		if (selectable != nullptr)
++		{
++			const Object *obj = selectable->getObject();
++			const Bool isOwn = (obj != nullptr && obj->isLocallyControlled());
++
++			if (isOwn)
++			{
++				const Bool interacts = onTerrain && hasControllableSelection() &&
++															 !selectable->isSelected() &&
++															 selectionInteractsWith(selectable, pos);
++				if (!interacts)
++				{
++					selectOnly(selectable, TRUE);
++					return;
++				}
++				// else: fall through and let it be an order onto that object
++			}
++		}
++
++		if (!onTerrain)
++			return;
++
++		// 3. An order, if there is anything to order.
++		if (hasControllableSelection())
++		{
++			issueContextOrder(pickForOrder(pixel), pos);
++			return;
++		}
++
++		// 4. Nothing selectable, nothing to order: a tap on empty ground clears the
++		//    selection, the same as a click on empty ground does.
++		if (selectable != nullptr)
++			selectOnly(selectable, TRUE);
++		else
++			TheInGameUI->deselectAllDrawables();
++	}
++
++	//-------------------------------------------------------------------------------------
++	void doubleTap(Int x, Int y)
++	{
++		if (skipMovieIfPlaying())
++			return;
++
++		if (TheInGameUI == nullptr || TheTacticalView == nullptr)
++			return;
++
++		if (hasArmedCommand())
++			return;
++
++		// GeneralsX @feature Android port 24/09/2026 With a touch modifier mode on (issue #25)
++		// the second tap is just another tap: a force attack, or one more waypoint -- not a
++		// select-all-of-type or a guard order that the mode was never asked for.
++		if (TheInGameUI->isInForceAttackMode() || TheInGameUI->isInWaypointMode())
++		{
++			tap(x, y);
++			return;
++		}
++
++		ICoord2D pixel;
++		pixel.x = x;
++		pixel.y = y;
++
++		Drawable *picked = pickForSelection(pixel);
++		Object *obj = picked ? picked->getObject() : nullptr;
++
++		// Only the player's own, mass-selectable units answer to this. Anything else falls
++		// back to an ordinary tap so a double tap is never worse than a single one.
++		if (picked == nullptr || obj == nullptr || !obj->isLocallyControlled() ||
++				!picked->isMassSelectable())
++		{
++			// GeneralsX @bugfix Android port 08/09/2026 ...except a double tap on bare
++			// ground, which has its own meaning the player can switch on: Options ->
++			// CONTROL OPTIONS -> "Double Click Guard" (m_doubleClickAttackMove) makes a
++			// double click on the ground an attack-move instead of a plain move. Reported
++			// as "the Double Click Guard checkbox does nothing".
++			//
++			// It did nothing because the flag is only ever read while handling
++			// MSG_MOUSE_LEFT_DOUBLE_CLICK in CommandXlat (CommandXlat.cpp:3980), and a
++			// natively resolved double tap never puts that message in the stream. So do
++			// here exactly what that case does -- same message, same guard mode, same
++			// academy stat and hint -- rather than route a synthetic double click through
++			// the translators just to reach it.
++			//
++			// Only for a tap that picked nothing at all. Double-tapping an enemy or a
++			// neutral object stays an ordinary tap (an attack, a capture), keeping the
++			// "never worse than a single tap" rule above intact. CommandXlat's own
++			// alternate-mouse condition is dropped: a finger has no second button, so
++			// that setting does not govern touch input at all.
++			if (picked == nullptr &&
++					TheGlobalData != nullptr && TheGlobalData->m_doubleClickAttackMove &&
++					hasControllableSelection() && TheMessageStream != nullptr)
++			{
++				Coord3D pos;
++				if (TheTacticalView->screenToTerrain(&pixel, &pos))
++				{
++					GameMessage *newMsg =
++						TheMessageStream->appendMessage(GameMessage::MSG_DO_GUARD_POSITION);
++					newMsg->appendLocationArgument(pos);
++					newMsg->appendIntegerArgument(GUARDMODE_NORMAL);
++
++					if (ThePlayerList != nullptr && ThePlayerList->getLocalPlayer() != nullptr)
++						ThePlayerList->getLocalPlayer()->getAcademyStats()
++							->recordDoubleClickAttackMoveOrderGiven();
++
++					// The touch entry point, not the mouse one: that reads TheMouse's
++					// position (InGameUI.cpp:1631), which on a touch device is not where
++					// the player pointed, and it leaves the decal to createCommandHint(),
++					// which runs off mouseover hints a finger never generates. Reported as
++					// "double tap does nothing, and the radius only appears if I open the
++					// game menu". Pass the point that was actually ordered.
++					TheInGameUI->triggerTouchAttackMoveGuardHint(&pos);
++					return;
++				}
++			}
++
++			tap(x, y);
++			return;
++		}
++
++		selectOnly(picked, FALSE);
++		TheInGameUI->selectMatchingAcrossScreen();
++	}
++
++	//-------------------------------------------------------------------------------------
++	Bool armedTargetValid(Int x, Int y)
++	{
++		if (!hasArmedCommand() || TheGameClient == nullptr || TheTacticalView == nullptr)
++			return FALSE;
++
++		ICoord2D pixel;
++		pixel.x = x;
++		pixel.y = y;
++
++		Coord3D pos;
++		if (!TheTacticalView->screenToTerrain(&pixel, &pos))
++			return FALSE;
++
++		// EVALUATE_ONLY: the same question the engine asks itself to pick between the
++		// valid and invalid cursor art, asked directly instead of read back off a bitmap.
++		const GameMessage::Type t =
++			TheGameClient->evaluateContextCommand(pickForOrder(pixel), &pos, CommandTranslator::EVALUATE_ONLY);
++
++		return (t != GameMessage::MSG_INVALID);
++	}
++
++	//-------------------------------------------------------------------------------------
++	void reportUiHold(Int x, Int y, Bool held)
++	{
++		if (TheControlBar != nullptr)
++			TheControlBar->setTouchHoldPoint(x, y, held);
++	}
++
++	//-------------------------------------------------------------------------------------
++	Bool isDescriptionShown()
++	{
++		return TheControlBar != nullptr && TheControlBar->isBuildTooltipLayoutVisible();
++	}
++
++	//-------------------------------------------------------------------------------------
++	Bool withdrawReadButtonPress()
++	{
++		if (TheWindowManager == nullptr)
++			return FALSE;
++
++		// The grab window is the button the press went to (the window manager grabs it on
++		// the down and routes the matching up to it). Check-like buttons act on the down
++		// already, so there is nothing left to take back for them.
++		GameWindow *pressed = TheWindowManager->winGetGrabWindow();
++		if (pressed == nullptr || !BitTest(pressed->winGetStyle(), GWS_PUSH_BUTTON) ||
++		    BitTest(pressed->winGetStatus(), WIN_STATUS_CHECK_LIKE))
++			return FALSE;
++
++		TheWindowManager->winSendInputMsg(pressed, GWM_MOUSE_LEAVING, 0, 0);
++		return TRUE;
++	}
++
++	//-------------------------------------------------------------------------------------
++	void cancelOrDeselect()
++	{
++		if (TheInGameUI == nullptr)
++			return;
++
++		// Same precedence a right-click has, minus the right-click: back out of the most
++		// recent commitment first, and only clear the selection if there is nothing to
++		// back out of.
++		if (TheInGameUI->getGUICommand() != nullptr)
++		{
++			TheInGameUI->setGUICommand(nullptr);
++			return;
++		}
++
++		// GeneralsX @feature Android port 24/09/2026 The touch modifier modes (issue #25) end here.
++		// GeneralsX @tweak Android port 05/10/2026 Together with the selection, in one gesture: the
++		// issue's author had to cancel twice to let go of a unit after giving it waypoints, once
++		// for the mode and once for the selection. A mode is a way of giving orders to the
++		// selection, so it has no use once the selection is gone; to leave the mode and keep the
++		// units, press the lit button.
++		TheInGameUI->setForceAttackMode(FALSE);
++		TheInGameUI->setWaypointMode(FALSE);
++
++		if (TheInGameUI->getPendingPlaceSourceObjectID() != INVALID_ID)
++		{
++			TheInGameUI->placeBuildAvailable(nullptr, nullptr);
++			TheInGameUI->setPreventLeftClickDeselectionInAlternateMouseModeForOneClick(FALSE);
++			return;
++		}
++
++		TheInGameUI->deselectAllDrawables();
++	}
++
++
++	//-------------------------------------------------------------------------------------
++	Bool lookAtRadarPoint(Int x, Int y)
++	{
++		if (TheRadar == nullptr || TheWindowManager == nullptr || TheTacticalView == nullptr)
++			return FALSE;
++
++		// getWindowForInputAt() reports the deepest window a press here would be routed to,
++		// which for the radar is whatever child happens to sit at that pixel -- so walk up
++		// to the radar window itself. Radar::isRadarWindow() is the engine's own test; the
++		// window is looked up once per map in Radar::newMap (Radar.cpp:314).
++		Bool onRadar = FALSE;
++		for (GameWindow *win = TheWindowManager->getWindowForInputAt(x, y);
++		     win != nullptr;
++		     win = win->winGetParent())
++		{
++			if (TheRadar->isRadarWindow(win))
++			{
++				onRadar = TRUE;
++				break;
++			}
++		}
++
++		if (!onRadar)
++			return FALSE;
++
++		// Radar::screenPixelToWorld does the whole conversion the radar callback does by
++		// hand -- window-relative pixel, radar cell, world point -- and fails cleanly for a
++		// pixel that is inside the window but outside the map's part of it.
++		ICoord2D pixel;
++		pixel.x = x;
++		pixel.y = y;
++
++		Coord3D world;
++		if (!TheRadar->screenPixelToWorld(&pixel, &world))
++			return FALSE;
++
++		// Straight to the view, exactly as ControlBarCallback.cpp:267 does for a right
++		// click. Not a synthesized right click: a raw right button in the message stream is
++		// what left the camera latched into an edge scroll before (see the header comment on
++		// this module), and nothing about moving the camera needs the message stream.
++		TheTacticalView->userLookAt(&world);
++		return TRUE;
++	}
++
++}  // namespace TouchInput
 diff --git a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp
 index a37b9014..39546d7c 100644
 --- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp
