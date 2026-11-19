@@ -656,6 +656,26 @@ jobs:
           [ -f "${GITHUB_WORKSPACE}/libmainrfxgame.so" ] || { echo "::error::libmainrfxgame.so missing at strip time (C4 game staging lost)"; exit 1; }
           "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainrfxgame.so"
 
+      # v1.22: the Reforged engine's own data layer (its *Reforged.ini
+      # set, cursors, scripts, window files, HUD textures) ships
+      # upstream as an overlay directory (PosixMain -overlay, the
+      # fork's P1 decision 9). Stage it with the fork's own script --
+      # Run folder empty, so no 1.65 GB art archives are linked; the
+      # fork's own macOS app ships without them too -- zip it, and
+      # drop it into the app assets. RfxGameActivity extracts it on
+      # first launch and passes -overlay to the engine.
+      - name: Stage the fork's data overlay (v1.22)
+        run: |
+          set -euo pipefail
+          bash reforged-engine/GeneralsMD/Code/Tools/stage-overlay.sh \
+            reforged-engine/GeneralsMD/Code/Data "" \
+            "$GITHUB_WORKSPACE/rfx-overlay-out"
+          (cd "$GITHUB_WORKSPACE/rfx-overlay-out" && zip -r -q "$GITHUB_WORKSPACE/rfx-overlay.zip" .)
+          mkdir -p android/app/src/main/assets
+          cp "$GITHUB_WORKSPACE/rfx-overlay.zip" android/app/src/main/assets/rfx-overlay.zip
+          unzip -l android/app/src/main/assets/rfx-overlay.zip | grep -q "Data/INI/ScienceReforged.ini"
+          ls -la android/app/src/main/assets/rfx-overlay.zip
+
       # GX_GRADLE_TASK is the overlay patch's knob: the packaging script
       # stages jniLibs/assets, then runs assembleRelease instead of its
       # default assembleDebug, and its final check looks at the release
@@ -691,6 +711,22 @@ jobs:
           cp "$APK" "ZeroHourReforged.apk"
           ls -la "ZeroHourReforged.apk"
           echo "path=ZeroHourReforged.apk" >> "$GITHUB_OUTPUT"
+
+      # v1.22: the shipped APK must carry the data overlay asset,
+      # and the overlay's INIs must keep their CRLF endings (the
+      # multiplayer INI CRC reads each line with its carriage
+      # return; stage-overlay.sh guarantees this, verify it here).
+      - name: Verify APK carries the data overlay (v1.22)
+        run: |
+          set -euo pipefail
+          unzip -l ZeroHourReforged.apk | grep -q "assets/rfx-overlay.zip"
+          unzip -p ZeroHourReforged.apk assets/rfx-overlay.zip > /tmp/rfx-overlay.zip
+          unzip -l /tmp/rfx-overlay.zip | grep -q "Data/INI/ScienceReforged.ini"
+          unzip -l /tmp/rfx-overlay.zip | grep -q "Data/Scripts/SkirmishScripts.scb"
+          unzip -p /tmp/rfx-overlay.zip Data/INI/ScienceReforged.ini > /tmp/sci.ini
+          grep -q $'\r' /tmp/sci.ini || { echo "::error::ScienceReforged.ini lost its CRLF endings"; exit 1; }
+          echo "overlay asset verified in APK"
+
 
       # Every non-system DT_NEEDED of the shipped engines must be inside the APK, or
       # the build would crash with dlopen failed on a real device (upstream
