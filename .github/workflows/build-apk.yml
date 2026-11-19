@@ -542,6 +542,14 @@ jobs:
       - name: Build Reforged C3 test payload (libmainrfx.so)
         run: |
           set -euo pipefail
+          # v1.24.1 (run #40 fix): current GitHub runner images no longer
+          # ship the host zlib headers; this tree's vendored minizip tool
+          # includes <zlib.h> and its configure finds the host libz, so
+          # the compile died with "zlib.h: No such file or directory".
+          # Install the header ourselves instead of trusting the image.
+          if [ ! -f /usr/include/zlib.h ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq zlib1g-dev
+          fi
           SRC="$PWD/reforged-engine"
           git -C "$SRC" apply --check "$PWD/reforged-overlay/probe/patches/reforged-c1-android.patch"
           git -C "$SRC" apply "$PWD/reforged-overlay/probe/patches/reforged-c1-android.patch"
