@@ -206,6 +206,20 @@ public class RfxGameActivity extends SDLActivity {
             Os.setenv("ZH_USER_DATA_DIR",
                 userDir.getAbsolutePath(), true);
         } catch (Exception ignored) {}
+        // C4 diagnostics (v1.19): the engine's debug channel also
+        // writes to stderr, which Android discards for app processes;
+        // redirect fd 2 to a file in the external files dir before
+        // the engine starts, so the shared test log can carry it.
+        try {
+            java.io.File errFile =
+                new java.io.File(getExternalFilesDir(null), "rfxgame-stderr.txt");
+            java.io.FileOutputStream errOut =
+                new java.io.FileOutputStream(errFile, false);
+            Os.dup2(errOut.getFD(), 2);
+            markGameStage("stderr-redirected");
+        } catch (Exception e) {
+            markGameStage("stderr-redirect-failed");
+        }
         super.onCreate(savedInstanceState);
         markGameStage("oncreate-done");
     }
@@ -721,6 +735,60 @@ edit(SETUP, [
         }
         java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);"""),
 ])
+
+# ---------------- 3f) v1.19: C4 diagnostics in the shared test log ----
+# The C4 game run leaves its evidence in the external files dir
+# (rfxgame-stage.txt from RfxGameActivity, rfxgame-stderr.txt from the
+# fd-2 redirect) and in the engine's own debug log under the isolated
+# user dir; append all three so one shared log carries the whole run.
+edit(SETUP, [
+    ("""        } else {
+            sb.append("test-rec.txt: MISSING\\n");
+        }
+        java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);""",
+     """        } else {
+            sb.append("test-rec.txt: MISSING\\n");
+        }
+        // C4 diagnostics (v1.19): the Reforged game run's evidence.
+        java.io.File gstage = new java.io.File(dir, "rfxgame-stage.txt");
+        if (gstage.isFile()) {
+            sb.append("rfxgame-stage.txt: ").append(gstage.length())
+              .append(" bytes, modified ")
+              .append(rfxTime(gstage.lastModified())).append("\\n");
+            sb.append("---- rfxgame-stage.txt ----\\n");
+            sb.append(readTextFileQuietly(gstage));
+            sb.append("\\n---- end rfxgame-stage.txt ----\\n");
+        } else {
+            sb.append("rfxgame-stage.txt: MISSING\\n");
+        }
+        java.io.File gerr = new java.io.File(dir, "rfxgame-stderr.txt");
+        if (gerr.isFile()) {
+            sb.append("rfxgame-stderr.txt: ").append(gerr.length())
+              .append(" bytes, modified ")
+              .append(rfxTime(gerr.lastModified())).append("\\n");
+            sb.append("---- rfxgame-stderr.txt ----\\n");
+            sb.append(readTextFileQuietly(gerr));
+            sb.append("\\n---- end rfxgame-stderr.txt ----\\n");
+        } else {
+            sb.append("rfxgame-stderr.txt: MISSING\\n");
+        }
+        java.io.File glog = new java.io.File(dir, "rfx-user/Logs/DebugLogFile.txt");
+        if (!glog.isFile()) {
+            glog = new java.io.File(dir, "rfx-user/DebugLogFile.txt");
+        }
+        if (glog.isFile()) {
+            sb.append("DebugLogFile.txt: ").append(glog.length())
+              .append(" bytes, modified ")
+              .append(rfxTime(glog.lastModified())).append("\\n");
+            sb.append("---- DebugLogFile.txt ----\\n");
+            sb.append(readTextFileQuietly(glog));
+            sb.append("\\n---- end DebugLogFile.txt ----\\n");
+        } else {
+            sb.append("DebugLogFile.txt: MISSING\\n");
+        }
+        java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);"""),
+])
+
 
 # ---------------- 4) Packaging knob for libmainrfx.so ----------------
 edit(PACKAGE_SH, [(
