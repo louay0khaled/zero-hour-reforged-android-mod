@@ -737,10 +737,81 @@ edit(SETUP, [
         }
         android.content.Intent send = new android.content.Intent(
             android.content.Intent.ACTION_SEND);
-        send.setType("text/plain");
         send.putExtra(android.content.Intent.EXTRA_TEXT, log);
+        // v1.24.1: attach a zip of the FULL evidence files as well. The
+        // text above carries only the first 64 KB of each file, so the
+        // end of a long session (where the failures live) never survived
+        // a text share; the zip carries every byte of every file.
+        java.io.File zip = buildRfxLogZip(dir);
+        if (zip != null) {
+            try {
+                android.net.Uri uri = androidx.core.content.FileProvider
+                    .getUriForFile(this,
+                        getPackageName() + ".fileprovider", zip);
+                send.setType("application/zip");
+                send.putExtra(android.content.Intent.EXTRA_STREAM, uri);
+                send.addFlags(
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) {
+                send.setType("text/plain");
+            }
+        } else {
+            send.setType("text/plain");
+        }
         startActivity(android.content.Intent.createChooser(send,
             getString(R.string.setup_tests_logs_title)));
+    }
+
+    private java.io.File buildRfxLogZip(java.io.File dir) {
+        if (dir == null) {
+            return null;
+        }
+        try {
+            java.util.ArrayList<java.io.File> files =
+                new java.util.ArrayList<java.io.File>();
+            files.add(new java.io.File(dir, RFX_RESULT_FILE));
+            String gamePath = getSavedGamePath();
+            if (gamePath != null) {
+                files.add(new java.io.File(gamePath, "test-rec.txt"));
+            }
+            files.add(new java.io.File(dir, "rfxgame-stage.txt"));
+            files.add(new java.io.File(dir, "rfxgame-stderr.txt"));
+            java.io.File glog = new java.io.File(dir,
+                "rfx-user/Logs/DebugLogFile.txt");
+            if (!glog.isFile()) {
+                glog = new java.io.File(dir,
+                    "rfx-user/DebugLogFile.txt");
+            }
+            files.add(glog);
+            files.add(new java.io.File(dir, RFX_CAPTURE_FILE));
+            java.io.File zip = new java.io.File(getCacheDir(),
+                "zh-reforged-test-logs.zip");
+            java.util.zip.ZipOutputStream zout =
+                new java.util.zip.ZipOutputStream(
+                    new java.io.FileOutputStream(zip));
+            byte[] buf = new byte[65536];
+            boolean any = false;
+            for (java.io.File f : files) {
+                if (!f.isFile()) {
+                    continue;
+                }
+                zout.putNextEntry(
+                    new java.util.zip.ZipEntry(f.getName()));
+                java.io.FileInputStream in =
+                    new java.io.FileInputStream(f);
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    zout.write(buf, 0, n);
+                }
+                in.close();
+                zout.closeEntry();
+                any = true;
+            }
+            zout.close();
+            return any ? zip : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void onCopyRfxLog() {
@@ -772,6 +843,33 @@ edit(SETUP, [
             int n = in.read(buf);
             in.close();
             return n > 0 ? new String(buf, 0, n, "UTF-8") : "";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String readTextTailQuietly(java.io.File f,
+            int maxBytes) {
+        try {
+            long len = f.length();
+            if (len <= 0) {
+                return "";
+            }
+            int n = (int) Math.min(len, maxBytes);
+            java.io.RandomAccessFile raf =
+                new java.io.RandomAccessFile(f, "r");
+            raf.seek(len - n);
+            byte[] buf = new byte[n];
+            int off = 0;
+            while (off < n) {
+                int r = raf.read(buf, off, n - off);
+                if (r < 0) {
+                    break;
+                }
+                off += r;
+            }
+            raf.close();
+            return off > 0 ? new String(buf, 0, off, "UTF-8") : "";
         } catch (Exception e) {
             return "";
         }
@@ -853,6 +951,8 @@ edit(SETUP, [
               .append(rfxTime(gerr.lastModified())).append("\\n");
             sb.append("---- rfxgame-stderr.txt ----\\n");
             sb.append(readTextFileQuietly(gerr));
+            sb.append("\\n---- tail of rfxgame-stderr.txt ----\\n");
+            sb.append(readTextTailQuietly(gerr, 24576));
             sb.append("\\n---- end rfxgame-stderr.txt ----\\n");
         } else {
             sb.append("rfxgame-stderr.txt: MISSING\\n");
@@ -867,6 +967,8 @@ edit(SETUP, [
               .append(rfxTime(glog.lastModified())).append("\\n");
             sb.append("---- DebugLogFile.txt ----\\n");
             sb.append(readTextFileQuietly(glog));
+            sb.append("\\n---- tail of DebugLogFile.txt ----\\n");
+            sb.append(readTextTailQuietly(glog, 24576));
             sb.append("\\n---- end DebugLogFile.txt ----\\n");
         } else {
             sb.append("DebugLogFile.txt: MISSING\\n");
