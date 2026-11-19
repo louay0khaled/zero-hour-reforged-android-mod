@@ -760,9 +760,15 @@ jobs:
               exit 1
             fi
           done
-          for forbidden in libmain.so libmain60.so libgenerals.so libgenerals60.so libmainrf.so libmainrf60.so libmainz60.so; do
+          for forbidden in libmain.so libmain60.so libgenerals.so libgenerals60.so libmainrf.so libmainrf60.so libmainz60.so libEGL_angle.so libGLESv2_angle.so libadrenotools.so libdxvk_d3d8.so libdxvk_d3d9.so libfile_redirect_hook.so libgamespy.so libgsl_alloc_hook.so libhook_impl.so libmain_hook.so libopenal.so libSDL3.so libSDL3_image.so libc++_shared.so; do
             if [ -f "${WORKDIR}/lib/arm64-v8a/${forbidden}" ]; then
               echo "::error::forbidden engine library ${forbidden} is packaged in the APK -- v1.20 ships the Reforged payload only (libmainrfx.so + libmainrfxgame.so), no play engine"
+              exit 1
+            fi
+          done
+          for forbidden_asset in "assets/default_driver/" "assets/gamedata/dxvk.conf"; do
+            if unzip -l "${APK}" | grep -q "${forbidden_asset}"; then
+              echo "::error::forbidden old-engine asset ${forbidden_asset} is packaged in the APK (v1.24.1 purge)"
               exit 1
             fi
           done
