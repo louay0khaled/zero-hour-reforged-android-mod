@@ -247,6 +247,32 @@ index afd06b34..3256b9f2 100644
  	virtual Real getZoomForHeight( Real heightAboveGround ) { return m_zoom; }		///< the zoom setZoomToHeight would set, without setting it
  	void setZoomToStart( Bool shellMap );																	///< the zoom a match opens at: max under StartAtMaxZoom, else START_CAMERA_HEIGHT
  	virtual void setOkToAdjustHeight( Bool val ) { m_okToAdjustHeight = val; }	///< Set this to adjust camera height
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+index 33b72fae..6b8629b6 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -3540,6 +3540,21 @@ void GameEngine::execute( void )
+ 
+ 		GameDataGoneCheck();		// the game's drive went away under another thread's read: stop here (Debug.h)
+ 
++#if defined(__ANDROID__)
++		// GeneralsX @diagnostics Android port: main-loop heartbeat for the
++		// victory-exit freeze (device, 19/11/2026: shell terrain rendered, no
++		// menu ever appeared, process swipe-killed). One line every 240 loop
++		// passes to stderr, which the shell captures. If the lines stop at the
++		// freeze, the loop itself is wedged inside a pass; if they continue,
++		// the loop lives and the shell state is what is stuck.
++		{
++			static UnsignedInt zhLoopPasses = 0;
++			if( (++zhLoopPasses % 240) == 0 )
++				fprintf( stderr, "[zh-heartbeat] loop=%u inGame=%d\n", zhLoopPasses,
++				         (TheGameLogic && TheGameLogic->isInGame()) ? 1 : 0 );
++		}
++#endif
++
+ 		//if (TheGlobalData->m_vTune)
+ 		{
+ #ifdef PERF_TIMERS
 diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/ExecutableDirectory.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/ExecutableDirectory.cpp
 index 375a431b..15ef476b 100644
 --- a/GeneralsMD/Code/GameEngine/Source/Common/System/ExecutableDirectory.cpp
@@ -1223,7 +1249,7 @@ index 9a804e2f..0a8f902f 100644
  	SDL_zero(info);
  	info.type = SDL_GPU_TEXTURETYPE_2D;
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/Common/SdlGameEngine.cpp b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/Common/SdlGameEngine.cpp
-index fcca0bb1..8d1db874 100644
+index fcca0bb1..91ba622f 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/Common/SdlGameEngine.cpp
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/Common/SdlGameEngine.cpp
 @@ -31,6 +31,7 @@
@@ -1234,7 +1260,25 @@ index fcca0bb1..8d1db874 100644
  #include "W3DDevice/GameClient/W3DGameClient.h"
  #include "PosixDevice/Common/PosixFileResolutionDump.h"
  #include "MilesAudioDevice/MilesAudioManager.h"
-@@ -368,6 +369,9 @@ void SdlGameEngine::serviceWindowsOS( void )
+@@ -217,6 +218,17 @@ void SdlGameEngine::createWindow( void )
+ 		width = bounds.w;
+ 		height = bounds.h;
+ 	}
++#if defined(__ANDROID__)
++	// GeneralsX @tweak Android port: whatever was asked for, the window is born
++	// covering the panel -- the display's own size, read live from SDL, so any
++	// phone's panel is honoured. W3DDisplay's setDisplayMode clamp keeps it
++	// there; this keeps the first frame right too.
++	if (SDL_GetDisplayBounds( SDL_GetPrimaryDisplay(), &bounds ))
++	{
++		width = bounds.w;
++		height = bounds.h;
++	}
++#endif
+ 
+ 	m_window = SDL_CreateWindow( "Command and Conquer Generals Zero Hour", width, height, flags );
+ 	if (m_window == NULL)
+@@ -368,6 +380,9 @@ void SdlGameEngine::serviceWindowsOS( void )
  				break;
  		}
  	}
@@ -1296,10 +1340,10 @@ index 2cf14d1c..a43f0bef 100644
  			return TRUE;		// SdlMouse::update asks SDL's mouse focus each frame, as Win32Mouse asks Windows
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/SdlTouch.cpp b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/SdlTouch.cpp
 new file mode 100644
-index 00000000..29c9141c
+index 00000000..6ae43877
 --- /dev/null
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/SdlDevice/GameClient/SdlTouch.cpp
-@@ -0,0 +1,1908 @@
+@@ -0,0 +1,1917 @@
 +/*
 +** SdlTouch.cpp -- Reforged Android C5 touch graft.
 +**
@@ -1998,7 +2042,16 @@ index 00000000..29c9141c
 +
 +void pushPointerGone()
 +{
-+	pushMousePosition(-1.0f, -1.0f);
++	// GeneralsX @bugfix Android port (fork adaptation): the donor parked the
++	// pointer at (-1,-1) when a touch ended. This fork's edge scroll
++	// (edgeScrollPull in LookAtXlat.cpp) reads a negative position as deeper
++	// than the edge itself, so the parked pointer pulled at full strength
++	// toward the top-left corner: every button tap armed a screen-edge scroll
++	// that dragged the camera up-left until something cancelled it (device
++	// log, 19/11/2026: seven taps on one build button, camera at the map's
++	// top). Park on the finger's last real position instead -- a truthful
++	// pointer, mid-screen for a command-bar tap, pulling on nothing.
++	pushMousePosition(s_touch.lastX, s_touch.lastY);
 +}
 +
 +void pushMouseButton(GameMessage::Type type, float x, float y)
@@ -3775,6 +3828,36 @@ index 00000000..9805d4a3
 +	}
 +
 +}  // namespace TouchInput
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
+index 827031df..8af6243d 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
+@@ -874,6 +874,25 @@ Bool W3DDisplay::setDisplayMode( UnsignedInt xres, UnsignedInt yres, UnsignedInt
+ {
+ 	extern Bool ApplicationIsBorderless;
+ 
++#if defined(__ANDROID__)
++	// GeneralsX @tweak Android port: a phone's panel has exactly one size, and
++	// it is read from the monitor itself, so this holds on any phone. The
++	// game's resolution -- 800x600 out of the box, or whatever the options
++	// page last stored -- is a display mode on a PC, where the monitor
++	// switches to it; here nothing switches, so asking the device for it
++	// only gets that small picture stretched over the panel (device report,
++	// 19/11/2026: fullscreen forced 800x600 and the game came out stretched).
++	// On Android the display IS the panel.
++	{
++		const MonitorRect &panel = chosenMonitor().rect;
++		if( panel.right > panel.left && panel.bottom > panel.top )
++		{
++			xres = (UnsignedInt)( panel.right - panel.left );
++			yres = (UnsignedInt)( panel.bottom - panel.top );
++		}
++	}
++#endif
++
+ 	// WW3D2 cannot see GlobalData, so a vsync change has to be pushed in before the reset below
+ 	// the way the sample count is pushed in before the device exists.  The monitor too: a fullscreen
+ 	// game changes that monitor's mode and nobody else's.
 diff --git a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp
 index a37b9014..39546d7c 100644
 --- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp
