@@ -1,5 +1,5 @@
 diff --git a/GeneralsMD/Code/CMakeLists.txt b/GeneralsMD/Code/CMakeLists.txt
-index 10a1f1d6..46682fd7 100644
+index 10a1f1d6..82ca34ad 100644
 --- a/GeneralsMD/Code/CMakeLists.txt
 +++ b/GeneralsMD/Code/CMakeLists.txt
 @@ -871,6 +871,25 @@ set(GS_SECURESECONNECT  OFF CACHE BOOL "" FORCE)
@@ -28,7 +28,20 @@ index 10a1f1d6..46682fd7 100644
  
  # ---- mbedtls --------------------------------------------------------------
  # mbedTLS 3.6.7 (Apache-2.0), fetched by both vendor scripts: the TLS under the online service's lobby
-@@ -1670,6 +1689,14 @@ if(ZH_PLATFORM_POSIX)
+@@ -955,6 +974,12 @@ if(ZH_PLATFORM_POSIX)
+     find_package(Fontconfig REQUIRED)
+     target_link_libraries(glyphrasteriser PRIVATE Fontconfig::Fontconfig)
+   endif()
++  if(ZH_PLATFORM_ANDROID)
++    # Stage C4 (v1.23): resolve()'s Android branch probes the read roots
++    # for the staged fonts/ files through WWLib's posixpath.
++    target_include_directories(glyphrasteriser PRIVATE ${WW}/WWLib)
++    target_link_libraries(glyphrasteriser PRIVATE wwlib)
++  endif()
+ 
+   # The Miles 6.5 surface on miniaudio (C4): the same library name as the XAudio2 one on Windows, so
+   # that gameenginedevice, once it builds off Windows, links milesaudio on either and
+@@ -1670,6 +1695,14 @@ if(ZH_PLATFORM_POSIX)
    # FFmpeg's own configure picks the host's architecture, so a build for another one (x86_64 on Apple
    # Silicon, run under Rosetta: E1's architecture axis) names it.  One at a time: configure builds one.
    set(FFMPEG_POSIX_ARCH "")
@@ -43,7 +56,7 @@ index 10a1f1d6..46682fd7 100644
    if(APPLE AND CMAKE_OSX_ARCHITECTURES)
      list(LENGTH CMAKE_OSX_ARCHITECTURES FFMPEG_ARCH_COUNT)
      if(NOT FFMPEG_ARCH_COUNT EQUAL 1)
-@@ -2047,6 +2074,14 @@ if(ZH_PLATFORM_POSIX)
+@@ -2047,6 +2080,14 @@ if(ZH_PLATFORM_POSIX)
    target_include_directories(generals PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Main ${GENERATED})
    set_target_properties(generals PROPERTIES CXX_STANDARD 17)
    target_link_libraries(generals PRIVATE sdldevice installroot)
@@ -103,6 +116,135 @@ index aa7efb26..b70ed8a8 100644
  	return ((uintptr_t)p & (~(uintptr_t)0 << 48 | (MEM_BOUND_ALIGNMENT-1))) != 0;
  }
  
+diff --git a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp
+index a37b9014..39546d7c 100644
+--- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp
++++ b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp
+@@ -20,6 +20,9 @@
+ 
+ #include "glyphrasteriser.h"
+ #include "gdifontmetrics.h"
++#if defined(__ANDROID__)
++#include "posixpath.h"
++#endif
+ 
+ #include <ft2build.h>
+ #include FT_FREETYPE_H
+@@ -271,14 +274,106 @@ bool resolve( const char *face, bool bold, std::string &path, bool &fileIsBold,
+ 	metricsFace = s.gdiMetrics;
+ 	return fontconfigFile( s.linuxFamily, bold, path, fileIsBold );
+ #elif defined(__ANDROID__)
+-	// Stage C (C1): Android has no fontconfig and no Liberation-metric system
+-	// faces to substitute with; /system/fonts is Roboto family, whose metrics
+-	// are not GDI's. Until the Android substitution table is a decided thing
+-	// (stage-c-c1-plan.md, font seam), an unregistered face reports no file
+-	// here - registered fonts (the game's own, the primary path) are matched
+-	// above and unaffected.
+-	(void)s;
+-	return false;
++	// Stage C4 (v1.23): the Android substitution table, decided here, as the
++	// stage-c-c1-plan font seam (B3) deferred. Tiers, each gated on the file
++	// existing, in the order the Android host port solved the same "no text
++	// at all" failure:
++	//   1. fonts\<windows name>.ttf under the read roots (overlays first,
++	//      then the install): the Liberation faces the shell stages into
++	//      the game folder, renamed arial/arialbold/couriernew/
++	//      timesnewroman. A Liberation file is the metric-compatible
++	//      substitute, so - exactly as in the fontconfig branch - the
++	//      Windows face's GDI metrics apply (the width correction in
++	//      Create_Font keys on the file's real family and engages for
++	//      Liberation only).
++	//   2. The Unicode face has no Liberation equivalent: the device's
++	//      Arabic system faces, in the host port's own fallback order.
++	//   3. The device's Latin system faces (Roboto, then Droid/Noto).
++	// Every decision is reported once on stderr, which the Android shell
++	// captures, so a miss names itself in the log share.
++	metricsFace = s.gdiMetrics;
++	{
++		const char *rel = NULL;
++		const char *relBold = NULL;
++		if (strcmp( s.linuxFamily, "Liberation Sans" ) == 0)
++		{
++			rel = "fonts\\arial.ttf";
++			relBold = "fonts\\arialbold.ttf";
++		}
++		else if (strcmp( s.linuxFamily, "Liberation Serif" ) == 0)
++			rel = "fonts\\timesnewroman.ttf";
++		else if (strcmp( s.linuxFamily, "Liberation Mono" ) == 0)
++			rel = "fonts\\couriernew.ttf";
++		bool found = false;
++		if (rel != NULL)
++		{
++			if (bold && relBold != NULL && PosixPath_Resolve( relBold, POSIX_PATH_EXISTING, path ))
++			{
++				fileIsBold = true;
++				found = true;
++			}
++			else if (PosixPath_Resolve( rel, POSIX_PATH_EXISTING, path ))
++			{
++				fileIsBold = false;
++				found = true;
++			}
++		}
++		if (!found && strcmp( s.linuxFamily, "DejaVu Sans" ) == 0)
++		{
++			static const char *const arabic[] = {
++				"/system/fonts/NotoNaskhArabic-Regular.ttf",
++				"/system/fonts/NotoSansArabic-Regular.ttf",
++				"/system/fonts/NotoSansArabicUI-Regular.ttf",
++				"/system/fonts/DroidSansFallback.ttf",
++			};
++			for (size_t i = 0; i < sizeof( arabic ) / sizeof( arabic[0] ) && !found; ++i)
++				if (fileExists( arabic[i] ))
++				{
++					path = arabic[i];
++					fileIsBold = false;
++					found = true;
++				}
++		}
++		if (!found)
++		{
++			static const char *const latinBold[] = {
++				"/system/fonts/Roboto-Bold.ttf",
++				"/system/fonts/DroidSans-Bold.ttf",
++			};
++			static const char *const latin[] = {
++				"/system/fonts/Roboto-Regular.ttf",
++				"/system/fonts/DroidSans.ttf",
++				"/system/fonts/NotoSans-Regular.ttf",
++			};
++			if (bold)
++				for (size_t i = 0; i < sizeof( latinBold ) / sizeof( latinBold[0] ) && !found; ++i)
++					if (fileExists( latinBold[i] ))
++					{
++						path = latinBold[i];
++						fileIsBold = true;
++						found = true;
++					}
++			for (size_t i = 0; i < sizeof( latin ) / sizeof( latin[0] ) && !found; ++i)
++				if (fileExists( latin[i] ))
++				{
++					path = latin[i];
++					fileIsBold = false;
++					found = true;
++				}
++		}
++		static std::vector<std::string> said;
++		const std::string key = std::string( face ) + (bold ? "|bold|" : "|regular|") + (found ? path : "NONE");
++		bool seen = false;
++		for (size_t i = 0; i < said.size(); ++i)
++			if (said[i] == key)
++				seen = true;
++		if (!seen)
++		{
++			said.push_back( key );
++			fprintf( stderr, "GlyphRasteriser: Android face '%s'%s -> %s\n", face, bold ? " bold" : "", found ? path.c_str() : "NO FILE" );
++		}
++		return found;
++	}
+ #else
+ 	const char *directory = "/System/Library/Fonts/Supplemental/";
+ 	if (bold && s.macBold != NULL && fileExists( (std::string( directory ) + s.macBold).c_str() ))
 diff --git a/GeneralsMD/Code/Main/PosixMain.cpp b/GeneralsMD/Code/Main/PosixMain.cpp
 index e220d026..b2cae7af 100644
 --- a/GeneralsMD/Code/Main/PosixMain.cpp
