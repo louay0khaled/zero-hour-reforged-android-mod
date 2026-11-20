@@ -278,17 +278,10 @@ public class RfxGameActivity extends SDLActivity {
             Os.setenv("ZH_USER_DATA_DIR",
                 userDir.getAbsolutePath(), true);
         } catch (Exception ignored) {}
-        // v1.25: the launcher's render-resolution choice for this engine
-        // (ZH_RENDER_SCALE, read by SdlGpuFrame when it creates its
-        // targets). Only set below 100: unset is the engine's full-size
-        // default, so the default path stays exactly as it was.
-        try {
-            int scalePercent = SetupActivity.getRfxRenderScalePercent(this);
-            if (scalePercent < 100) {
-                Os.setenv("ZH_RENDER_SCALE",
-                    String.valueOf(scalePercent / 100.0), true);
-            }
-        } catch (Exception ignored) {}
+        // v1.26: ZH_RENDER_SCALE is NOT set. The scaled path renders the
+        // shell broken below 100 (v1.25 device finding); rendering stays
+        // clamped to full size until the viewport-scaling fix passes its
+        // device gate, when this block and the setup slider return.
         // C4 diagnostics (v1.19): the engine's debug channel also
         // writes to stderr, which Android discards for app processes;
         // redirect fd 2 to a file in the external files dir before
@@ -1191,13 +1184,14 @@ edit(SETUP, [
         rfxRenderScaleSlider.setValueFrom(50f);
         rfxRenderScaleSlider.setValueTo(100f);
         rfxRenderScaleSlider.setStepSize(5f);
-        rfxRenderScaleSlider.setValue(startPercent);
+        rfxRenderScaleSlider.setValue(100f);
+        rfxRenderScaleSlider.setEnabled(false);
         rfxRenderScaleSlider.setLabelBehavior(LabelFormatter.LABEL_GONE);
         rfxRenderScaleSlider.setTrackActiveTintList(UiKit.tint(this, R.color.gzh_primary));
         rfxRenderScaleSlider.setTrackInactiveTintList(UiKit.tint(this, R.color.gzh_surface_container_highest));
         rfxRenderScaleSlider.setThumbTintList(UiKit.tint(this, R.color.gzh_primary));
         rfxRenderScaleSlider.setHaloTintList(UiKit.tint(this, R.color.gzh_ripple_primary));
-        updateRfxRenderScaleLabel(startPercent);
+        updateRfxRenderScaleLabel(100);
         rfxRenderScaleSlider.addOnChangeListener((slider, value, fromUser) -> updateRfxRenderScaleLabel((int) value));
         LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -1228,12 +1222,12 @@ RENDER_SCALE_STRINGS = {
     'values': [
         ('setup_card_render_scale', 'Render Resolution'),
         ('setup_button_apply_render_scale', 'Apply Render Resolution'),
-        ('setup_render_scale_help', "Renders the Reforged game at this percentage of your screen's resolution and stretches it back to full screen. Lower values (try 75) run smoother on weaker phones, at some sharpness cost. 100 is full quality. Takes effect the next time you launch the game, not live."),
+        ('setup_render_scale_help', "Temporarily locked at 100 (full quality) while this feature is being fixed. It will return in an update."),
     ],
     'values-ar': [
         ('setup_card_render_scale', 'دقة العرض'),
         ('setup_button_apply_render_scale', 'تطبيق دقة العرض'),
-        ('setup_render_scale_help', 'تعرض لعبة ريفورجيد بهذه النسبة من دقة شاشتك ثم تُمدَّد لتملأ الشاشة. القيم الأقل (جرّب 75) تجعل اللعبة أنعم على الهواتف الأضعف، مقابل خسارة بعض الحدة. القيمة 100 هي الجودة الكاملة. يسري المفعول عند تشغيل اللعبة في المرة القادمة، وليس فورًا.'),
+        ('setup_render_scale_help', 'مقفلة مؤقتًا على 100 (الجودة الكاملة) ريثما تُصلَح هذه الميزة. ستعود في تحديث قادم.'),
     ],
     'values-de': [
         ('setup_card_render_scale', 'Renderauflösung'),
