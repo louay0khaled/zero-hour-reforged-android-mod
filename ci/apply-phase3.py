@@ -1501,7 +1501,7 @@ edit(SETUP, [
             writeControlScheme(file, state);
         });
         desc[0] = UiKit.supporting(content, getString(descs[current]));''',
-     ''),
+     '''        final SwitchCompat[] switches = new SwitchCompat[CONTROL_SCHEME_KEYS.length];'''),
     # 10f) the switches write for themselves now
     ('''            switches[i].setOnCheckedChangeListener((button, checked) -> {
                 if (controlSchemeUpdating) {
