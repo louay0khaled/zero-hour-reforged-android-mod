@@ -539,21 +539,29 @@ jobs:
       # C1/C2-proven way (probe workflow's renderer route) and shipped
       # as libmainrfx.so. Only the launcher's tests page loads it, in
       # its own process; the game never does.
-      # v1.25 (run #43 fix): vendor.sh reuses any archive already sitting in
-      # /tmp/zhr-vendor, and its own download path has no integrity check --
-      # run #43 died when the zlib fossil tarball arrived as non-gzip bytes
-      # and tar gave up before a single file compiled. Seed the cache
-      # ourselves: every archive vendor.sh fetches, downloaded with resume
-      # retries and verified (gzip/unzip/xz/bzip2 -t) before it is renamed
-      # into place, so a corrupt transfer fails HERE, named as a download
-      # failure, instead of inside the build.
+      # v1.25 (runs #43/#44 fix): vendor.sh reuses any archive already
+      # sitting in /tmp/zhr-vendor, and its own download path has no
+      # integrity check. Run #43 died when the zlib tarball arrived as
+      # non-gzip bytes; run #44 proved zlib.net itself is unreachable
+      # from the runner's egress (three instant failures) while every
+      # GitHub-hosted archive is fine. Seed the cache ourselves: every
+      # archive vendor.sh fetches, integrity-verified (gzip/unzip/xz/
+      # bzip2 -t) before it is renamed into place, with retries -- and
+      # for zlib a fallback to the madler/zlib GitHub tag tarball,
+      # whose contents were verified byte-identical to the fossils
+      # tarball on 2026-11-20. A corrupt or blocked transfer now fails
+      # HERE, named as a download failure, instead of inside the build.
       - name: Pre-seed vendor archives (integrity-verified)
         run: |
           set -euo pipefail
           WORK="/tmp/zhr-vendor"
           mkdir -p "$WORK"
           verify() {
-            case "$1" in
+            # $1 = file to test, $2 = name whose extension picks the test
+            # (the file under test is usually "$dest.part", whose own name
+            # matches no archive pattern -- that mismatch failed run #44's
+            # good downloads too).
+            case "$2" in
               *.tar.gz|*.tgz) gzip -t "$1" ;;
               *.zip) unzip -tq "$1" > /dev/null ;;
               *.tar.xz) xz -t "$1" ;;
@@ -562,41 +570,38 @@ jobs:
             esac
           }
           fetch() {
-            url="$1"; dest="$WORK/$2"
-            if [ -f "$dest" ] && verify "$dest"; then
-              echo "[vendor-seed] already verified: $2"
+            dest="$WORK/$1"; shift
+            if [ -f "$dest" ] && verify "$dest" "$dest"; then
+              echo "[vendor-seed] already verified: $(basename "$dest")"
               return 0
             fi
             rm -f "$dest"
-            for attempt in 1 2 3; do
-              if [ -s "$dest.part" ]; then
-                curl -fsSL -C - "$url" -o "$dest.part" || rm -f "$dest.part"
-              fi
-              if [ ! -s "$dest.part" ]; then
+            for round in 1 2 3; do
+              for url in "$@"; do
+                rm -f "$dest.part"
                 curl -fsSL "$url" -o "$dest.part" || true
-              fi
-              if [ -s "$dest.part" ] && verify "$dest.part"; then
-                mv "$dest.part" "$dest"
-                echo "[vendor-seed] OK: $2 (attempt $attempt, $(stat -c %s "$dest") bytes, sha256 $(sha256sum "$dest" | cut -d ' ' -f 1))"
-                return 0
-              fi
-              echo "[vendor-seed] attempt $attempt: $2 failed integrity"
-              rm -f "$dest.part"
+                if [ -s "$dest.part" ] && verify "$dest.part" "$dest"; then
+                  mv "$dest.part" "$dest"
+                  echo "[vendor-seed] OK: $(basename "$dest") (round $round, from $url, $(stat -c %s "$dest") bytes, sha256 $(sha256sum "$dest" | cut -d ' ' -f 1))"
+                  return 0
+                fi
+                echo "[vendor-seed] round $round: $(basename "$dest") from $url failed integrity"
+              done
             done
-            echo "[vendor-seed] ERROR: no valid download of $2 from $url" >&2
+            echo "[vendor-seed] ERROR: no valid download of $(basename "$dest")" >&2
             return 1
           }
-          fetch 'https://zlib.net/fossils/zlib-1.1.4.tar.gz' 'zlib-1.1.4.tar.gz'
-          fetch 'https://github.com/TheSuperHackers/lzhl-1.0/archive/dfd96e2.zip' 'lzhl.zip'
-          fetch 'https://github.com/TheSuperHackers/GamespySDK/archive/b1b77d8.zip' 'gamespy.zip'
-          fetch 'https://github.com/libsdl-org/SDL/archive/fa2c02bb6e21974a89ea9824bc53c9932abe5f9c.zip' 'SDL3-3.4.16.zip'
-          fetch 'https://github.com/mackron/miniaudio/archive/9634bedb5b5a2ca38c1ee7108a9358a4e233f14d.zip' 'miniaudio-0.11.25.zip'
-          fetch 'https://github.com/KhronosGroup/glslang/archive/168d452a4f460d24b588fed08477a81c44ee27a1.zip' 'glslang-vulkan-sdk-1.4.357.0.zip'
-          fetch 'https://github.com/KhronosGroup/SPIRV-Cross/archive/1a6169566c73d3da552748fc372fe2bbb856e46e.zip' 'SPIRV-Cross-1a616956.zip'
-          fetch 'https://github.com/libsdl-org/SDL_shadercross/archive/1ff05bec573988a98ef9e0260b4da44f512b8367.zip' 'SDL_shadercross-1ff05bec.zip'
-          fetch 'https://github.com/freetype/freetype/archive/0a0221a1347e2f1e07c395263540026e9a0aa7c7.zip' 'freetype-2.14.3.zip'
-          fetch 'https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz' 'ffmpeg-8.1.2.tar.xz'
-          fetch 'https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2' 'mbedtls-3.6.7.tar.bz2'
+          fetch 'zlib-1.1.4.tar.gz' 'https://zlib.net/fossils/zlib-1.1.4.tar.gz' 'https://github.com/madler/zlib/archive/refs/tags/v1.1.4.tar.gz'
+          fetch 'lzhl.zip' 'https://github.com/TheSuperHackers/lzhl-1.0/archive/dfd96e2.zip'
+          fetch 'gamespy.zip' 'https://github.com/TheSuperHackers/GamespySDK/archive/b1b77d8.zip'
+          fetch 'SDL3-3.4.16.zip' 'https://github.com/libsdl-org/SDL/archive/fa2c02bb6e21974a89ea9824bc53c9932abe5f9c.zip'
+          fetch 'miniaudio-0.11.25.zip' 'https://github.com/mackron/miniaudio/archive/9634bedb5b5a2ca38c1ee7108a9358a4e233f14d.zip'
+          fetch 'glslang-vulkan-sdk-1.4.357.0.zip' 'https://github.com/KhronosGroup/glslang/archive/168d452a4f460d24b588fed08477a81c44ee27a1.zip'
+          fetch 'SPIRV-Cross-1a616956.zip' 'https://github.com/KhronosGroup/SPIRV-Cross/archive/1a6169566c73d3da552748fc372fe2bbb856e46e.zip'
+          fetch 'SDL_shadercross-1ff05bec.zip' 'https://github.com/libsdl-org/SDL_shadercross/archive/1ff05bec573988a98ef9e0260b4da44f512b8367.zip'
+          fetch 'freetype-2.14.3.zip' 'https://github.com/freetype/freetype/archive/0a0221a1347e2f1e07c395263540026e9a0aa7c7.zip'
+          fetch 'ffmpeg-8.1.2.tar.xz' 'https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz'
+          fetch 'mbedtls-3.6.7.tar.bz2' 'https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2'
           ls -la "$WORK"
 
       - name: Build Reforged C3 test payload (libmainrfx.so)
