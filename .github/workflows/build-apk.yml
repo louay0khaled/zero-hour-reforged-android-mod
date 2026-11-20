@@ -10,7 +10,8 @@ name: Build Zero Hour Reforged APK
 # v1.20 (owner order 2026-11-19): NO PLAY ENGINE AT ALL. All effort is
 # on the second engine (Reforged's own, Stage C); the 60-steps engine is
 # parked and NOT built or packaged in this line -- the APK carries only
-# the Stage C payload (libmainrfx.so + libmainrfxgame.so). The launcher's
+# the Stage C game library (libmainrfxgame.so; the libmainrfx.so test
+# payload retired in v1.29). The launcher's
 # Play entry therefore has no library to load in these builds, by the
 # owner's explicit order ("for speed"). The v1.16/v1.17 text below is
 # the parked line's description, kept for when it resumes.
@@ -186,7 +187,7 @@ jobs:
           ! grep -q "setup_reforged_wifi_prepare30" android/app/src/main/res/values/strings.xml
           grep -q "setup_reforged_wifi_state" android/app/src/main/res/values/strings.xml
           grep -q "GX_ENGINE_LIB" scripts/build/android/package-android-zh.sh
-          grep -q "GX_REFORGEDX_LIB" scripts/build/android/package-android-zh.sh
+          ! grep -qE "GX_REFORGEDX_LIB[:}\"]" scripts/build/android/package-android-zh.sh
           grep -q "GX_REFORGEDX_GAME_LIB" scripts/build/android/package-android-zh.sh
           grep -q "RfxGameActivity" android/app/src/main/java/com/generalsx/zerohour/SetupActivity.java
           test -f android/app/src/main/java/com/generalsx/zerohour/RfxGameActivity.java
@@ -536,9 +537,8 @@ jobs:
       # (see android/app/build.gradle keepDebugSymbols).
       # v1.15: the Stage C3 test payload -- the upstream Reforged
       # engine's frame selfcheck + offscreen phase, built exactly the
-      # C1/C2-proven way (probe workflow's renderer route) and shipped
-      # as libmainrfx.so. Only the launcher's tests page loads it, in
-      # its own process; the game never does.
+      # C1/C2-proven way (probe workflow's renderer route). v1.29: it
+      # is a build-only gate -- nothing of it ships in the APK.
       # v1.25 (runs #43/#44 fix): vendor.sh reuses any archive already
       # sitting in /tmp/zhr-vendor, and its own download path has no
       # integrity check. Run #43 died when the zlib tarball arrived as
@@ -604,7 +604,7 @@ jobs:
           fetch 'mbedtls-3.6.7.tar.bz2' 'https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2'
           ls -la "$WORK"
 
-      - name: Build Reforged C3 test payload (libmainrfx.so)
+      - name: Build Reforged frame selfcheck (build-only gate, ships nothing)
         run: |
           set -euo pipefail
           # v1.24.1 (run #40 fix): current GitHub runner images no longer
@@ -635,16 +635,17 @@ jobs:
           export PATH="$PWD/host-tools:$PATH"
           cmake -S "$SRC/GeneralsMD/Code" -B "$PWD/rfx-build" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 -DCMAKE_BUILD_TYPE=Release
           cmake --build "$PWD/rfx-build" --target sdl_gpu_frame_selfcheck -j"$(nproc)"
-          cp "$PWD/rfx-build/libsdl_gpu_frame_selfcheck.so" "${GITHUB_WORKSPACE}/libmainrfx.so"
+          # v1.29: build-only gate -- the selfcheck is asserted here
+          # and never copied into the package (no libmainrfx.so ships).
           NM="$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-nm | head -1)"
-          "$NM" -D "${GITHUB_WORKSPACE}/libmainrfx.so" > "${RUNNER_TEMP}/rfx-dynsym.txt"
+          "$NM" -D "$PWD/rfx-build/libsdl_gpu_frame_selfcheck.so" > "${RUNNER_TEMP}/rfx-dynsym.txt"
           grep -q " T SDL_main" "${RUNNER_TEMP}/rfx-dynsym.txt"
-          strings "${GITHUB_WORKSPACE}/libmainrfx.so" > "${RUNNER_TEMP}/rfx-strings.txt"
+          strings "$PWD/rfx-build/libsdl_gpu_frame_selfcheck.so" > "${RUNNER_TEMP}/rfx-strings.txt"
           grep -q "C3 OFFSCREEN-VERDICT" "${RUNNER_TEMP}/rfx-strings.txt"
           grep -q "frame-capture.bmp" "${RUNNER_TEMP}/rfx-strings.txt"
           grep -q "org/libsdl/apprfx/SDLActivity" "${RUNNER_TEMP}/rfx-strings.txt"
           ! grep -q "org/libsdl/app/SDLActivity" "${RUNNER_TEMP}/rfx-strings.txt"
-          ls -la "${GITHUB_WORKSPACE}/libmainrfx.so"
+          ls -la "$PWD/rfx-build/libsdl_gpu_frame_selfcheck.so"
           # v1.18: the Stage C4 game library -- the full Reforged game
           # as libmainrfxgame.so, built in this same tree (C1 + the
           # frame-entry patch already applied) with the C4 CMake patch
@@ -722,9 +723,6 @@ jobs:
           done
           # v1.20: no 60-steps engine is packaged in this build, so
           # there is no workspace libmainz60.so to strip.
-          # The C3 test payload's packaged copy, same discipline.
-          [ -f "${GITHUB_WORKSPACE}/libmainrfx.so" ] || { echo "::error::libmainrfx.so missing at strip time (C3 payload staging lost)"; exit 1; }
-          "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainrfx.so"
           # The C4 game library's packaged copy, same discipline.
           [ -f "${GITHUB_WORKSPACE}/libmainrfxgame.so" ] || { echo "::error::libmainrfxgame.so missing at strip time (C4 game staging lost)"; exit 1; }
           "$STRIP" --strip-unneeded "${GITHUB_WORKSPACE}/libmainrfxgame.so"
@@ -737,7 +735,7 @@ jobs:
       # fork's own macOS app ships without them too -- zip it, and
       # drop it into the app assets. RfxGameActivity extracts it on
       # first launch and passes -overlay to the engine.
-      - name: Stage the fork's data overlay (v1.22 + v1.23 fonts)
+      - name: Stage the fork's data overlay (v1.22 + v1.23 fonts + v1.29 Arabic)
         run: |
           set -euo pipefail
           bash reforged-engine/GeneralsMD/Code/Tools/stage-overlay.sh \
@@ -748,11 +746,20 @@ jobs:
           # the engine's font resolver finds them before the install.
           mkdir -p "$GITHUB_WORKSPACE/rfx-overlay-out/fonts"
           cp reforged-overlay/ci/fonts/arial.ttf reforged-overlay/ci/fonts/arialbold.ttf reforged-overlay/ci/fonts/couriernew.ttf reforged-overlay/ci/fonts/timesnewroman.ttf reforged-overlay/ci/fonts/LICENSE "$GITHUB_WORKSPACE/rfx-overlay-out/fonts/"
+          # v1.29: the Arabic language pack -- the merged donor pack
+          # plus the in-house translation of every Reforged addition,
+          # with its Thmanyah/Noto faces -- rides the overlay at
+          # Data/Arabic, the engine's per-language overlay slot.
+          mkdir -p "$GITHUB_WORKSPACE/rfx-overlay-out/Data/Arabic/Fonts"
+          cp reforged-overlay/probe/data/arabic/Generals.str reforged-overlay/probe/data/arabic/Language.ini "$GITHUB_WORKSPACE/rfx-overlay-out/Data/Arabic/"
+          cp reforged-overlay/probe/data/arabic/Fonts/thmanyahserifdisplay-Regular.otf reforged-overlay/probe/data/arabic/Fonts/thmanyahserifdisplay-Black.otf reforged-overlay/probe/data/arabic/Fonts/NotoSansArabic-Regular.ttf "$GITHUB_WORKSPACE/rfx-overlay-out/Data/Arabic/Fonts/"
           (cd "$GITHUB_WORKSPACE/rfx-overlay-out" && zip -r -q "$GITHUB_WORKSPACE/rfx-overlay.zip" .)
           mkdir -p android/app/src/main/assets
           cp "$GITHUB_WORKSPACE/rfx-overlay.zip" android/app/src/main/assets/rfx-overlay.zip
           unzip -l android/app/src/main/assets/rfx-overlay.zip | grep -q "Data/INI/ScienceReforged.ini"
           unzip -l android/app/src/main/assets/rfx-overlay.zip | grep -q "fonts/arial.ttf"
+          unzip -l android/app/src/main/assets/rfx-overlay.zip | grep -q "Data/Arabic/Generals.str"
+          unzip -l android/app/src/main/assets/rfx-overlay.zip | grep -q "Data/Arabic/Fonts/thmanyahserifdisplay-Regular.otf"
           ls -la android/app/src/main/assets/rfx-overlay.zip
 
       # GX_GRADLE_TASK is the overlay patch's knob: the packaging script
@@ -769,7 +776,6 @@ jobs:
           # the play-engine copy when GX_ENGINE_LIB is empty; this build
           # ships the Reforged test payload only, no play engine.
           GX_ENGINE_LIB: ""
-          GX_REFORGEDX_LIB: ${{ github.workspace }}/libmainrfx.so
           GX_REFORGEDX_GAME_LIB: ${{ github.workspace }}/libmainrfxgame.so
           # v1.16: the host's engines are NOT packaged. The packaging
           # script still stages the shared libraries from the base tree,
@@ -822,20 +828,20 @@ jobs:
           unzip -q "${APK}" 'lib/arm64-v8a/*' -d "${WORKDIR}"
           echo "Packaged libraries:"
           ls "${WORKDIR}/lib/arm64-v8a/"
-          # Engine set, exactly (v1.20): the Reforged tests payload
-          # only -- NO play engine (owner's order, 2026-11-19). The
-          # host's libraries, the retired Reforged engines AND the
-          # 60-steps engine are forbidden outright -- any one of them
-          # in the APK fails the build -- and the *60.so set is empty.
-          for required in libmainrfx.so libmainrfxgame.so; do
+          # Engine set, exactly (v1.29): the Reforged game library
+          # only. The host's libraries, the retired Reforged engines,
+          # the 60-steps engine AND the retired C3 test payload are
+          # forbidden outright -- any one of them in the APK fails
+          # the build -- and the *60.so set is empty.
+          for required in libmainrfxgame.so; do
             if [ ! -f "${WORKDIR}/lib/arm64-v8a/${required}" ]; then
               echo "::error::required engine library ${required} is missing from the APK"
               exit 1
             fi
           done
-          for forbidden in libmain.so libmain60.so libgenerals.so libgenerals60.so libmainrf.so libmainrf60.so libmainz60.so libEGL_angle.so libGLESv2_angle.so libadrenotools.so libdxvk_d3d8.so libdxvk_d3d9.so libfile_redirect_hook.so libgamespy.so libgsl_alloc_hook.so libhook_impl.so libmain_hook.so libopenal.so libSDL3.so libSDL3_image.so libc++_shared.so; do
+          for forbidden in libmainrfx.so libmain.so libmain60.so libgenerals.so libgenerals60.so libmainrf.so libmainrf60.so libmainz60.so libEGL_angle.so libGLESv2_angle.so libadrenotools.so libdxvk_d3d8.so libdxvk_d3d9.so libfile_redirect_hook.so libgamespy.so libgsl_alloc_hook.so libhook_impl.so libmain_hook.so libopenal.so libSDL3.so libSDL3_image.so libc++_shared.so; do
             if [ -f "${WORKDIR}/lib/arm64-v8a/${forbidden}" ]; then
-              echo "::error::forbidden engine library ${forbidden} is packaged in the APK -- v1.20 ships the Reforged payload only (libmainrfx.so + libmainrfxgame.so), no play engine"
+              echo "::error::forbidden engine library ${forbidden} is packaged in the APK -- v1.29 ships the Reforged game library only (libmainrfxgame.so)"
               exit 1
             fi
           done
@@ -869,7 +875,7 @@ jobs:
             echo "::error::APK is missing required native libraries."
             exit 1
           fi
-          echo "OK: engine set exact (libmainz60.so + libmainrfx.so + libmainrfxgame.so), and every DT_NEEDED of the play engine and the C4 game library is present in the APK."
+          echo "OK: engine set exact (libmainrfxgame.so only), and every DT_NEEDED of the C4 game library is present in the APK."
 
       # v1.17 (owner's order, wave-8 record §156): the account-wide
       # Actions artifact quota is exhausted, so the build is delivered
