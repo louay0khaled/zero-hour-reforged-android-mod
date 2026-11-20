@@ -1801,6 +1801,12 @@ for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))
         continue
     if 'name="setup_card_gfx_preset"' in s:
         sys.exit(f'phase3: {strings_xml} already carries setup_card_gfx_preset')
+    # v1.29.1 repair (run #51): the host already ships setup_switch_logging
+    # (+_desc) for its own log switch; appending ours duplicated the keys
+    # and aapt mergeReleaseResources failed in every locale. Drop the
+    # host's entries first -- our switch, our text.
+    for dup_key in ('setup_switch_logging', 'setup_switch_logging_desc'):
+        s = re.sub(r'\n[ \t]*<string name="' + dup_key + r'">.*?</string>', '', s, count=1)
     is_ar = os.path.basename(os.path.dirname(strings_xml)) == 'values-ar'
     block = ''.join(
         f'\n    <string name="{name}">{runlog_escape(text)}</string>'
@@ -2180,6 +2186,14 @@ if _manifest_src.count('RfxGameActivity') != 1:
 _pkg_src = open(PACKAGE_SH, encoding='utf-8').read()
 if 'GX_REFORGEDX_LIB:' in _pkg_src or 'GX_REFORGEDX_LIB}' in _pkg_src:
     sys.exit('phase3: package script still stages libmainrfx.so')
+# v1.29.1 (run #51): aapt dies on duplicate <string> keys and the harness
+# never looked at resources -- scan every generated strings.xml now.
+import collections as _collections
+for _sx in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
+    _names = re.findall(r'<string name="([^"]+)"', open(_sx, encoding='utf-8').read())
+    _dups = [k for k, c in _collections.Counter(_names).items() if c > 1]
+    if _dups:
+        sys.exit('phase3: duplicate string keys in ' + _sx + ': ' + ', '.join(_dups))
 print('v1.29 self-checks passed')
 
 
