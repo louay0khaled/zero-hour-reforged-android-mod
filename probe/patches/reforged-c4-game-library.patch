@@ -335,10 +335,59 @@ index afd06b34..3256b9f2 100644
  	void setZoomToStart( Bool shellMap );																	///< the zoom a match opens at: max under StartAtMaxZoom, else START_CAMERA_HEIGHT
  	virtual void setOkToAdjustHeight( Bool val ) { m_okToAdjustHeight = val; }	///< Set this to adjust camera height
 diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
-index 33b72fae..6b8629b6 100644
+index 33b72fae..155e9fd8 100644
 --- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
 +++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
-@@ -3540,6 +3540,21 @@ void GameEngine::execute( void )
+@@ -35,6 +35,7 @@
+ #include "Platform/ModernWaterBuild.h"
+ #if !defined(_WIN32)
+ #include <unistd.h>		// getpid, for the model-checksum cache's scratch file
++#include <stdio.h>		// (v1.25.1) boot breadcrumbs on stderr, hunting the v1.25 startup SIGSEGV
+ #endif
+ #include "Lib/Clock.h"
+ #include <exception>
+@@ -1283,8 +1284,10 @@ void GameEngine::init( int argc, char *argv[] )
+ 
+ 		AsciiString fname;
+ 		fname.format("Data\\%s\\CommandMap.ini", GetRegistryLanguage().str());
++		fprintf(stderr, "[boot] metamap begin\n");
+ 		initSubsystem(TheMetaMap,"TheMetaMap", MSGNEW("GameEngineSubsystem") MetaMap(), NULL, fname.str(), NULL);
+ 		TheMetaMap->keepArrowsForCamera();
++		fprintf(stderr, "[boot] metamap done\n");
+ 
+ #if defined(_DEBUG) || defined(_INTERNAL)
+ 		ini.load("Data\\INI\\CommandMapDebug.ini", INI_LOAD_MULTIFILE, NULL);
+@@ -1300,7 +1303,9 @@ void GameEngine::init( int argc, char *argv[] )
+ 		// a match.  The file is the player's to edit by hand, and a broken one costs the keys from the
+ 		// broken block on, not the start.  The options menu's Hotkeys page writes it too and reads it
+ 		// again through HotKeyManager::reloadKeys.
++		fprintf(stderr, "[boot] player keys begin\n");
+ 		HotKeyManager::loadPlayerKeys();
++		fprintf(stderr, "[boot] player keys done\n");
+ 
+ 		initSubsystem(TheActionManager,"TheActionManager", MSGNEW("GameEngineSubsystem") ActionManager(), NULL);
+ 		//initSubsystem((CComObject<WebBrowser> *)TheWebBrowser,"(CComObject<WebBrowser> *)TheWebBrowser", (CComObject<WebBrowser> *)createWebBrowser(), NULL);
+@@ -1382,7 +1387,9 @@ void GameEngine::init( int argc, char *argv[] )
+ 
+ 		// initialize the MapCache
+ 		TheMapCache = MSGNEW("GameEngineSubsystem") MapCache;
++		fprintf(stderr, "[boot] map cache begin\n");
+ 		TheMapCache->updateCache();
++		fprintf(stderr, "[boot] map cache done\n");
+ 
+ 
+ 	#ifdef DUMP_PERF_STATS///////////////////////////////////////////////////////////////////////////
+@@ -1468,7 +1475,8 @@ void GameEngine::init( int argc, char *argv[] )
+ 			TheWritableGlobalData->m_afterIntro = TRUE;
+ 
+ 		//initDisabledMasks();
+-		
++
++		fprintf(stderr, "[boot] engine init done\n");
+ 	}
+ 	catch (ErrorCode ec)
+ 	{
+@@ -3540,6 +3548,21 @@ void GameEngine::execute( void )
  
  		GameDataGoneCheck();		// the game's drive went away under another thread's read: stop here (Debug.h)
  
@@ -4793,10 +4842,18 @@ index 00000000..9805d4a3
 +
 +}  // namespace TouchInput
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
-index 827031df..caf8e05b 100644
+index 827031df..dcda52b3 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
-@@ -55,6 +55,7 @@ static void drawFramerateBar(void);
+@@ -37,6 +37,7 @@ static void drawFramerateBar(void);
+ 
+ // SYSTEM INCLUDES ////////////////////////////////////////////////////////////
+ #include <stdlib.h>
++#include <stdio.h>	// (v1.25.1) boot breadcrumbs on stderr, hunting the v1.25 startup SIGSEGV
+ #include <algorithm>
+ #include "Lib/Clock.h"
+ #if defined(_WIN32)
+@@ -55,6 +56,7 @@ static void drawFramerateBar(void);
  #include "Common/LogicThread.h"
  #include "Common/GameEngine.h"
  #include "GameClient/LookAtXlat.h"
@@ -4804,7 +4861,7 @@ index 827031df..caf8e05b 100644
  #include "Common/GlobalData.h"
  #include "Common/Monitors.h"
  #include "Common/OptionsCatalog.h"
-@@ -874,6 +875,25 @@ Bool W3DDisplay::setDisplayMode( UnsignedInt xres, UnsignedInt yres, UnsignedInt
+@@ -874,6 +876,25 @@ Bool W3DDisplay::setDisplayMode( UnsignedInt xres, UnsignedInt yres, UnsignedInt
  {
  	extern Bool ApplicationIsBorderless;
  
@@ -4830,13 +4887,15 @@ index 827031df..caf8e05b 100644
  	// WW3D2 cannot see GlobalData, so a vsync change has to be pushed in before the reset below
  	// the way the sample count is pushed in before the device exists.  The monitor too: a fullscreen
  	// game changes that monitor's mode and nobody else's.
-@@ -1351,6 +1371,10 @@ void W3DDisplay::init( void )
+@@ -1351,6 +1372,12 @@ void W3DDisplay::init( void )
  	DX8WebBrowser::Initialize();
  #endif
  
 +	// (C5 touch graft) draw the touch mode buttons' pictures (scatter, formation, page
 +	// arrows) into the mapped-image collection before the control bar looks them up
++	fprintf(stderr, "[boot] touch button images begin\n");
 +	W3DRegisterTouchButtonImages();
++	fprintf(stderr, "[boot] touch button images done\n");
 +
  	// we're now online
  	m_initialized = true;
