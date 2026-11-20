@@ -4621,7 +4621,7 @@ index 9a6ef7ad..d5182385 100644
  	}
  	phases.Mark("pipeline");
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp
-index 41e2ebff..8647b636 100644
+index 41e2ebff..2c627829 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp
 @@ -1,6 +1,10 @@
@@ -4706,7 +4706,7 @@ index 41e2ebff..8647b636 100644
  void PosixDevice9::Build_Sun_Constants(SdlEnginePixelConstants &constants) const
  {
      std::memcpy(constants.ShadowFromClip,Sun->FromClip,sizeof(Sun->FromClip));
-@@ -345,13 +406,90 @@ void PosixDevice9::Build_Sun_Constants(SdlEnginePixelConstants &constants) const
+@@ -345,13 +406,101 @@ void PosixDevice9::Build_Sun_Constants(SdlEnginePixelConstants &constants) const
      constants.VolumeParameters[1] = Sun->SmokeFilled ? SunSmoke::SelfGain : 0;
      constants.VolumeParameters[2] = Sun_Camera_Space() ? 1 : 0;
      constants.VolumeParameters[3] = SunSmoke::SelfCurve;
@@ -4784,13 +4784,24 @@ index 41e2ebff..8647b636 100644
 +        weak = 0;
 +        PosixDevice9 *dev = d ? static_cast<PosixDevice9*>(d) : nullptr;
 +        if (dev && dev->Get_Gpu() && dev->Get_Gpu()->Device()) {
-+            const char *driver = SDL_GetGPUDeviceDriver(dev->Get_Gpu()->Device());
-+            if (driver) {
-+                // The parse lives in SdlGpuIdentity (v1.30 step 1): the post chain's
-+                // tier gate reads the same answer from the same list.
-+                weak = SdlGpuIdentity::Driver_Is_Known_Weak(driver) ? 1 : 0;
++            SDL_GPUDevice *gpu_device = dev->Get_Gpu()->Device();
++            const char *driver = SDL_GetGPUDeviceDriver(gpu_device);
++            // The model lives in the device NAME property (the Vulkan
++            // deviceName, e.g. "Mali-G52 MC2"); the driver string is only
++            // the backend's name ("vulkan") and never carries a model --
++            // feeding it to the parse left this gate permanently open
++            // (device evidence 2026-11-21: a Mali-G52 phone logged
++            // driver 'vulkan' weak=0 and took the full post tier).  The
++            // parse lives in SdlGpuIdentity (v1.30 step 1): the post
++            // chain's tier gate reads the same answer from the same list.
++            const char *device_name = NULL;
++            const SDL_PropertiesID props = SDL_GetGPUDeviceProperties(gpu_device);
++            if (props) {
++                device_name = SDL_GetStringProperty(props, SDL_PROP_GPU_DEVICE_NAME_STRING, NULL);
 +            }
-+            std::fprintf(stderr, "[shadow] gpu driver '%s' weak=%d\n", driver ? driver : "?", weak);
++            weak = SdlGpuIdentity::Device_Is_Known_Weak(device_name, driver) ? 1 : 0;
++            std::fprintf(stderr, "[shadow] gpu driver '%s' device '%s' weak=%d\n",
++                driver ? driver : "?", device_name ? device_name : "?", weak);
 +        }
 +    }
 +    return weak == 1;
@@ -4849,7 +4860,7 @@ index 01deca55..deaa598d 100644
  }
  
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
-index 9a804e2f..be88716c 100644
+index 9a804e2f..59ee294c 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
 @@ -20,6 +20,10 @@
@@ -4863,7 +4874,25 @@ index 9a804e2f..be88716c 100644
  #include "sdl3shadercompile.h"
  #include "Platform/WaterFftSpectrum.h"
  #include "Platform/WaterPerformanceSettings.h"
-@@ -86,6 +90,201 @@ static const char SCENE_DEPTH_PIXEL_HLSL[] =
+@@ -30,17 +34,6 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-// Stage C2 (plan section 9) crash instrumentation: stage breadcrumbs,
+-// provided by Tests/frame_selfcheck_main.cpp in Android probe builds
+-// (ZH_FRAME_PROBE_CRUMBS, set by the CMake wiring in the probe entry
+-// patch). A no-op everywhere the define is absent.
+-#ifdef ZH_FRAME_PROBE_CRUMBS
+-extern "C" void zh_probe_crumb(const char *stage);
+-#define ZH_CRUMB(stage) zh_probe_crumb(stage)
+-#else
+-#define ZH_CRUMB(stage) ((void)0)
+-#endif
+-
+ // The back buffer's format.  D3D9's X8R8G8B8 and A8R8G8B8 are these bytes in this order.
+ static const SDL_GPUTextureFormat BACK_BUFFER_FORMAT = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+ 
+@@ -86,6 +79,201 @@ static const char SCENE_DEPTH_PIXEL_HLSL[] =
  	"float main([[vk::location(0)]] float2 uv : TEXCOORD0) : SV_Target0\n"
  	"{ return SceneDepth.SampleLevel(DepthSampler, uv, 0.0); }\n";
  
@@ -5065,7 +5094,7 @@ index 9a804e2f..be88716c 100644
  bool Sdl_Gamma_Is_Identity(const uint16_t (*ramp)[256])
  {
  	if (ramp == NULL) {
-@@ -112,6 +311,705 @@ unsigned int SdlGpuFrame::Depth_Usage() const
+@@ -112,6 +300,705 @@ unsigned int SdlGpuFrame::Depth_Usage() const
  		| (DepthSampleable ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0);
  }
  
@@ -5771,7 +5800,7 @@ index 9a804e2f..be88716c 100644
  SdlGpuFrame::SdlGpuFrame() :
  	SerializeSubmits(false),
  	FlushMs(0.0),
-@@ -141,6 +1039,59 @@ SdlGpuFrame::SdlGpuFrame() :
+@@ -141,6 +1028,59 @@ SdlGpuFrame::SdlGpuFrame() :
  	BackBuffer(NULL),
  	DepthStencil(NULL),
  	FrontCopy(NULL),
@@ -5831,7 +5860,7 @@ index 9a804e2f..be88716c 100644
  	DepthFormat(SDL_GPU_TEXTUREFORMAT_INVALID),
  	BackWidth(0),
  	BackHeight(0),
-@@ -158,8 +1109,14 @@ SdlGpuFrame::SdlGpuFrame() :
+@@ -158,8 +1098,14 @@ SdlGpuFrame::SdlGpuFrame() :
  	RampTexture(NULL),
  	PointSampler(NULL)
  {
@@ -5846,7 +5875,27 @@ index 9a804e2f..be88716c 100644
  	InFlight[0] = InFlight[1] = NULL;
  	// ZH_GPU_FLUSH_LIMIT=<n>: at most n mid-frame flushes in flight (default 3); 0 lets them pile up as before
  	// the ring, which is how the ring's effect is measured.
-@@ -219,6 +1176,15 @@ SdlGpuFrame * SdlGpuFrame::Create(RenderWindow window, unsigned int width, unsig
+@@ -176,11 +1122,9 @@ SdlGpuFrame::SdlGpuFrame() :
+ 
+ SdlGpuFrame * SdlGpuFrame::Create(RenderWindow window, unsigned int width, unsigned int height, std::string & error)
+ {
+-	ZH_CRUMB("frame-create: begin");
+ 	SdlGpuFrame * frame = new SdlGpuFrame();
+ 	// Debug validation only when asked: it is slow, and the game runs without it.
+ 	const bool debug = getenv("ZH_GPU_DEBUG") != NULL;
+-	ZH_CRUMB("frame-create: device-call");
+ #if defined(__ANDROID__)
+ 	// A default SDL GPU device requires the Vulkan core features depthClamp and
+ 	// shaderClipDistance, and mobile GPUs of the Mali-G52 class implement neither:
+@@ -210,7 +1154,6 @@ SdlGpuFrame * SdlGpuFrame::Create(RenderWindow window, unsigned int width, unsig
+ 		delete frame;
+ 		return NULL;
+ 	}
+-	ZH_CRUMB("frame-create: device-ok");
+ 	// The one place a RenderWindow is taken back to what it is: C2 hands the device its SDL_Window.
+ 	frame->Window = reinterpret_cast<SDL_Window *>(window);
+ 	if (frame->Window != NULL && !SDL_ClaimWindowForGPUDevice(frame->GpuDevice, frame->Window)) {
+@@ -219,6 +1162,15 @@ SdlGpuFrame * SdlGpuFrame::Create(RenderWindow window, unsigned int width, unsig
  		delete frame;
  		return NULL;
  	}
@@ -5862,7 +5911,21 @@ index 9a804e2f..be88716c 100644
  	const SdlGpuDepthFormat depth = Sdl_Select_Depth_Format(
  		[frame](SDL_GPUTextureFormat format, SDL_GPUTextureType type, SDL_GPUTextureUsageFlags usage) {
  			return SDL_GPUTextureSupportsFormat(frame->GpuDevice, format, type, usage);
-@@ -276,12 +1242,56 @@ SdlGpuFrame::~SdlGpuFrame()
+@@ -230,13 +1182,11 @@ SdlGpuFrame * SdlGpuFrame::Create(RenderWindow window, unsigned int width, unsig
+ 		delete frame;
+ 		return NULL;
+ 	}
+-	ZH_CRUMB("frame-create: depth-ok");
+ 	if (!frame->Create_Targets(width, height)) {
+ 		error = std::string("the back buffer: ") + SDL_GetError();
+ 		delete frame;
+ 		return NULL;
+ 	}
+-	ZH_CRUMB("frame-create: targets-ok");
+ 	return frame;
+ }
+ 
+@@ -276,12 +1226,56 @@ SdlGpuFrame::~SdlGpuFrame()
  	if (SceneDepthVertex != NULL) SDL_ReleaseGPUShader(GpuDevice, SceneDepthVertex);
  	if (SceneDepthPixel != NULL) SDL_ReleaseGPUShader(GpuDevice, SceneDepthPixel);
  	if (SceneDepthSampler != NULL) SDL_ReleaseGPUSampler(GpuDevice, SceneDepthSampler);
@@ -5919,7 +5982,7 @@ index 9a804e2f..be88716c 100644
  	SDL_GPUTextureCreateInfo info;
  	SDL_zero(info);
  	info.type = SDL_GPU_TEXTURETYPE_2D;
-@@ -297,17 +1307,110 @@ bool SdlGpuFrame::Create_Targets(unsigned int width, unsigned int height)
+@@ -297,17 +1291,110 @@ bool SdlGpuFrame::Create_Targets(unsigned int width, unsigned int height)
  	info.format = (SDL_GPUTextureFormat)DepthFormat;
  	info.usage = Depth_Usage();
  	SDL_GPUTexture *depth = SDL_CreateGPUTexture(GpuDevice, &info);
@@ -6031,7 +6094,7 @@ index 9a804e2f..be88716c 100644
  	BackWidth = width;
  	BackHeight = height;
  	return true;
-@@ -325,10 +1428,25 @@ void SdlGpuFrame::Release_Targets()
+@@ -325,10 +1412,25 @@ void SdlGpuFrame::Release_Targets()
  	if (BackBuffer != NULL) SDL_ReleaseGPUTexture(GpuDevice, BackBuffer);
  	if (DepthStencil != NULL) SDL_ReleaseGPUTexture(GpuDevice, DepthStencil);
  	if (FrontCopy != NULL) SDL_ReleaseGPUTexture(GpuDevice, FrontCopy);
@@ -6057,7 +6120,7 @@ index 9a804e2f..be88716c 100644
  	DisplayTexture = NULL;		// made again at the new size by the next offscreen Present
  }
  
-@@ -621,7 +1739,7 @@ SdlGpuFrame::WaterSnapshot *SdlGpuFrame::Water_Snapshot(const SdlTarget &source,
+@@ -621,7 +1723,7 @@ SdlGpuFrame::WaterSnapshot *SdlGpuFrame::Water_Snapshot(const SdlTarget &source,
  	// cannot be filled later from a source that may already contain water.
  	if (!snapshot->Frozen) {
  		SDL_GPUTextureCreateInfo info={};info.type=SDL_GPU_TEXTURETYPE_2D;
@@ -6066,7 +6129,7 @@ index 9a804e2f..be88716c 100644
  		info.width=source.Width;info.height=source.Height;info.layer_count_or_depth=info.num_levels=1;
  		if(colour && !snapshot->Colour) snapshot->Colour=SDL_CreateGPUTexture(GpuDevice,&info);
  		if(depth && !snapshot->Depth && source.Depth && DepthSampleable && Create_Scene_Depth_Pipeline()) {
-@@ -783,6 +1901,9 @@ void SdlGpuFrame::Clear_Back_Buffer(bool colour, bool depth, bool stencil, uint3
+@@ -783,6 +1885,9 @@ void SdlGpuFrame::Clear_Back_Buffer(bool colour, bool depth, bool stencil, uint3
  {
  	const SdlTarget target = TargetSet ? CurrentTarget : Back_Buffer_Target();
  	Invalidate_Water_Snapshots(colour ? target.Colour : NULL, depth ? target.Depth : NULL);
@@ -6076,7 +6139,7 @@ index 9a804e2f..be88716c 100644
  	if (!colour && !depth && !stencil) {
  		return;
  	}
-@@ -802,12 +1923,21 @@ void SdlGpuFrame::Clear_Back_Buffer(bool colour, bool depth, bool stencil, uint3
+@@ -802,12 +1907,21 @@ void SdlGpuFrame::Clear_Back_Buffer(bool colour, bool depth, bool stencil, uint3
  bool SdlGpuFrame::Flush()
  {
  	const Uint64 start = SDL_GetTicksNS();
@@ -6103,7 +6166,7 @@ index 9a804e2f..be88716c 100644
  	End_Batch();
  	FlushMs += (double)(SDL_GetTicksNS() - start) / 1.0e6;
  	++Flushes;
-@@ -815,6 +1945,104 @@ bool SdlGpuFrame::Flush()
+@@ -815,6 +1929,104 @@ bool SdlGpuFrame::Flush()
  	return submitted && recorded;
  }
  
@@ -6208,7 +6271,7 @@ index 9a804e2f..be88716c 100644
  // A flush's submit, with a fence kept until the GPU is done: the ones done are let go, and past FlushLimit the
  // oldest is waited for.  Present needs none of this, as the swapchain already bounds the frames in flight;
  // flushes had no bound (a texture updated twice in one batch flushes, as does every restore after a reset).
-@@ -860,7 +2088,11 @@ bool SdlGpuFrame::Submit(SDL_GPUCommandBuffer * commands)
+@@ -860,7 +2072,11 @@ bool SdlGpuFrame::Submit(SDL_GPUCommandBuffer * commands)
  	}
  	const Uint64 start = SDL_GetTicksNS();
  	const bool waited = SDL_WaitForGPUFences(GpuDevice, true, &fence, 1);
@@ -6221,7 +6284,7 @@ index 9a804e2f..be88716c 100644
  	SDL_ReleaseGPUFence(GpuDevice, fence);
  	return waited;
  }
-@@ -910,7 +2142,8 @@ bool SdlGpuFrame::Submit_Offscreen(SDL_GPUCommandBuffer * commands)
+@@ -910,7 +2126,8 @@ bool SdlGpuFrame::Submit_Offscreen(SDL_GPUCommandBuffer * commands)
  }
  
  void SdlGpuFrame::Take_Timing(double & flush_ms, double & fence_ms, unsigned int & flushes, double & acquire_ms,
@@ -6231,7 +6294,7 @@ index 9a804e2f..be88716c 100644
  {
  	flush_ms = FlushMs;
  	fence_ms = FenceMs;
-@@ -921,6 +2154,11 @@ void SdlGpuFrame::Take_Timing(double & flush_ms, double & fence_ms, unsigned int
+@@ -921,6 +2138,11 @@ void SdlGpuFrame::Take_Timing(double & flush_ms, double & fence_ms, unsigned int
  	NotVisible = 0;
  	not_shown = NotShown;
  	NotShown = 0;
@@ -6243,7 +6306,7 @@ index 9a804e2f..be88716c 100644
  	OffscreenMs = 0.0;
  	FlushMs = 0.0;
  	FenceMs = 0.0;
-@@ -1103,14 +2341,77 @@ bool SdlGpuFrame::Copy_To_Front(SDL_GPUCommandBuffer * commands)
+@@ -1103,14 +2325,77 @@ bool SdlGpuFrame::Copy_To_Front(SDL_GPUCommandBuffer * commands)
  	return true;
  }
  
@@ -6324,7 +6387,7 @@ index 9a804e2f..be88716c 100644
  	if (Window != NULL) {
  		SDL_GPUTexture * swapchain = NULL;
  		Uint32 width = 0;
-@@ -1158,11 +2459,15 @@ bool SdlGpuFrame::Present(const uint16_t (*ramp)[256])
+@@ -1158,11 +2443,15 @@ bool SdlGpuFrame::Present(const uint16_t (*ramp)[256])
  		if (DisplayTexture != NULL) {
  			ok = Present_Into(commands, DisplayTexture, BackWidth, BackHeight, BACK_BUFFER_FORMAT, ramp) && ok;
  		}
@@ -6340,7 +6403,7 @@ index 9a804e2f..be88716c 100644
  	End_Batch();
  	return submitted && ok;
  }
-@@ -1171,13 +2476,42 @@ bool SdlGpuFrame::Present_To(SDL_GPUTexture * target, unsigned int width, unsign
+@@ -1171,13 +2460,42 @@ bool SdlGpuFrame::Present_To(SDL_GPUTexture * target, unsigned int width, unsign
  	const uint16_t (*ramp)[256])
  {
  	Refresh_Water_Snapshots();
@@ -6387,7 +6450,7 @@ index 9a804e2f..be88716c 100644
  	End_Batch();
  	return submitted && ok;
  }
-@@ -1268,3 +2602,1372 @@ bool SdlGpuFrame::Read_Back(SDL_GPUTexture * texture, unsigned int width, unsign
+@@ -1268,3 +2586,1388 @@ bool SdlGpuFrame::Read_Back(SDL_GPUTexture * texture, unsigned int width, unsign
  	SDL_ReleaseGPUTransferBuffer(GpuDevice, transfer);
  	return ok;
  }
@@ -6424,10 +6487,21 @@ index 9a804e2f..be88716c 100644
 +void SdlGpuFrame::Configure_Post(const int * chain, unsigned chain_length, const char * chain_text)
 +{
 +	const char * driver = (GpuDevice != NULL) ? SDL_GetGPUDeviceDriver(GpuDevice) : NULL;
++	// The identity the tier gate parses is the device NAME (see WeakGpu's
++	// note in PosixDevice9SunShadow.cpp): the driver string is the backend's
++	// name ("vulkan") and never a model.
++	const char * device_name = NULL;
++	if (GpuDevice != NULL) {
++		const SDL_PropertiesID props = SDL_GetGPUDeviceProperties(GpuDevice);
++		if (props) {
++			device_name = SDL_GetStringProperty(props, SDL_PROP_GPU_DEVICE_NAME_STRING, NULL);
++		}
++	}
++	const char * identity = device_name ? device_name : driver;
 +	const bool capable = GpuDevice != NULL && SDL_GPUTextureSupportsFormat(GpuDevice,
 +		SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, SDL_GPU_TEXTURETYPE_2D,
 +		SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
-+	const bool weak = SdlGpuIdentity::Driver_Is_Known_Weak(driver);
++	const bool weak = SdlGpuIdentity::Device_Is_Known_Weak(device_name, driver);
 +	int env_float = -1;
 +	if (const char * value = getenv("ZH_POST_FLOAT")) {
 +		if (value[0] == '0') {
@@ -6699,8 +6773,8 @@ index 9a804e2f..be88716c 100644
 +		&& (PostEffectArmedMask & SdlPostPlan::Effect_Bit(SdlPostPlan::EFFECT_AO)) != 0;
 +	if (!PostLogDone) {
 +		PostLogDone = true;
-+		fprintf(stderr, "[post] driver '%s' tier=%s format=%s chain=\"%s\" bloom=%s plan=\"%s\" ao=%s haze=%s — %s\n",
-+			driver ? driver : "?", SdlPostTier::Tier_Name(PostTierState),
++		fprintf(stderr, "[post] gpu '%s' tier=%s format=%s chain=\"%s\" bloom=%s plan=\"%s\" ao=%s haze=%s — %s\n",
++			identity ? identity : "?", SdlPostTier::Tier_Name(PostTierState),
 +			PostFloatScene ? "R16G16B16A16_FLOAT" : "B8G8R8A8_UNORM",
 +			chain_text ? chain_text : "", PostBloomArmed ? "on" : "off",
 +			PostPlanText.c_str(), ao_runs ? "on" : "off",
@@ -7484,6 +7558,7 @@ index 9a804e2f..be88716c 100644
 +
 +bool SdlGpuFrame::Run_Post_Pass(SDL_GPUCommandBuffer * commands, const Command & command)
 +{
++	{ static bool first = true; if (first) { first = false; fprintf(stderr, "[post] first composite pass\n"); } }
 +	SDL_GPUTexture * glow = NULL;
 +	if (command.PostBloom && !command.PostCopy) {
 +		glow = (command.PostSource >= 1 && command.PostSource <= 2)
@@ -7546,6 +7621,7 @@ index 9a804e2f..be88716c 100644
 +// targets make the half-pixel law bite harder here than anywhere (committee R6).
 +bool SdlGpuFrame::Run_Bloom_Pass(SDL_GPUCommandBuffer * commands, const Command & command)
 +{
++	{ static bool first = true; if (first) { first = false; fprintf(stderr, "[post] first bloom pass\n"); } }
 +	SDL_GPUGraphicsPipeline * pipeline = command.PostBloomExtract
 +		? PostBloomExtractPipeline : PostBloomBlurPipeline;
 +	SDL_GPUTexture * source = command.PostSource == 0 ? SceneBuffer
@@ -7603,6 +7679,7 @@ index 9a804e2f..be88716c 100644
 +// Extra, where the other bodies never look.
 +bool SdlGpuFrame::Run_Chain_Pass(SDL_GPUCommandBuffer * commands, const Command & command)
 +{
++	{ static bool first = true; if (first) { first = false; fprintf(stderr, "[post] first chain pass\n"); } }
 +	SDL_GPUGraphicsPipeline * pipeline = command.PostEffect == (uint32_t)SdlPostPlan::EFFECT_FXAA
 +		? PostFxaaPipeline
 +		: command.PostEffect == (uint32_t)SdlPostPlan::EFFECT_SHARPEN ? PostSharpenPipeline
@@ -7662,6 +7739,7 @@ index 9a804e2f..be88716c 100644
 +// viewport at the scene's size, like every post pass.
 +bool SdlGpuFrame::Run_Occlude_Pass(SDL_GPUCommandBuffer * commands, const Command & command)
 +{
++	{ static bool first = true; if (first) { first = false; fprintf(stderr, "[post] first occlude (ao) pass\n"); } }
 +	SDL_GPUGraphicsPipeline * pipeline = command.PostFloatDest
 +		? PostAoScenePipeline : PostAoScenePipeline8;
 +	SDL_GPUTexture * source = command.PostSourceTexture;
@@ -7713,6 +7791,7 @@ index 9a804e2f..be88716c 100644
 +// its own fields from the second at the same offsets.
 +bool SdlGpuFrame::Run_Haze_Pass(SDL_GPUCommandBuffer * commands, const Command & command)
 +{
++	{ static bool first = true; if (first) { first = false; fprintf(stderr, "[post] first haze pass\n"); } }
 +	SDL_GPUGraphicsPipeline * pipeline = command.PostFloatDest
 +		? PostHazePipeline : PostHazePipeline8;
 +	SDL_GPUTexture * destination = command.PostDestTexture;
@@ -8371,10 +8450,10 @@ index 2c0872e5..35cbd27c 100644
  			}
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuIdentity.h b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuIdentity.h
 new file mode 100644
-index 00000000..e6cb7469
+index 00000000..0675adc8
 --- /dev/null
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuIdentity.h
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,77 @@
 +/*
 +**	Copyright 2026 İlyas Akın
 +**	Additional terms under GNU GPL section 7 apply: see LICENSE.md.
@@ -8436,6 +8515,18 @@ index 00000000..e6cb7469
 +			return true;
 +		}
 +		return series == 'G' && (model == 31 || model == 51 || model == 52 || model == 57 || model == 310);
++	}
++
++	// Which string names the part: the device NAME when there is one (the
++	// Vulkan deviceName, "Mali-G52 MC2"), else the driver string.  The driver
++	// string alone is the SDL backend's name ("vulkan") and never carries a
++	// model -- the 1.30 device evidence (2026-11-21) is a Mali-G52 phone
++	// whose gates all read "vulkan", never fired, and took the full post
++	// tier.  Callers fetch SDL_PROP_GPU_DEVICE_NAME_STRING and pass both
++	// strings here so the choice lives in exactly one place.
++	inline bool Device_Is_Known_Weak(const char * device_name, const char * driver)
++	{
++		return Driver_Is_Known_Weak(device_name ? device_name : driver);
 +	}
 +}
 +
