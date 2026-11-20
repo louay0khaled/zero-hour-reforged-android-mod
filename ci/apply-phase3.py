@@ -1,38 +1,29 @@
 #!/usr/bin/env python3
-"""Phase 3 (CI, v1.15): the Stage C3 tests page.
+"""Phase 3 (CI, v1.29): the Reforged product pass over the host shell.
 
-Everything here serves ONE addition: a tests page of its own in the
-launcher (owner ruling 2026-11-14: C3 ships inside v1.15 as tests on a
-separate page, the shipped engines untouched). Concretely:
+What this script makes of the MYSOREZ launcher (owner's launcher order,
+2026-11-20: a clean product shareable among friends, not a scattered
+lab):
 
-  * SetupActivity gains a TAB_TESTS page (same showTab() machinery and
-    the same Home entry-row pattern as the Reforged page -- NOT a
-    bottom-navigation item; the bar is full at five, see phase 1e).
-    The page explains the tests, runs them, and shows the verdict
-    lines plus the captured offscreen frame.
-  * FrameCheckActivity (new file) is the C2 route-B activity: an
-    SDLActivity subclass in its own ":framecheck" process whose only
-    customisation is the library list -- it loads libmainrfx.so, the
-    Reforged engine's frame selfcheck + C3 offscreen phase, whose
-    SDL_main writes frame-result.txt (and frame-capture.bmp) into the
-    app's external files directory. Process isolation keeps the
-    payload's statically linked SDL away from the game's, exactly as
-    proven on device in C2.
-  * The tests page writes zh-gamedata-path.txt (the installed game
-    folder) into the same directory before launching, so the
-    payload's content probe can report the data side.
-  * package-android-zh.sh learns the GX_REFORGEDX_LIB knob, mirroring
-    GX_REFORGED_LIB / GX_REFORGED60_LIB: when set, the payload is
-    staged into jniLibs as libmainrfx.so.
-  * Strings: nav_tab_tests + the setup_tests_* set go into every
-    locale file that carries nav_tab_reforged (Arabic translated,
-    the rest English -- Android falls back to values/ where a locale
-    lacks a string, and every referenced name exists in values/).
-
-The shipped engines' code paths are not edited by this script at
-all: the only SetupActivity hooks are the new page and one
-maybeRefreshTestsPage() call in onResume that no-ops unless a test
-run is in flight.
+  * RfxGameActivity (new file) is the product's game activity: it runs
+    the Reforged engine (libmainrfxgame.so) in its own ":rfxgame"
+    process, keeps the app's data in its own external folder
+    (ZeroHourReforged/ on the shared storage, so saves survive an
+    uninstall), writes the run log there automatically (a Settings
+    switch can turn it off), passes the game-text language to the
+    engine (-language + the Registry.ini Language line) and bridges
+    the launcher's interface-size setting (GXUiScale in Options.ini)
+    to the engine as GX_UI_SCALE.
+  * The C3 test payload is GONE: no FrameCheckActivity, no tests
+    page, and libmainrfx.so is on the packaging purge list and the
+    workflow's forbidden list, so it can never ship again. The CI
+    selfcheck target remains as a build-only gate in the workflow.
+  * Help & About gains a Support & Log card (the run log's viewer and
+    share path, transplanted from the old tests page and retargeted
+    at the app's own folder).
+  * The adoption reskin (section 7): Reforged palette and shapes, the
+    game pinned to Zero Hour, the launch path starting
+    RfxGameActivity, the developer credit on Home, in every locale.
 
 Layout: REFORGED_SRC (env) points at the MYSOREZ checkout; default is
 the parent of this overlay, matching apply-surgery.py/apply-phase2.py.
@@ -69,89 +60,16 @@ def edit(path, pairs):
 
 print('phase3 target tree:', SRC)
 
-# ---------------- 1) FrameCheckActivity.java (new file) ----------------
-FRAMECHECK_JAVA = '''package com.generalsx.zerohour;
-
-import org.libsdl.apprfx.SDLActivity;
-
-import android.os.Bundle;
-
-/**
- * Stage C3 tests (v1.15): the activity that runs the Reforged
- * engine's frame selfcheck + offscreen phase.
- *
- * The payload is packaged as a shared library, libmainrfx.so, whose
- * SDL_main is the selfcheck entry from the frame-entry patch: it
- * redirects its output into frame-result.txt in this app's external
- * files directory, runs the C2 renderer checks, then the C3
- * offscreen phase (a windowless GPU device rendering a bounded run
- * of frames into its own target, the final frame captured to
- * frame-capture.bmp), and appends its return code to the file,
- * because an activity process's stdout is logcat, which the launcher
- * cannot read. SetupActivity's tests page launches this activity and
- * reads the file when it comes back to the foreground.
- *
- * The only customisation SDLActivity needs is the library list:
- * loading just the payload library makes getMainSharedObject()
- * resolve to it (SDLActivity's default takes the last listed
- * library), and its JNI_OnLoad -- from the engine's own statically
- * linked SDL 3.4.16, the same version as this Java layer -- registers
- * the SDLActivity natives. No separate SDL3 library is loaded: the
- * payload carries its SDL inside itself.
- *
- * This activity runs in its own process (see the manifest's
- * android:process=":framecheck"), so the payload's SDL never shares
- * a process with the game's -- the two-SDL hazard the stage-C plan
- * flags, avoided by isolation, exactly as proven on device in C2
- * (2026-11-12). It never touches the shipped engines.
- */
-public class FrameCheckActivity extends SDLActivity {
-
-    @Override
-    protected String[] getLibraries() {
-        return new String[] { "mainrfx" };
-    }
-
-    // v1.15.2 stage markers: the Java side of the tests process
-    // leaves a trail in frame-result.txt BEFORE any native code
-    // runs, so a death before SDL_main (the v1.15 failure: native
-    // crash ~1 s in, no result file at all) is bisectable from the
-    // log alone. The payload's entry truncates the file when
-    // SDL_main starts, so surviving markers mean main never ran.
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        markJavaStage("oncreate-enter");
-        super.onCreate(savedInstanceState);
-        markJavaStage("oncreate-done");
-    }
-
-    @Override
-    public void loadLibraries() {
-        markJavaStage("load-enter");
-        super.loadLibraries();
-        markJavaStage("load-done");
-    }
-
-    private void markJavaStage(String stage) {
-        try {
-            java.io.File dir = getExternalFilesDir(null);
-            if (dir == null) return;
-            java.io.FileWriter w = new java.io.FileWriter(
-                new java.io.File(dir, "frame-result.txt"), true);
-            w.write("[javastage] " + stage + "\\n");
-            w.close();
-        } catch (Exception ignored) {}
-    }
-}
-'''
-fc_path = os.path.join(JAVA_DIR, 'FrameCheckActivity.java')
-if os.path.exists(fc_path):
-    sys.exit('phase3: FrameCheckActivity.java already exists -- refusing to overwrite')
-open(fc_path, 'w', encoding='utf-8').write(FRAMECHECK_JAVA)
-print('wrote', os.path.relpath(fc_path, SRC))
+# ---------------- 1) FrameCheckActivity: REMOVED in v1.29 --------
+# The C3 test payload and its activity are gone (owner's launcher
+# order, 2026-11-20): the product ships the game only. The CI
+# selfcheck target remains as a build-only gate in the workflow;
+# libmainrfx.so is on the packaging purge list (section 4b) and
+# on the workflow's forbidden list, so it can never ship again.
 
 # ---------------- 1b) RfxGameActivity.java (new file) ----------------
-RFXGAME_JAVA = '''package com.generalsx.zerohour;
+RFXGAME_JAVA = '''
+package com.generalsx.zerohour;
 
 import org.libsdl.apprfx.SDLActivity;
 
@@ -159,26 +77,31 @@ import android.os.Bundle;
 import android.system.Os;
 
 /**
- * Stage C4 tests (v1.18): the activity that runs the Reforged
- * engine itself as a game.
+ * Zero Hour Reforged (v1.29): the activity that runs the Reforged
+ * engine itself as a game -- the product's one play path.
  *
  * The payload is packaged as libmainrfxgame.so: the full Reforged
  * game (PosixMain's SDL_main) built as a shared library by the C4
- * CMake patch. This activity hands it the two things a desktop
- * launch would: the install root (the game folder the owner picked
- * in this launcher, passed as SDL_main's first argument, -root --
- * PosixMain chdir()s there itself) and a writable user-data
- * directory (ZH_USER_DATA_DIR, read once by the engine's early
- * options; an isolated rfx-user folder under this app's external
- * files, so the game's own saves/settings never mix with the
- * shipped engines' -- sharing those is Stage C6 parity work).
+ * CMake patch. This activity hands it what a desktop launch would:
+ * the install root (the game folder the owner picked in this
+ * launcher, passed as -root; PosixMain chdir()s there itself), the
+ * fork's data overlay (-overlay), the game-text language the owner
+ * picked in the launcher (-language, with Registry.ini synced to
+ * the same token so the engine's font/language files follow), and
+ * a writable user-data directory (ZH_USER_DATA_DIR).
+ *
+ * The user data lives in the app's OWN folder on the device storage,
+ * ZeroHourReforged/User at the root of the shared storage (owner's
+ * order, v1.29): saves, settings, replays and the run logs sit where
+ * the owner can see, copy and share them, and they survive an
+ * uninstall. Data from the pre-1.29 private folder is migrated once,
+ * on the first launch that finds it. The run log (engine stderr +
+ * stage markers) is written by default; a "logging_off" marker file
+ * in the user folder -- the Settings switch owns it -- turns it off.
  *
  * It runs in its own process (the manifest's :rfxgame), under the
- * same isolated SDL 3.4.16 Java layer as the C3 payload -- never
- * the host shell's 3.4.2 layer, and never in a process with the
- * shipped engines. Touch control proper is Stage C5; this slice
- * proves the engine opens its window, reaches its main menu and
- * shell map, starts a skirmish, and quits cleanly.
+ * isolated SDL 3.4.16 Java layer -- never the host shell's layer,
+ * and never in a process with another engine.
  */
 public class RfxGameActivity extends SDLActivity {
 
@@ -187,19 +110,202 @@ public class RfxGameActivity extends SDLActivity {
         return new String[] { "mainrfxgame" };
     }
 
+    // ------------------------------------------------------------------
+    // The app's own folder on the device storage (v1.29)
+    // ------------------------------------------------------------------
+
+    /** <shared storage>/ZeroHourReforged, or null when unavailable. */
+    public static java.io.File rfxRoot(android.content.Context ctx) {
+        try {
+            java.io.File sd =
+                android.os.Environment.getExternalStorageDirectory();
+            if (sd == null) return null;
+            java.io.File root = new java.io.File(sd, "ZeroHourReforged");
+            root.mkdirs();
+            return root.isDirectory() ? root : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * The engine's user-data directory: <own folder>/User, falling
+     * back to the pre-1.29 app-external rfx-user folder when the
+     * shared storage is unavailable, so a launch never fails on it.
+     */
+    public static java.io.File userDataDir(android.content.Context ctx) {
+        java.io.File root = rfxRoot(ctx);
+        if (root != null) {
+            java.io.File user = new java.io.File(root, "User");
+            user.mkdirs();
+            if (user.isDirectory()) return user;
+        }
+        java.io.File ext = ctx.getExternalFilesDir(null);
+        java.io.File legacy = ext == null ? null
+            : new java.io.File(ext, "rfx-user");
+        if (legacy != null) legacy.mkdirs();
+        return legacy;
+    }
+
+    private java.io.File logFile(String name) {
+        java.io.File root = rfxRoot(this);
+        if (root != null) return new java.io.File(root, name);
+        return new java.io.File(getExternalFilesDir(null), name);
+    }
+
+    private boolean mLoggingOff = false;
+
+    private boolean loggingOff(java.io.File userDir) {
+        return userDir != null
+            && new java.io.File(userDir, "logging_off").isFile();
+    }
+
+    // One-time migration of the pre-1.29 private user folder into the
+    // own folder (v1.29): copy, then rename the old folder aside as a
+    // backup, so the move happens exactly once and nothing is lost.
+    private void migrateLegacyUserData(java.io.File userDir) {
+        try {
+            if (userDir == null) return;
+            java.io.File ext = getExternalFilesDir(null);
+            if (ext == null) return;
+            java.io.File legacy = new java.io.File(ext, "rfx-user");
+            if (!legacy.isDirectory()) return;
+            if (legacy.getCanonicalPath().equals(userDir.getCanonicalPath())) return;
+            if (!new java.io.File(legacy, "Options.ini").isFile()) return;
+            if (new java.io.File(userDir, "Options.ini").isFile()) return;
+            copyRecursive(legacy, userDir);
+            legacy.renameTo(new java.io.File(ext, "rfx-user-pre129-backup"));
+        } catch (Exception ignored) {}
+    }
+
+    private static void copyRecursive(java.io.File from, java.io.File to)
+            throws java.io.IOException {
+        if (from.isDirectory()) {
+            to.mkdirs();
+            java.io.File[] kids = from.listFiles();
+            if (kids != null) {
+                for (java.io.File kid : kids) {
+                    copyRecursive(kid, new java.io.File(to, kid.getName()));
+                }
+            }
+            return;
+        }
+        java.io.File parent = to.getParentFile();
+        if (parent != null) parent.mkdirs();
+        java.io.InputStream in = new java.io.FileInputStream(from);
+        java.io.OutputStream out = new java.io.FileOutputStream(to);
+        byte[] buf = new byte[65536];
+        int n;
+        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        in.close();
+        out.close();
+    }
+
+    // ------------------------------------------------------------------
+    // Game-text language: -language for the string overlay, and
+    // Registry.ini for the engine's language/font file selection.
+    // Both follow the launcher's one game-text token (LocaleHelper).
+    // ------------------------------------------------------------------
+
+    private static final String[] ENGINE_LANGUAGES = {
+        "english", "turkish", "german", "ukrainian", "russian", "french",
+        "arabic"
+    };
+
+    private String engineLanguageToken() {
+        try {
+            String token = LocaleHelper.getGameTextToken(this);
+            if (token == null) return "english";
+            token = token.trim().toLowerCase(java.util.Locale.US);
+            for (String known : ENGINE_LANGUAGES) {
+                if (known.equals(token)) return token;
+            }
+        } catch (Exception ignored) {}
+        return "english";
+    }
+
+    // The launcher's interface-size slider saves GXUiScale (percent) in
+    // the user folder's Options.ini -- the file our own engine keeps its
+    // options in. The engine reads the GX_UI_SCALE environment variable
+    // instead (UserUiScale.h), so bridge it here, before the engine
+    // library loads in super.onCreate.
+    private void applyInterfaceScale(java.io.File userDir) {
+        try {
+            if (userDir == null) return;
+            java.io.File ini = new java.io.File(userDir, "Options.ini");
+            if (!ini.isFile()) return;
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.FileReader(ini));
+            try {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    String[] parts = line.split("=", 2);
+                    if (parts.length == 2
+                            && parts[0].trim().equalsIgnoreCase("GXUiScale")) {
+                        int pct = Integer.parseInt(parts[1].trim());
+                        if (pct > 100 && pct <= 200) {
+                            Os.setenv("GX_UI_SCALE",
+                                String.valueOf(pct), true);
+                        }
+                    }
+                }
+            } finally {
+                r.close();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    // Registry.ini lives in the user-data directory, in Options.ini's
+    // "key = value" form; the engine reads its "Language" key before
+    // anything else loads (registry.cpp). Keep every other line the
+    // file carries; set only the Language line, deterministically.
+    private void syncRegistryLanguage(java.io.File userDir, String token) {
+        try {
+            if (userDir == null) return;
+            java.io.File reg = new java.io.File(userDir, "Registry.ini");
+            StringBuilder out = new StringBuilder();
+            if (reg.isFile()) {
+                java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.FileReader(reg));
+                String line;
+                while ((line = r.readLine()) != null) {
+                    String t = line.trim();
+                    int eq = t.indexOf('=');
+                    String key = eq >= 0 ? t.substring(0, eq).trim() : t;
+                    if (key.equalsIgnoreCase("Language")) continue;
+                    out.append(line).append("\\n");
+                }
+                r.close();
+            }
+            out.append("Language = ").append(token).append("\\n");
+            java.io.FileWriter w = new java.io.FileWriter(reg);
+            w.write(out.toString());
+            w.close();
+        } catch (Exception ignored) {}
+    }
+
     @Override
     protected String[] getArguments() {
         String root = SetupActivity.getSavedGamePath(this);
+        java.util.ArrayList<String> args = new java.util.ArrayList<>();
+        args.add("-fullscreen");
+        args.add("-root");
+        args.add(root == null ? "" : root);
         java.io.File odir = overlayDir();
         if (odir != null
                 && new java.io.File(odir, ".rfx-overlay-version").isFile()) {
-            return new String[] { "-fullscreen", "-root", root == null ? "" : root,
-                "-overlay", odir.getAbsolutePath() };
+            args.add("-overlay");
+            args.add(odir.getAbsolutePath());
         }
-        return new String[] { "-fullscreen", "-root", root == null ? "" : root };
+        String token = engineLanguageToken();
+        if (!"english".equals(token)) {
+            args.add("-language");
+            args.add(token);
+        }
+        return args.toArray(new String[0]);
     }
 
-    private static final String OVERLAY_REV = "1";
+    private static final String OVERLAY_REV = "2";
 
     private java.io.File overlayDir() {
         java.io.File base = getExternalFilesDir(null);
@@ -207,16 +313,14 @@ public class RfxGameActivity extends SDLActivity {
             : new java.io.File(base, "rfx-overlay");
     }
 
-    // Stage C4 (v1.22): the fork's own data -- its *Reforged.ini
-    // set, cursors, scripts, window files and HUD textures --
-    // ships upstream as an overlay directory searched before the
-    // install root (PosixMain -overlay, the fork's P1 decision
-    // 9). It rides in the APK as assets/rfx-overlay.zip, staged
-    // in CI by the fork's own Tools/stage-overlay.sh, and is
-    // extracted here, once per OVERLAY_REV, before the engine
-    // starts. Failure leaves the marker absent, getArguments()
-    // then omits -overlay, and the launch degrades to the
-    // pre-overlay behaviour -- never worse.
+    // The fork's own data -- its *Reforged.ini set, cursors, scripts,
+    // window files, HUD textures and the Arabic language pack --
+    // ships as an overlay directory searched before the install root
+    // (PosixMain -overlay). It rides in the APK as assets/rfx-overlay.zip,
+    // staged in CI by the fork's own Tools/stage-overlay.sh, and is
+    // extracted here, once per OVERLAY_REV, before the engine starts.
+    // Failure leaves the marker absent, getArguments() then omits
+    // -overlay, and the launch degrades -- never worse than no overlay.
     private void ensureOverlay() {
         try {
             java.io.File dir = overlayDir();
@@ -270,42 +374,57 @@ public class RfxGameActivity extends SDLActivity {
     // super.onCreate, so it is set first thing here.
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        java.io.File userDir = userDataDir(this);
+        migrateLegacyUserData(userDir);
+        mLoggingOff = loggingOff(userDir);
         markGameStage("oncreate-enter");
         try {
-            java.io.File userDir =
-                new java.io.File(getExternalFilesDir(null), "rfx-user");
-            userDir.mkdirs();
-            Os.setenv("ZH_USER_DATA_DIR",
-                userDir.getAbsolutePath(), true);
+            if (userDir != null) {
+                userDir.mkdirs();
+                Os.setenv("ZH_USER_DATA_DIR",
+                    userDir.getAbsolutePath(), true);
+            }
         } catch (Exception ignored) {}
-        // v1.26: ZH_RENDER_SCALE is NOT set. The scaled path renders the
-        // shell broken below 100 (v1.25 device finding); rendering stays
-        // clamped to full size until the viewport-scaling fix passes its
-        // device gate, when this block and the setup slider return.
-        // C4 diagnostics (v1.19): the engine's debug channel also
-        // writes to stderr, which Android discards for app processes;
-        // redirect fd 2 to a file in the external files dir before
-        // the engine starts, so the shared test log can carry it.
-        try {
-            java.io.File errFile =
-                new java.io.File(getExternalFilesDir(null), "rfxgame-stderr.txt");
-            java.io.FileOutputStream errOut =
-                new java.io.FileOutputStream(errFile, false);
-            Os.dup2(errOut.getFD(), 2);
-            markGameStage("stderr-redirected");
-        } catch (Exception e) {
-            markGameStage("stderr-redirect-failed");
+        applyInterfaceScale(userDir);
+        syncRegistryLanguage(userDir, engineLanguageToken());
+        // v1.26 law, unchanged: ZH_RENDER_SCALE is NOT set. The scaled
+        // path renders the shell broken below 100 (v1.25 device
+        // finding); rendering stays clamped to full size until the
+        // viewport-scaling fix passes its device gate.
+        // The run log (v1.29): the engine's debug channel writes to
+        // stderr, which Android discards for app processes; redirect
+        // fd 2 to rfxgame-stderr.txt in the app's own folder, rotating
+        // the previous run's file aside, unless the owner turned the
+        // log off in Settings (the logging_off marker).
+        if (!mLoggingOff) {
+            try {
+                java.io.File errFile = logFile("rfxgame-stderr.txt");
+                java.io.File prev = logFile("rfxgame-stderr-prev.txt");
+                if (errFile.isFile()) {
+                    prev.delete();
+                    errFile.renameTo(prev);
+                }
+                java.io.FileOutputStream errOut =
+                    new java.io.FileOutputStream(errFile, false);
+                Os.dup2(errOut.getFD(), 2);
+                markGameStage("stderr-redirected");
+            } catch (Exception e) {
+                markGameStage("stderr-redirect-failed");
+            }
+            try {
+                java.io.File stage = logFile("rfxgame-stage.txt");
+                if (stage.isFile() && stage.length() > 262144) {
+                    stage.delete();
+                }
+            } catch (Exception ignored) {}
         }
         ensureOverlay();
         super.onCreate(savedInstanceState);
         markGameStage("oncreate-done");
-        // (v1.24) Keep the screen on while the game runs.
-        // (v1.24.1) The status and navigation bars are hidden by SDL
-        // itself: the engine is launched with -fullscreen (see
-        // getArguments), and SDL's fullscreen window is what makes
-        // Android hide the bars. The legacy systemUiVisibility flags
-        // this activity used in v1.24 are ignored on Android 16 --
-        // device-proven, the bars stayed -- so they are gone.
+        // Keep the screen on while the game runs. The status and
+        // navigation bars are hidden by SDL itself: the engine is
+        // launched with -fullscreen (see getArguments), and SDL's
+        // fullscreen window is what makes Android hide the bars.
         try {
             getWindow().addFlags(
                 android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -320,11 +439,11 @@ public class RfxGameActivity extends SDLActivity {
     }
 
     private void markGameStage(String stage) {
+        if (mLoggingOff) return;
         try {
-            java.io.File dir = getExternalFilesDir(null);
-            if (dir == null) return;
-            java.io.FileWriter w = new java.io.FileWriter(
-                new java.io.File(dir, "rfxgame-stage.txt"), true);
+            java.io.File f = logFile("rfxgame-stage.txt");
+            if (f == null) return;
+            java.io.FileWriter w = new java.io.FileWriter(f, true);
             w.write("[javastage] " + stage + "\\n");
             w.close();
         } catch (Exception ignored) {}
@@ -341,12 +460,6 @@ print('wrote', os.path.relpath(rg_path, SRC))
 edit(MANIFEST, [(
     '    </application>',
     '''        <activity
-            android:name=".FrameCheckActivity"
-            android:exported="false"
-            android:process=":framecheck"
-            android:configChanges="orientation|keyboardHidden|keyboard|navigation|screenSize|screenLayout|smallestScreenSize|density|layoutDirection|locale|fontScale|uiMode"
-            android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
-        <activity
             android:name=".RfxGameActivity"
             android:exported="false"
             android:screenOrientation="landscape"
@@ -356,210 +469,44 @@ edit(MANIFEST, [(
     </application>''',
 )])
 
-# ---------------- 3) SetupActivity: the tests page ----------------
+# ---------------- 3) SetupActivity: the run log in Help (v1.29) --------
+# The tests page is gone (owner's launcher order, 2026-11-20); its log
+# machinery is transplanted here, retargeted at the product: the Help &
+# About page gains a Support & Log card that shows and shares the game's
+# own run log (RfxGameActivity's stage file + stderr + the engine debug
+# log, all in the app's own ZeroHourReforged folder). The frame-result /
+# capture / test-recorder sections died with the tests page.
 edit(SETUP, [
-    # 3a) the tab id, right after the Reforged page's
-    ('''    private static final int TAB_REFORGED = 6;''',
-     '''    private static final int TAB_REFORGED = 6;
-    // GeneralsX @feature Zero Hour Reforged 14/11/2026 (v1.15) The Stage C3
-    // tests page. Same arrangement as the Reforged page: a showTab() page
-    // id entered from a Home row, never a bottom-navigation item.
-    private static final int TAB_TESTS = 7;'''),
-    # 3b) its title
-    ('''            case TAB_REFORGED:  return R.string.nav_tab_reforged;''',
-     '''            case TAB_REFORGED:  return R.string.nav_tab_reforged;
-            case TAB_TESTS:      return R.string.nav_tab_tests;'''),
-    # 3c) its showTab() case
-    ('''            case TAB_REFORGED:
-                buildReforgedPage(page);
-                break;''',
-     '''            case TAB_REFORGED:
-                buildReforgedPage(page);
-                break;
-            case TAB_TESTS:
-                buildTestsPage(page);
-                break;'''),
-    # 3d) the Home entry row, mirroring the Reforged page's row
-    ('''        LinearLayout reforgedEntry = UiKit.card(page);
-        UiKit.listRow(reforgedEntry, R.drawable.ic_gzh_chip,
-            getString(R.string.nav_tab_reforged),
-            getString(R.string.setup_reforged_home_row_desc),
-            () -> showTab(TAB_REFORGED));''',
-     '''        LinearLayout reforgedEntry = UiKit.card(page);
-        UiKit.listRow(reforgedEntry, R.drawable.ic_gzh_chip,
-            getString(R.string.nav_tab_reforged),
-            getString(R.string.setup_reforged_home_row_desc),
-            () -> showTab(TAB_REFORGED));
+    # 3a) the card, inside buildHelpSection, before the how-it-works card
+    ('''        buildSupportSection(page);
 
-        // GeneralsX @feature Zero Hour Reforged 14/11/2026 (v1.15) The entry
-        // to the Stage C3 tests page, next to the Reforged page's row.
-        LinearLayout testsEntry = UiKit.card(page);
-        UiKit.listRow(testsEntry, R.drawable.ic_gzh_chip,
-            getString(R.string.nav_tab_tests),
-            getString(R.string.setup_tests_home_row_desc),
-            () -> showTab(TAB_TESTS));'''),
-    # 3e) onResume: pick up a finished test run
-    ('''        // Once per process, not on every return to this screen.''',
-     '''        maybeRefreshTestsPage();
-        // Once per process, not on every return to this screen.'''),
-    # 3f) the page builder + run/refresh helpers, before tabTitle()
+        LinearLayout help = UiKit.card(page);''',
+     '''        buildSupportSection(page);
+
+        buildRfxLogSection(page);
+
+        LinearLayout help = UiKit.card(page);'''),
+    # 3b) the card builder + log machinery, before tabTitle()
     ('''    private int tabTitle(int tab) {''',
-     '''    // GeneralsX @feature Zero Hour Reforged 14/11/2026 (v1.15) Stage C3
-    // tests page. Runs libmainrfx.so (the Reforged engine's selfcheck +
-    // offscreen first-frame phase) in its own process via
-    // FrameCheckActivity and renders the verdict file it leaves behind.
-    // The shipped engines are never loaded by any of this.
-    private static final String PREF_RFX_TESTS_RUNNING = "rfx_tests_running";
-    private static final String PREF_RFX_TESTS_STARTED_AT = "rfx_tests_started_at";
-    private static final String RFX_LOG_FILE = "test-log.txt";
+     '''    // Zero Hour Reforged (v1.29): the run log lives in Help & About --
+    // the game's own evidence (stage file, stderr, the engine debug
+    // log) from the app's own folder, shown and shared from one card.
+    // The game writes it on every run (RfxGameActivity); the Settings
+    // switch can turn the writing off.
     private String mRfxLogShown;
-    private static final String RFX_RESULT_FILE = "frame-result.txt";
-    private static final String RFX_CAPTURE_FILE = "frame-capture.bmp";
-    private static final String RFX_GAMEDATA_MARKER = "zh-gamedata-path.txt";
+    private static final String RFX_LOG_FILE = "run-log.txt";
 
-    private void onLaunchRfxGame() {
-        startActivity(new android.content.Intent(this, RfxGameActivity.class));
-    }
-
-    private void onRunRfxTests() {
-        java.io.File dir = getExternalFilesDir(null);
-        if (dir == null) {
-            return;
-        }
-        // The payload's content probe reads the game folder path from
-        // this marker, in the same external files directory its result
-        // file lands in.
-        try {
-            java.io.FileOutputStream out = new java.io.FileOutputStream(
-                new java.io.File(dir, RFX_GAMEDATA_MARKER));
-            String gamePath = getSavedGamePath(this);
-            out.write((gamePath == null ? "" : gamePath).getBytes("UTF-8"));
-            out.close();
-        } catch (Exception ignored) {}
-        // No stale result may pose as this run's.
-        new java.io.File(dir, RFX_RESULT_FILE).delete();
-        new java.io.File(dir, RFX_CAPTURE_FILE).delete();
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putBoolean(PREF_RFX_TESTS_RUNNING, true)
-            .putLong(PREF_RFX_TESTS_STARTED_AT,
-                System.currentTimeMillis()).apply();
-        mRfxLogShown = null;
-        startActivity(new android.content.Intent(this, FrameCheckActivity.class));
-    }
-
-    private void maybeRefreshTestsPage() {
-        android.content.SharedPreferences prefs =
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        if (!prefs.getBoolean(PREF_RFX_TESTS_RUNNING, false)) {
-            return;
-        }
-        java.io.File dir = getExternalFilesDir(null);
-        if (dir == null) {
-            return;
-        }
-        java.io.File result = new java.io.File(dir, RFX_RESULT_FILE);
-        if (result.isFile() && result.length() > 0) {
-            prefs.edit().putBoolean(PREF_RFX_TESTS_RUNNING, false)
-                .apply();
-            if (currentTab == TAB_TESTS && contentHost != null) {
-                showTab(TAB_TESTS);
-            }
-            return;
-        }
-        // No result file: if the system recorded the framecheck
-        // process exiting after this run started, the run is over --
-        // it died without writing. Clear the flag so the page can
-        // say so (and point at the logs) instead of showing
-        // "running" forever, which is what v1.15 did.
-        long startedAt = prefs.getLong(PREF_RFX_TESTS_STARTED_AT, 0);
-        if (startedAt > 0 && rfxFramecheckExitAfter(startedAt) != null) {
-            prefs.edit().putBoolean(PREF_RFX_TESTS_RUNNING, false)
-                .apply();
-            if (currentTab == TAB_TESTS && contentHost != null) {
-                showTab(TAB_TESTS);
-            }
-        }
-    }
-
-    private void buildTestsPage(LinearLayout page) {
-        LinearLayout intro = UiKit.card(page);
-        UiKit.sectionHeader(intro, R.drawable.ic_gzh_chip,
-            getString(R.string.setup_card_tests_page), true);
-        UiKit.supporting(intro, getString(R.string.setup_tests_intro));
-
-        java.io.File dir = getExternalFilesDir(null);
-        java.io.File result = dir == null ? null
-            : new java.io.File(dir, RFX_RESULT_FILE);
-        boolean haveResult = result != null && result.isFile()
-            && result.length() > 0;
-        boolean running = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .getBoolean(PREF_RFX_TESTS_RUNNING, false);
-        long rfxStartedAt = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .getLong(PREF_RFX_TESTS_STARTED_AT, 0);
-        boolean died = !running && !haveResult && rfxStartedAt > 0
-            && rfxFramecheckExitAfter(rfxStartedAt) != null;
-
-        LinearLayout run = UiKit.card(page);
-        UiKit.supporting(run, getString(died
-            ? R.string.setup_tests_died
-            : running ? R.string.setup_tests_running
-            : haveResult ? R.string.setup_tests_done
-                         : R.string.setup_tests_no_results));
-        UiKit.button(run, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_chip,
-            getString(R.string.setup_tests_run), this::onRunRfxTests);
-
-        // GeneralsX @feature Zero Hour Reforged 19/11/2026 (v1.18) Stage C4:
-        // the Reforged engine itself as a playable window, launched from
-        // the same tests page, in its own process (RfxGameActivity).
-        LinearLayout gameCard = UiKit.card(page);
-        UiKit.sectionHeader(gameCard, R.drawable.ic_gzh_chip,
-            getString(R.string.setup_tests_game_title), true);
-        UiKit.supporting(gameCard, getString(R.string.setup_tests_game_desc));
-        UiKit.button(gameCard, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_chip,
-            getString(R.string.setup_tests_game_launch), this::onLaunchRfxGame);
-
-        if (haveResult) {
-            LinearLayout results = UiKit.card(page);
-            UiKit.sectionHeader(results, R.drawable.ic_gzh_chip,
-                getString(R.string.setup_tests_results_title), true);
-            android.widget.TextView tv = new android.widget.TextView(this);
-            tv.setText(readTextFileQuietly(result));
-            tv.setTextSize(11);
-            tv.setTypeface(android.graphics.Typeface.MONOSPACE);
-            tv.setTextIsSelectable(true);
-            results.addView(tv);
-            java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);
-            if (capture.isFile() && capture.length() > 0) {
-                UiKit.supporting(results,
-                    getString(R.string.setup_tests_capture_title));
-                android.graphics.Bitmap bmp =
-                    android.graphics.BitmapFactory.decodeFile(
-                        capture.getAbsolutePath());
-                if (bmp != null) {
-                    android.widget.ImageView iv =
-                        new android.widget.ImageView(this);
-                    iv.setImageBitmap(bmp);
-                    iv.setAdjustViewBounds(true);
-                    results.addView(iv);
-                }
-            }
-        }
-
-        // The dedicated logs card (v1.15.1, the owner's request):
-        // one place that shows WHY a run ended -- the result file
-        // plus the system's own exit record for the test process --
-        // and shares it in one tap.
+    private void buildRfxLogSection(LinearLayout page) {
         LinearLayout logs = UiKit.card(page);
-        UiKit.sectionHeader(logs, R.drawable.ic_gzh_chip,
-            getString(R.string.setup_tests_logs_title), true);
-        UiKit.supporting(logs, getString(R.string.setup_tests_logs_desc));
-        UiKit.button(logs, UiKit.BTN_TONAL, R.drawable.ic_gzh_chip,
-            getString(R.string.setup_tests_logs_show), this::onShowRfxLogs);
-        UiKit.button(logs, UiKit.BTN_OUTLINE, R.drawable.ic_gzh_chip,
-            getString(R.string.setup_tests_logs_share),
-            this::onShareRfxLog);
-        UiKit.button(logs, UiKit.BTN_OUTLINE, R.drawable.ic_gzh_chip,
-            getString(R.string.setup_tests_logs_copy), this::onCopyRfxLog);
+        UiKit.sectionHeader(logs, R.drawable.ic_gzh_doc,
+            getString(R.string.setup_runlog_title), true);
+        UiKit.supporting(logs, getString(R.string.setup_runlog_desc));
+        UiKit.button(logs, UiKit.BTN_TONAL, R.drawable.ic_gzh_doc,
+            getString(R.string.setup_runlog_show), this::onShowRfxLog);
+        UiKit.button(logs, UiKit.BTN_OUTLINE, R.drawable.ic_gzh_doc,
+            getString(R.string.setup_runlog_share), this::onShareRfxLog);
+        UiKit.button(logs, UiKit.BTN_OUTLINE, R.drawable.ic_gzh_doc,
+            getString(R.string.setup_runlog_copy), this::onCopyRfxLog);
         if (mRfxLogShown != null) {
             android.widget.TextView lv = new android.widget.TextView(this);
             lv.setText(mRfxLogShown);
@@ -570,31 +517,9 @@ edit(SETUP, [
         }
     }
 
-    // The system's own record of how the :framecheck process last
-    // exited at or after the given time -- the difference between
-    // "still running" and "the system closed it", straight from
-    // ActivityManager (API 30+; null on older systems).
-    private android.app.ApplicationExitInfo rfxFramecheckExitAfter(
-            long startedAt) {
-        if (android.os.Build.VERSION.SDK_INT < 30) {
-            return null;
-        }
-        try {
-            android.app.ActivityManager am =
-                (android.app.ActivityManager)
-                    getSystemService(ACTIVITY_SERVICE);
-            java.util.List<android.app.ApplicationExitInfo> exits =
-                am.getHistoricalProcessExitReasons(
-                    getPackageName(), 0, 10);
-            for (android.app.ApplicationExitInfo e : exits) {
-                if (e.getProcessName() != null
-                        && e.getProcessName().endsWith(":framecheck")
-                        && e.getTimestamp() >= startedAt) {
-                    return e;
-                }
-            }
-        } catch (Exception ignored) {}
-        return null;
+    private static String rfxTime(long ms) {
+        return new java.text.SimpleDateFormat("yyyy/MM/dd HH:mm:ss",
+            java.util.Locale.US).format(new java.util.Date(ms));
     }
 
     private static String rfxExitReasonName(int reason) {
@@ -613,14 +538,28 @@ edit(SETUP, [
         }
     }
 
-    private static String rfxTime(long ms) {
-        return new java.text.SimpleDateFormat("yyyy/MM/dd HH:mm:ss",
-            java.util.Locale.US).format(new java.util.Date(ms));
+    private static void appendLogFile(StringBuilder sb, String name,
+            java.io.File f, boolean tail) {
+        sb.append(name).append(": ");
+        if (f != null && f.isFile()) {
+            sb.append(f.length()).append(" bytes, modified ")
+              .append(rfxTime(f.lastModified())).append("\\n");
+            sb.append("---- ").append(name).append(" ----\\n");
+            sb.append(readTextFileQuietly(f));
+            if (tail) {
+                sb.append("\\n---- tail of ").append(name)
+                  .append(" ----\\n");
+                sb.append(readTextTailQuietly(f, 24576));
+            }
+            sb.append("\\n---- end ").append(name).append(" ----\\n");
+        } else {
+            sb.append("MISSING\\n");
+        }
     }
 
-    private String buildRfxTestLog() {
+    private String buildRfxGameLog() {
         StringBuilder sb = new StringBuilder();
-        sb.append("Zero Hour Reforged -- test log\\n");
+        sb.append("Zero Hour Reforged -- run log\\n");
         try {
             android.content.pm.PackageInfo pi = getPackageManager()
                 .getPackageInfo(getPackageName(), 0);
@@ -634,37 +573,20 @@ edit(SETUP, [
           .append(")\\n");
         sb.append("now: ").append(rfxTime(System.currentTimeMillis()))
           .append("\\n");
-        android.content.SharedPreferences prefs =
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        long startedAt = prefs.getLong(PREF_RFX_TESTS_STARTED_AT, 0);
-        sb.append("run state: running=")
-          .append(prefs.getBoolean(PREF_RFX_TESTS_RUNNING, false))
-          .append(", started=")
-          .append(startedAt > 0 ? rfxTime(startedAt) : "-").append("\\n");
-        java.io.File dir = getExternalFilesDir(null);
-        if (dir == null) {
-            sb.append("external files dir: unavailable\\n");
-            return sb.toString();
+        java.io.File root = RfxGameActivity.rfxRoot(this);
+        java.io.File userDir = RfxGameActivity.userDataDir(this);
+        appendLogFile(sb, "rfxgame-stage.txt", root == null ? null
+            : new java.io.File(root, "rfxgame-stage.txt"), false);
+        appendLogFile(sb, "rfxgame-stderr.txt", root == null ? null
+            : new java.io.File(root, "rfxgame-stderr.txt"), true);
+        java.io.File glog = null;
+        if (userDir != null) {
+            glog = new java.io.File(userDir, "Logs/DebugLogFile.txt");
+            if (!glog.isFile()) {
+                glog = new java.io.File(userDir, "DebugLogFile.txt");
+            }
         }
-        java.io.File result = new java.io.File(dir, RFX_RESULT_FILE);
-        if (result.isFile()) {
-            sb.append("frame-result.txt: ").append(result.length())
-              .append(" bytes, modified ")
-              .append(rfxTime(result.lastModified())).append("\\n");
-            sb.append("---- frame-result.txt ----\\n");
-            sb.append(readTextFileQuietly(result));
-            sb.append("\\n---- end frame-result.txt ----\\n");
-        } else {
-            sb.append("frame-result.txt: MISSING\\n");
-        }
-        java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);
-        sb.append("frame-capture.bmp: ");
-        if (capture.isFile()) {
-            sb.append(capture.length()).append(" bytes, modified ")
-              .append(rfxTime(capture.lastModified())).append("\\n");
-        } else {
-            sb.append("MISSING\\n");
-        }
+        appendLogFile(sb, "DebugLogFile.txt", glog, true);
         sb.append("---- process exits (system record) ----\\n");
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             try {
@@ -689,7 +611,8 @@ edit(SETUP, [
                 int traces = 0;
                 for (android.app.ApplicationExitInfo e : exits) {
                     if (traces >= 2) break;
-                    if (!e.getProcessName().endsWith(":framecheck")) {
+                    if (e.getProcessName() == null
+                            || !e.getProcessName().endsWith(":rfxgame")) {
                         continue;
                     }
                     try {
@@ -722,31 +645,31 @@ edit(SETUP, [
         return sb.toString();
     }
 
-    private void onShowRfxLogs() {
-        mRfxLogShown = buildRfxTestLog();
-        java.io.File dir = getExternalFilesDir(null);
-        if (dir != null) {
-            writeTextFileQuietly(new java.io.File(dir, RFX_LOG_FILE),
+    private void onShowRfxLog() {
+        mRfxLogShown = buildRfxGameLog();
+        java.io.File root = RfxGameActivity.rfxRoot(this);
+        if (root != null) {
+            writeTextFileQuietly(new java.io.File(root, RFX_LOG_FILE),
                 mRfxLogShown);
         }
-        showTab(TAB_TESTS);
+        showTab(TAB_HELP);
     }
 
     private void onShareRfxLog() {
-        String log = buildRfxTestLog();
-        java.io.File dir = getExternalFilesDir(null);
-        if (dir != null) {
-            writeTextFileQuietly(new java.io.File(dir, RFX_LOG_FILE),
+        String log = buildRfxGameLog();
+        java.io.File root = RfxGameActivity.rfxRoot(this);
+        if (root != null) {
+            writeTextFileQuietly(new java.io.File(root, RFX_LOG_FILE),
                 log);
         }
         android.content.Intent send = new android.content.Intent(
             android.content.Intent.ACTION_SEND);
         send.putExtra(android.content.Intent.EXTRA_TEXT, log);
-        // v1.24.1: attach a zip of the FULL evidence files as well. The
-        // text above carries only the first 64 KB of each file, so the
-        // end of a long session (where the failures live) never survived
+        // Attach a zip of the full evidence files as well: the text
+        // above carries only the first 64 KB of each file, so the end
+        // of a long session (where the failures live) never survived
         // a text share; the zip carries every byte of every file.
-        java.io.File zip = buildRfxLogZip(dir);
+        java.io.File zip = buildRfxLogZip();
         if (zip != null) {
             try {
                 android.net.Uri uri = androidx.core.content.FileProvider
@@ -763,33 +686,31 @@ edit(SETUP, [
             send.setType("text/plain");
         }
         startActivity(android.content.Intent.createChooser(send,
-            getString(R.string.setup_tests_logs_title)));
+            getString(R.string.setup_runlog_title)));
     }
 
-    private java.io.File buildRfxLogZip(java.io.File dir) {
-        if (dir == null) {
-            return null;
-        }
+    private java.io.File buildRfxLogZip() {
         try {
+            java.io.File root = RfxGameActivity.rfxRoot(this);
+            java.io.File userDir = RfxGameActivity.userDataDir(this);
             java.util.ArrayList<java.io.File> files =
                 new java.util.ArrayList<java.io.File>();
-            files.add(new java.io.File(dir, RFX_RESULT_FILE));
-            String gamePath = getSavedGamePath();
-            if (gamePath != null) {
-                files.add(new java.io.File(gamePath, "test-rec.txt"));
+            if (root != null) {
+                files.add(new java.io.File(root, "rfxgame-stage.txt"));
+                files.add(new java.io.File(root, "rfxgame-stderr.txt"));
+                files.add(new java.io.File(root,
+                    "rfxgame-stderr-prev.txt"));
             }
-            files.add(new java.io.File(dir, "rfxgame-stage.txt"));
-            files.add(new java.io.File(dir, "rfxgame-stderr.txt"));
-            java.io.File glog = new java.io.File(dir,
-                "rfx-user/Logs/DebugLogFile.txt");
-            if (!glog.isFile()) {
-                glog = new java.io.File(dir,
-                    "rfx-user/DebugLogFile.txt");
+            if (userDir != null) {
+                java.io.File glog = new java.io.File(userDir,
+                    "Logs/DebugLogFile.txt");
+                if (!glog.isFile()) {
+                    glog = new java.io.File(userDir, "DebugLogFile.txt");
+                }
+                files.add(glog);
             }
-            files.add(glog);
-            files.add(new java.io.File(dir, RFX_CAPTURE_FILE));
             java.io.File zip = new java.io.File(getCacheDir(),
-                "zh-reforged-test-logs.zip");
+                "zh-reforged-logs.zip");
             java.util.zip.ZipOutputStream zout =
                 new java.util.zip.ZipOutputStream(
                     new java.io.FileOutputStream(zip));
@@ -824,9 +745,9 @@ edit(SETUP, [
                 getSystemService(CLIPBOARD_SERVICE);
         if (cm != null) {
             cm.setPrimaryClip(android.content.ClipData.newPlainText(
-                "rfx-test-log", buildRfxTestLog()));
+                "rfx-run-log", buildRfxGameLog()));
         }
-        Toast.makeText(this, R.string.setup_tests_logs_copied,
+        Toast.makeText(this, R.string.setup_runlog_copied,
             Toast.LENGTH_SHORT).show();
     }
 
@@ -882,103 +803,53 @@ edit(SETUP, [
     private int tabTitle(int tab) {'''),
 ])
 
+# ---------------- 3s) run-log strings, every locale --------------------
+RUNLOG_STRINGS_EN = [
+    ('setup_runlog_title', 'Run log'),
+    ('setup_runlog_desc', 'The game\u2019s own record of its last runs: the stage file, the engine output and the debug log, all in the app\u2019s own ZeroHourReforged folder. Show it here, or share it when something goes wrong.'),
+    ('setup_runlog_show', 'Show the log'),
+    ('setup_runlog_share', 'Share the log'),
+    ('setup_runlog_copy', 'Copy the log'),
+    ('setup_runlog_copied', 'Log copied'),
+]
+RUNLOG_STRINGS_AR = [
+    ('setup_runlog_title', 'سجل التشغيل'),
+    ('setup_runlog_desc', 'سجل اللعبة نفسه لآخر تشغيلاتها: ملف المراحل ومخرجات المحرك وسجل التصحيح، كلها في مجلد التطبيق الخاص ZeroHourReforged. اعرضه هنا أو شاركه عند حدوث مشكلة.'),
+    ('setup_runlog_show', 'عرض السجل'),
+    ('setup_runlog_share', 'مشاركة السجل'),
+    ('setup_runlog_copy', 'نسخ السجل'),
+    ('setup_runlog_copied', 'نُسخ السجل'),
+]
 
-# ---------------- 3e) v1.17: the test recorder switch + log ----------------
-# The recorder's marker joins the host's diagnostics arrays (the card, the
-# game-folder handling and the refresh logic already exist); the engine
-# side is GXTestRecorder.h (marker gx_testrec.txt -> test-rec.txt). The
-# shared test log also appends test-rec.txt from the game folder.
-edit(SETUP, [
-    ("""        "gx_trace.txt", "gx_perf.txt", "gx_gles_gputimer.txt", "gx_audio_trace.txt", "gx_net_trace.txt",""",
-     """        "gx_trace.txt", "gx_perf.txt", "gx_testrec.txt", "gx_gles_gputimer.txt", "gx_audio_trace.txt", "gx_net_trace.txt","""),
-    ("""        R.string.setup_switch_gx_trace, R.string.setup_switch_gx_perf, R.string.setup_switch_gpu_timer,""",
-     """        R.string.setup_switch_gx_trace, R.string.setup_switch_gx_perf, R.string.setup_switch_gx_testrec, R.string.setup_switch_gpu_timer,"""),
-    ("""        R.string.setup_switch_gx_trace_desc, R.string.setup_switch_gx_perf_desc, R.string.setup_switch_gpu_timer_desc,""",
-     """        R.string.setup_switch_gx_trace_desc, R.string.setup_switch_gx_perf_desc, R.string.setup_switch_gx_testrec_desc, R.string.setup_switch_gpu_timer_desc,"""),
-    ("""        } else {
-            sb.append("frame-result.txt: MISSING\\n");
-        }
-        java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);""",
-     """        } else {
-            sb.append("frame-result.txt: MISSING\\n");
-        }
-        // Zero Hour Reforged (v1.17): the test recorder's numbers file
-        // lives in the game folder (the engine writes it next to its
-        // marker); append it so one shared log carries everything.
-        java.io.File testRec = null;
-        String testRecPath = getSavedGamePath();
-        if (testRecPath != null) {
-            testRec = new java.io.File(testRecPath, "test-rec.txt");
-        }
-        if (testRec != null && testRec.isFile()) {
-            sb.append("test-rec.txt: ").append(testRec.length())
-              .append(" bytes, modified ")
-              .append(rfxTime(testRec.lastModified())).append("\\n");
-            sb.append("---- test-rec.txt ----\\n");
-            sb.append(readTextFileQuietly(testRec));
-            sb.append("\\n---- end test-rec.txt ----\\n");
-        } else {
-            sb.append("test-rec.txt: MISSING\\n");
-        }
-        java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);"""),
-])
 
-# ---------------- 3f) v1.19: C4 diagnostics in the shared test log ----
-# The C4 game run leaves its evidence in the external files dir
-# (rfxgame-stage.txt from RfxGameActivity, rfxgame-stderr.txt from the
-# fd-2 redirect) and in the engine's own debug log under the isolated
-# user dir; append all three so one shared log carries the whole run.
-edit(SETUP, [
-    ("""        } else {
-            sb.append("test-rec.txt: MISSING\\n");
-        }
-        java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);""",
-     """        } else {
-            sb.append("test-rec.txt: MISSING\\n");
-        }
-        // C4 diagnostics (v1.19): the Reforged game run's evidence.
-        java.io.File gstage = new java.io.File(dir, "rfxgame-stage.txt");
-        if (gstage.isFile()) {
-            sb.append("rfxgame-stage.txt: ").append(gstage.length())
-              .append(" bytes, modified ")
-              .append(rfxTime(gstage.lastModified())).append("\\n");
-            sb.append("---- rfxgame-stage.txt ----\\n");
-            sb.append(readTextFileQuietly(gstage));
-            sb.append("\\n---- end rfxgame-stage.txt ----\\n");
-        } else {
-            sb.append("rfxgame-stage.txt: MISSING\\n");
-        }
-        java.io.File gerr = new java.io.File(dir, "rfxgame-stderr.txt");
-        if (gerr.isFile()) {
-            sb.append("rfxgame-stderr.txt: ").append(gerr.length())
-              .append(" bytes, modified ")
-              .append(rfxTime(gerr.lastModified())).append("\\n");
-            sb.append("---- rfxgame-stderr.txt ----\\n");
-            sb.append(readTextFileQuietly(gerr));
-            sb.append("\\n---- tail of rfxgame-stderr.txt ----\\n");
-            sb.append(readTextTailQuietly(gerr, 24576));
-            sb.append("\\n---- end rfxgame-stderr.txt ----\\n");
-        } else {
-            sb.append("rfxgame-stderr.txt: MISSING\\n");
-        }
-        java.io.File glog = new java.io.File(dir, "rfx-user/Logs/DebugLogFile.txt");
-        if (!glog.isFile()) {
-            glog = new java.io.File(dir, "rfx-user/DebugLogFile.txt");
-        }
-        if (glog.isFile()) {
-            sb.append("DebugLogFile.txt: ").append(glog.length())
-              .append(" bytes, modified ")
-              .append(rfxTime(glog.lastModified())).append("\\n");
-            sb.append("---- DebugLogFile.txt ----\\n");
-            sb.append(readTextFileQuietly(glog));
-            sb.append("\\n---- tail of DebugLogFile.txt ----\\n");
-            sb.append(readTextTailQuietly(glog, 24576));
-            sb.append("\\n---- end DebugLogFile.txt ----\\n");
-        } else {
-            sb.append("DebugLogFile.txt: MISSING\\n");
-        }
-        java.io.File capture = new java.io.File(dir, RFX_CAPTURE_FILE);"""),
-])
+def runlog_escape(s):
+    return (s.replace('&', '&amp;').replace('<', '&lt;')
+             .replace('>', '&gt;').replace("'", "\\'"))
+
+
+count = 0
+for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
+    s = open(strings_xml, encoding='utf-8').read()
+    anchor = None
+    for line in s.split('\n'):
+        if 'name="nav_tab_reforged"' in line:
+            anchor = line
+            break
+    if anchor is None:
+        continue
+    if 'name="setup_runlog_title"' in s:
+        sys.exit(f'phase3: {strings_xml} already carries setup_runlog_title')
+    is_ar = os.path.basename(os.path.dirname(strings_xml)) == 'values-ar'
+    block = ''.join(
+        f'\n    <string name="{name}">{runlog_escape(text)}</string>'
+        for name, text in (RUNLOG_STRINGS_AR if is_ar else RUNLOG_STRINGS_EN))
+    s = s.replace(anchor, anchor + block, 1)
+    open(strings_xml, 'w', encoding='utf-8').write(s)
+    count += 1
+if count < 10:
+    sys.exit(f'phase3: only {count} locale files carried nav_tab_reforged -- expected 10+')
+print(f'run-log strings added to {count} locale files')
+
 
 
 # ---------------- 4) Packaging knob for libmainrfx.so ----------------
@@ -988,19 +859,6 @@ edit(PACKAGE_SH, [(
 fi''',
     '''    cp "${GX_ENGINE_LIB}" "${JNILIBS}/libmainz60.so"
     echo "Packaging the pure 60-steps engine: libmainz60.so ($(du -h "${GX_ENGINE_LIB}" | cut -f1))"
-fi
-
-# GeneralsX @feature Zero Hour Reforged 14/11/2026 (v1.15) The Stage C3 test
-# payload: the Reforged engine's frame selfcheck + offscreen phase, loaded
-# only by the launcher's tests page (FrameCheckActivity, own process). Not
-# an engine the game ever loads.
-if [[ -n "${GX_REFORGEDX_LIB:-}" ]]; then
-    if [[ ! -f "${GX_REFORGEDX_LIB}" ]]; then
-        echo "ERROR: GX_REFORGEDX_LIB points at a file that does not exist: ${GX_REFORGEDX_LIB}"
-        exit 1
-    fi
-    cp "${GX_REFORGEDX_LIB}" "${JNILIBS}/libmainrfx.so"
-    echo "Packaging the Reforged C3 test payload: libmainrfx.so ($(du -h \"${GX_REFORGEDX_LIB}\" | cut -f1))"
 fi
 
 # GeneralsX @feature Zero Hour Reforged 19/11/2026 (v1.18) The Stage C4 game
@@ -1038,12 +896,12 @@ edit(PACKAGE_SH, [(
 # AFTER all staging and BEFORE gradle (run #41: purging earlier in the
 # script is useless, the staging below it re-stages everything), and it
 # verifies itself so a missed file fails the packaging, not the release.
-for gxdead in libEGL_angle.so libGLESv2_angle.so libadrenotools.so libdxvk_d3d8.so libdxvk_d3d9.so libfile_redirect_hook.so libgamespy.so libgsl_alloc_hook.so libhook_impl.so libmain_hook.so libopenal.so libSDL3.so libSDL3_image.so libc++_shared.so; do
+for gxdead in libEGL_angle.so libGLESv2_angle.so libadrenotools.so libdxvk_d3d8.so libdxvk_d3d9.so libfile_redirect_hook.so libgamespy.so libgsl_alloc_hook.so libhook_impl.so libmain_hook.so libmainrfx.so libopenal.so libSDL3.so libSDL3_image.so libc++_shared.so; do
     rm -f "${JNILIBS}/${gxdead}"
 done
 rm -rf "${DEFAULT_DRIVER_ASSETS}"
 rm -f "${ASSETS}/dxvk.conf"
-for gxdead in libEGL_angle.so libGLESv2_angle.so libadrenotools.so libdxvk_d3d8.so libdxvk_d3d9.so libfile_redirect_hook.so libgamespy.so libgsl_alloc_hook.so libhook_impl.so libmain_hook.so libopenal.so libSDL3.so libSDL3_image.so libc++_shared.so; do
+for gxdead in libEGL_angle.so libGLESv2_angle.so libadrenotools.so libdxvk_d3d8.so libdxvk_d3d9.so libfile_redirect_hook.so libgamespy.so libgsl_alloc_hook.so libhook_impl.so libmain_hook.so libmainrfx.so libopenal.so libSDL3.so libSDL3_image.so libc++_shared.so; do
     if [[ -e "${JNILIBS}/${gxdead}" ]]; then
         echo "ERROR: purge failed, ${gxdead} is still staged in ${JNILIBS}"
         exit 1
@@ -1059,255 +917,12 @@ echo "Purged the old engine's support libraries and driver assets (v1.24.1)"
 )])
 
 
-# ---------------- 5) Strings in every locale that has the Reforged tab ----
-STRINGS_EN = [
-    ('nav_tab_tests', 'Reforged Tests'),
-    ('setup_tests_home_row_desc', 'Stage C engine tests: offscreen first frame'),
-    ('setup_card_tests_page', 'Reforged engine tests'),
-    ('setup_tests_intro', 'These tests run the Reforged engine itself (libmainrfx) in complete isolation: it creates its GPU device, renders frames offscreen -- with no window -- and saves the captured frame. The engines you play with are never touched.'),
-    ('setup_tests_run', 'Run the tests'),
-    ('setup_tests_running', 'The tests are running in their own process -- come back to this page in a few seconds.'),
-    ('setup_tests_done', 'The latest results are below.'),
-    ('setup_tests_no_results', 'No results yet -- run the tests first.'),
-    ('setup_tests_results_title', 'Results'),
-    ('setup_tests_capture_title', 'The captured offscreen frame:'),
-    ('setup_tests_logs_title', 'Test logs'),
-    ('setup_tests_logs_desc', 'The full record of a test run: the result file, and the system note of why the test process exited (a crash, or the memory killer), ready to share.'),
-    ('setup_tests_logs_show', 'Show the logs'),
-    ('setup_tests_logs_share', 'Share the log'),
-    ('setup_tests_logs_copy', 'Copy the log'),
-    ('setup_tests_logs_copied', 'Log copied'),
-    ('setup_switch_gx_testrec', 'Test recorder'),
-    ('setup_switch_gx_testrec_desc', 'Records the numbers of a test match into test-rec.txt in the game folder: match start, the engine CRC at frames 100/200/300, memory use every minute, and LAN lobby events. Turn on before a test match (solo or LAN), then share the file or the test log. (gx_testrec.txt)'),
-    ('setup_tests_died', 'The test process ended with no result -- the system closed it. Open the test logs below to see why, and share them.'),
-    ('setup_tests_game_title', 'The Reforged game itself (Stage C4)'),
-    ('setup_tests_game_desc', 'Launches the full Reforged engine as a game window -- its own main menu and shell map -- in its own process. The engines you play with are never touched. Experimental: touch controls arrive in a later stage.'),
-    ('setup_tests_game_launch', 'Launch the Reforged game'),
-]
-STRINGS_AR = [
-    ('nav_tab_tests', 'اختبارات ريفورجيد'),
-    ('setup_tests_home_row_desc', 'اختبارات محرك المرحلة C: أول فريم دون شاشة'),
-    ('setup_card_tests_page', 'اختبارات محرك ريفورجيد'),
-    ('setup_tests_intro', 'هذه الاختبارات تشغّل محرك ريفورجيد نفسه (libmainrfx) بمعزل تام: ينشئ جهاز الرسوم، ويرسم فريمات دون شاشة، ويحفظ الفريم الملتقط. المحركات التي تلعب بها لا تُمسّ أبدًا.'),
-    ('setup_tests_run', 'تشغيل الاختبارات'),
-    ('setup_tests_running', 'الاختبارات شغّالة بعملية منفصلة -- ارجع لهذه الصفحة بعد ثوانٍ.'),
-    ('setup_tests_done', 'آخر النتائج بالأسفل.'),
-    ('setup_tests_no_results', 'لا نتائج بعد -- شغّل الاختبارات أولًا.'),
-    ('setup_tests_results_title', 'النتائج'),
-    ('setup_tests_capture_title', 'الفريم الملتقط دون شاشة:'),
-    ('setup_tests_logs_title', 'سجلات الاختبارات'),
-    ('setup_tests_logs_desc', 'سجل كامل لتشغيل الاختبار: ملف النتيجة، وملاحظة النظام نفسه عن سبب خروج عملية الاختبار (انهيار، أو قتل بسبب الذاكرة)، جاهز للمشاركة.'),
-    ('setup_tests_logs_show', 'عرض السجلات'),
-    ('setup_tests_logs_share', 'مشاركة السجل'),
-    ('setup_tests_logs_copy', 'نسخ السجل'),
-    ('setup_tests_logs_copied', 'نُسخ السجل'),
-    ('setup_switch_gx_testrec', 'مسجّل الاختبارات'),
-    ('setup_switch_gx_testrec_desc', 'يسجّل أرقام مباراة الاختبار في ملف test-rec.txt داخل مجلد اللعبة: بداية المباراة، وبصمة المحرك عند الفريمات 100/200/300، واستهلاك الذاكرة كل دقيقة، وأحداث لوبي الشبكة المحلية. فعّله قبل مباراة اختبار (فردية أو شبكية)، ثم شارك الملف أو سجل الاختبارات. (gx_testrec.txt)'),
-    ('setup_tests_died', 'انتهت عملية الاختبار دون أي نتيجة -- النظام أغلقها. افتح سجلات الاختبارات بالأسفل لمعرفة السبب ومشاركتها.'),
-    ('setup_tests_game_title', 'لعبة ريفورجيد نفسها (المرحلة C4)'),
-    ('setup_tests_game_desc', 'تشغّل محرك ريفورجيد الكامل كنافذة لعبة -- قائمته الرئيسية وخريطة القشرة -- بعملية منفصلة. المحركات التي تلعب بها لا تُمسّ أبدًا. تجريبي: التحكم باللمس يأتي بمرحلة لاحقة.'),
-    ('setup_tests_game_launch', 'تشغيل لعبة ريفورجيد'),
-]
-
-
 def xml_escape(s):
     return (s.replace('&', '&amp;').replace('<', '&lt;')
              .replace('>', '&gt;').replace("'", "\\'"))
 
 
-count = 0
-for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
-    s = open(strings_xml, encoding='utf-8').read()
-    anchor = None
-    for line in s.split('\n'):
-        if 'name="nav_tab_reforged"' in line:
-            anchor = line
-            break
-    if anchor is None:
-        continue
-    if 'name="nav_tab_tests"' in s:
-        sys.exit(f'phase3: {strings_xml} already carries nav_tab_tests')
-    is_ar = os.path.basename(os.path.dirname(strings_xml)) == 'values-ar'
-    block = ''.join(
-        f'\n    <string name="{name}">{xml_escape(text)}</string>'
-        for name, text in (STRINGS_AR if is_ar else STRINGS_EN))
-    s = s.replace(anchor, anchor + block, 1)
-    open(strings_xml, 'w', encoding='utf-8').write(s)
-    count += 1
-if count < 10:
-    sys.exit(f'phase3: only {count} locale files carried nav_tab_reforged -- expected 10+')
-print(f'strings added to {count} locale files')
 
-
-# ---------------- 6a) v1.25: the render-resolution slider (Reforged) ------
-# The engine half shipped inert in v1.24 (SdlGpuFrame's ZH_RENDER_SCALE knob,
-# clamped [0.5, 1.0]); this wires the launcher end: a slider card next to the
-# menu-text-size card, a SharedPreferences percent, and (in RfxGameActivity's
-# onCreate above) the env var set before the engine starts.
-edit(SETUP, [
-    ('''                buildUiScaleSection(page);
-''',
-     '''                buildUiScaleSection(page);
-                buildRfxRenderScaleSection(page);
-'''),
-    ('''    private void buildUiScaleSection(LinearLayout root) {
-''',
-     '''    // GeneralsX @feature Reforged render resolution 20/11/2026 (v1.25):
-    // the Reforged engine renders at this fraction of the panel and
-    // upscales (SdlGpuFrame's ZH_RENDER_SCALE). Stored as a plain percent
-    // in SharedPreferences; RfxGameActivity turns it into the env var
-    // before the engine starts. 100 = full resolution.
-    private Slider rfxRenderScaleSlider;
-    private TextView rfxRenderScaleLabel;
-
-    private static final String PREF_RFX_RENDER_SCALE = "rfx_render_scale";
-
-    static int getRfxRenderScalePercent(android.content.Context ctx) {
-        int percent = ctx.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .getInt(PREF_RFX_RENDER_SCALE, 100);
-        return Math.max(50, Math.min(100, percent));
-    }
-
-    private void writeRfxRenderScalePercent(int percent) {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putInt(PREF_RFX_RENDER_SCALE,
-                Math.max(50, Math.min(100, percent))).apply();
-    }
-
-    private void buildRfxRenderScaleSection(LinearLayout root) {
-        LinearLayout content = UiKit.card(root);
-        rfxRenderScaleLabel = UiKit.sectionHeader(content, R.drawable.ic_gzh_sliders,
-            getString(R.string.setup_card_render_scale), true);
-
-        int startPercent = getRfxRenderScalePercent(this);
-        rfxRenderScaleSlider = new Slider(this);
-        rfxRenderScaleSlider.setValueFrom(50f);
-        rfxRenderScaleSlider.setValueTo(100f);
-        rfxRenderScaleSlider.setStepSize(5f);
-        rfxRenderScaleSlider.setValue(100f);
-        rfxRenderScaleSlider.setEnabled(false);
-        rfxRenderScaleSlider.setLabelBehavior(LabelFormatter.LABEL_GONE);
-        rfxRenderScaleSlider.setTrackActiveTintList(UiKit.tint(this, R.color.gzh_primary));
-        rfxRenderScaleSlider.setTrackInactiveTintList(UiKit.tint(this, R.color.gzh_surface_container_highest));
-        rfxRenderScaleSlider.setThumbTintList(UiKit.tint(this, R.color.gzh_primary));
-        rfxRenderScaleSlider.setHaloTintList(UiKit.tint(this, R.color.gzh_ripple_primary));
-        updateRfxRenderScaleLabel(100);
-        rfxRenderScaleSlider.addOnChangeListener((slider, value, fromUser) -> updateRfxRenderScaleLabel((int) value));
-        LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        sliderLp.topMargin = UiKit.dim(this, R.dimen.gzh_item_gap_tight);
-        content.addView(rfxRenderScaleSlider, sliderLp);
-
-        UiKit.button(content, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_check,
-            getString(R.string.setup_button_apply_render_scale), () -> {
-                writeRfxRenderScalePercent((int) rfxRenderScaleSlider.getValue());
-                Toast.makeText(this, R.string.setup_toast_text_size_saved, Toast.LENGTH_LONG).show();
-            });
-
-        UiKit.helpText(content, getString(R.string.setup_render_scale_help));
-    }
-
-    private void updateRfxRenderScaleLabel(int percent) {
-        if (rfxRenderScaleLabel != null) {
-            rfxRenderScaleLabel.setText(getString(R.string.setup_text_size_label, percent));
-        }
-    }
-
-    private void buildUiScaleSection(LinearLayout root) {
-'''),
-])
-
-# ---------------- 6b) v1.25: render-scale strings, every locale ----------
-RENDER_SCALE_STRINGS = {
-    'values': [
-        ('setup_card_render_scale', 'Render Resolution'),
-        ('setup_button_apply_render_scale', 'Apply Render Resolution'),
-        ('setup_render_scale_help', "Temporarily locked at 100 (full quality) while this feature is being fixed. It will return in an update."),
-    ],
-    'values-ar': [
-        ('setup_card_render_scale', 'دقة العرض'),
-        ('setup_button_apply_render_scale', 'تطبيق دقة العرض'),
-        ('setup_render_scale_help', 'مقفلة مؤقتًا على 100 (الجودة الكاملة) ريثما تُصلَح هذه الميزة. ستعود في تحديث قادم.'),
-    ],
-    'values-de': [
-        ('setup_card_render_scale', 'Renderauflösung'),
-        ('setup_button_apply_render_scale', 'Renderauflösung anwenden'),
-        ('setup_render_scale_help', 'Rendert das Reforged-Spiel mit diesem Prozentsatz der Bildschirmauflösung und streckt es wieder auf Vollbild. Niedrigere Werte (z. B. 75) laufen auf schwächeren Handys flüssiger, mit etwas weniger Schärfe. 100 ist volle Qualität. Wird beim nächsten Spielstart wirksam, nicht sofort.'),
-    ],
-    'values-es': [
-        ('setup_card_render_scale', 'Resolución de renderizado'),
-        ('setup_button_apply_render_scale', 'Aplicar resolución de renderizado'),
-        ('setup_render_scale_help', 'Renderiza el juego Reforged con este porcentaje de la resolución de tu pantalla y lo estira a pantalla completa. Los valores más bajos (prueba 75) van más fluidos en teléfonos débiles, con algo menos de nitidez. 100 es la calidad completa. Se aplica la próxima vez que inicies el juego, no al instante.'),
-    ],
-    'values-fa': [
-        ('setup_card_render_scale', 'وضوح رندر'),
-        ('setup_button_apply_render_scale', 'اعمال وضوح رندر'),
-        ('setup_render_scale_help', 'بازی ریفورجد را با این درصد از وضوح صفحه‌نمایش رندر می‌کند و به تمام‌صفحه می‌کشد. مقادیر کمتر (۷۵ را امتحان کنید) روی گوشی‌های ضعیف‌تر روان‌تر اجرا می‌شود، با کمی کاهش وضوح. ۱۰۰ کیفیت کامل است. از اجرای بعدی بازی اعمال می‌شود، نه فوراً.'),
-    ],
-    'values-fr': [
-        ('setup_card_render_scale', 'Résolution de rendu'),
-        ('setup_button_apply_render_scale', 'Appliquer la résolution de rendu'),
-        ('setup_render_scale_help', "Affiche le jeu Reforged à ce pourcentage de la résolution de votre écran, puis l'étire en plein écran. Des valeurs plus basses (essayez 75) sont plus fluides sur les téléphones modestes, avec un peu moins de netteté. 100 est la qualité maximale. Prend effet au prochain lancement du jeu, pas immédiatement."),
-    ],
-    'values-b+isv': [
-        ('setup_card_render_scale', 'Razrěšenje renderovanja'),
-        ('setup_button_apply_render_scale', 'Priměniti razrěšenje renderovanja'),
-        ('setup_render_scale_help', 'Renderuje igru Reforged pri tomto procentu razrěšenja ekrana i raztegaje ju na cěly ekran. Nižše hodnoty (poprobuj 75) rabotajut plavněje na slabyh telefonah, s někoj utratom ostrosti. 100 je polna jakość. Dějstvuje od slědujuščego zapuska igry, ne srazu.'),
-    ],
-    'values-ko': [
-        ('setup_card_render_scale', '렌더 해상도'),
-        ('setup_button_apply_render_scale', '렌더 해상도 적용'),
-        ('setup_render_scale_help', '화면 해상도의 이 비율로 Reforged 게임을 렌더링한 뒤 전체 화면으로 확대합니다. 낮은 값(75 권장)은 약한 휴대폰에서 더 부드럽게 실행되며 선명도가 약간 떨어집니다. 100이 최고 화질입니다. 다음에 게임을 실행할 때 적용되며 즉시 적용되지 않습니다.'),
-    ],
-    'values-pl': [
-        ('setup_card_render_scale', 'Rozdzielczość renderowania'),
-        ('setup_button_apply_render_scale', 'Zastosuj rozdzielczość renderowania'),
-        ('setup_render_scale_help', 'Renderuje grę Reforged w tym procencie rozdzielczości ekranu i rozciąga ją do pełnego ekranu. Niższe wartości (spróbuj 75) działają płynniej na słabszych telefonach, kosztem ostrości. 100 to pełna jakość. Obowiązuje od następnego uruchomienia gry, nie od razu.'),
-    ],
-    'values-pt-rBR': [
-        ('setup_card_render_scale', 'Resolução de renderização'),
-        ('setup_button_apply_render_scale', 'Aplicar resolução de renderização'),
-        ('setup_render_scale_help', 'Renderiza o jogo Reforged nesta porcentagem da resolução da tela e o estica para tela cheia. Valores menores (tente 75) rodam mais suaves em celulares fracos, com alguma perda de nitidez. 100 é a qualidade total. Entra em vigor na próxima vez que você abrir o jogo, não na hora.'),
-    ],
-    'values-ru': [
-        ('setup_card_render_scale', 'Разрешение рендера'),
-        ('setup_button_apply_render_scale', 'Применить разрешение рендера'),
-        ('setup_render_scale_help', 'Рендерит игру Reforged в этом проценте разрешения экрана и растягивает на весь экран. Меньшие значения (попробуйте 75) работают плавнее на слабых телефонах, с некоторой потерей резкости. 100 — полное качество. Применяется при следующем запуске игры, не сразу.'),
-    ],
-    'values-uk': [
-        ('setup_card_render_scale', 'Роздільна здатність рендера'),
-        ('setup_button_apply_render_scale', 'Застосувати роздільну здатність рендера'),
-        ('setup_render_scale_help', 'Рендерить гру Reforged у цьому відсотку роздільної здатності екрана й розтягує на весь екран. Менші значення (спробуйте 75) працюють плавніше на слабких телефонах, із деякою втратою різкості. 100 — повна якість. Застосовується під час наступного запуску гри, не одразу.'),
-    ],
-    'values-zh': [
-        ('setup_card_render_scale', '渲染分辨率'),
-        ('setup_button_apply_render_scale', '应用渲染分辨率'),
-        ('setup_render_scale_help', '以屏幕分辨率的此百分比渲染 Reforged 游戏，再拉伸至全屏。较低的值（可试 75）在较弱的手机上运行更流畅，但清晰度会有所下降。100 为完整画质。下次启动游戏时生效，不会立即生效。'),
-    ],
-}
-
-count = 0
-for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
-    s = open(strings_xml, encoding='utf-8').read()
-    anchor = None
-    for line in s.split('\n'):
-        if 'name="setup_tests_game_launch"' in line:
-            anchor = line
-            break
-    if anchor is None:
-        continue
-    if 'name="setup_card_render_scale"' in s:
-        sys.exit(f'phase3: {strings_xml} already carries setup_card_render_scale')
-    locale = os.path.basename(os.path.dirname(strings_xml))
-    block = ''.join(
-        f'\n    <string name="{name}">{xml_escape(text)}</string>'
-        for name, text in RENDER_SCALE_STRINGS.get(locale, RENDER_SCALE_STRINGS['values']))
-    s = s.replace(anchor, anchor + block, 1)
-    open(strings_xml, 'w', encoding='utf-8').write(s)
-    count += 1
-if count < 10:
-    sys.exit(f'phase3: only {count} locale files carried the tests strings -- expected 10+')
-print(f'render-scale strings added to {count} locale files')
 
 
 # ---------------- 7) v1.25 ADOPTION: Reforged reskin + developer credit + C6/C7
@@ -1342,6 +957,8 @@ REFORGED_PALETTE = {
     'gzh_on_secondary': '#16222E',
     'gzh_secondary_container': '#2A3644',
     'gzh_on_secondary_container': '#D7E3EE',
+    'gzh_tertiary': '#E59A8F',
+    'gzh_tertiary_container': '#4A2C28',
     'gzh_on_surface_disabled': '#61ECEEF2',
     'gzh_container_disabled': '#1FECEEF2',
     'gzh_ripple_light': '#1FECEEF2',
@@ -1465,17 +1082,1105 @@ for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))
         sys.exit('phase3: %s already carries setup_developer_credit' % strings_xml)
     lines = xml.split('\n')
     for idx, line in enumerate(lines):
-        if 'name="setup_tests_game_launch"' in line:
+        if 'name="nav_tab_reforged"' in line:
             indent = line[:len(line) - len(line.lstrip())]
             lines.insert(idx + 1, indent + '<string name="setup_developer_credit">'
                          + xml_escape(CREDIT_STRINGS[locale]) + '</string>')
             credit_added += 1
             break
     else:
-        sys.exit('phase3: no setup_tests_game_launch anchor in %s' % strings_xml)
+        sys.exit('phase3: no nav_tab_reforged anchor in %s' % strings_xml)
     open(strings_xml, 'w', encoding='utf-8').write('\n'.join(lines))
 if credit_added < 10:
     sys.exit('phase3: developer credit added to only %d locales' % credit_added)
 print('developer credit string added to %d locale files' % credit_added)
+
+# ---------------- 8) v1.29 launcher rebuild: three destinations --------
+# Home / Settings / Help (committee section 1). The Graphics and Tools
+# tabs die as destinations -- their cards were the old engine's
+# plumbing -- and the Settings tab is the old Interface tab, retitled.
+# Dead tab ids (and the retired tests id 7) land on Home: a restored
+# session can never face a blank page.
+edit(SETUP, [
+    # 8a) the bottom nav: five items -> three
+    ('''        menu.add(Menu.NONE, TAB_HOME, 0, R.string.nav_tab_home).setIcon(R.drawable.ic_gzh_home);
+        menu.add(Menu.NONE, TAB_GRAPHICS, 1, R.string.nav_tab_graphics).setIcon(R.drawable.ic_gzh_display);
+        menu.add(Menu.NONE, TAB_INTERFACE, 2, R.string.nav_tab_interface).setIcon(R.drawable.ic_gzh_globe);
+        menu.add(Menu.NONE, TAB_TOOLS, 3, R.string.nav_tab_tools).setIcon(R.drawable.ic_gzh_wrench);
+        menu.add(Menu.NONE, TAB_HELP, 4, R.string.nav_tab_help).setIcon(R.drawable.ic_gzh_info);''',
+     '''        menu.add(Menu.NONE, TAB_HOME, 0, R.string.nav_tab_home).setIcon(R.drawable.ic_gzh_home);
+        menu.add(Menu.NONE, TAB_INTERFACE, 1, R.string.nav_tab_settings).setIcon(R.drawable.ic_gzh_sliders);
+        menu.add(Menu.NONE, TAB_HELP, 2, R.string.nav_tab_help).setIcon(R.drawable.ic_gzh_info);'''),
+    # 8b) the Settings tab's title
+    ('''            case TAB_INTERFACE: return R.string.nav_tab_interface;''',
+     '''            case TAB_INTERFACE: return R.string.nav_tab_settings;'''),
+    # 8c) dead-tab guard at the top of showTab
+    ('''    private void showTab(int tab) {
+        currentTab = tab;''',
+     '''    private void showTab(int tab) {
+        // v1.29: the Graphics and Tools tabs and the old Reforged and
+        // tests pages no longer exist as destinations; anything that
+        // still names them (a restored session, a stale caller) lands
+        // on Home instead of a blank page.
+        if (tab == TAB_GRAPHICS || tab == TAB_TOOLS
+                || tab == TAB_REFORGED || tab == 7) {
+            tab = TAB_HOME;
+        }
+        currentTab = tab;'''),
+    # 8d) the Graphics case dies with its cards
+    ('''            case TAB_GRAPHICS:
+                // Zero Hour Reforged (v1.13): no Simulation Rate
+                // section -- the host engines it selected no longer
+                // ship, and there is no engine choice anywhere
+                // (v1.16: one play engine, libmainz60.so).
+                // GeneralsX @tweak Android port 02/10/2026 The upscaler lives in the GLES translator
+                // (plain GLES and GLES on ANGLE); under Vulkan it does nothing, so it is not offered.
+                if (!RENDER_BACKEND_VULKAN.equals(getRenderBackendChoice())) {
+                    buildRenderScaleSection(page);
+                }
+                buildRenderBackendSection(page);
+                // Custom Vulkan driver / dxvk.conf only matter when Vulkan is
+                // the selected backend -- the GLES/GLES+ANGLE paths never
+                // touch DXVK at all, see
+                // Core/Libraries/Source/d3d8gles/CMakeLists.txt.
+                if (RENDER_BACKEND_VULKAN.equals(getRenderBackendChoice())) {
+                    applyRecommendedDriverIfNeeded();
+                    buildCustomDriverSection(page);
+                    buildDxvkConfigSection(page);
+                }
+                break;
+''',
+     ''),
+    # 8e) the Tools case dies (the log viewer lives in Help now)
+    ('''            case TAB_TOOLS:
+                buildLogsSection(page);
+                buildDiagnosticsSection(page);
+                break;
+''',
+     ''),
+    # 8f) the Reforged page case dies (its content moves to Home)
+    ('''            case TAB_REFORGED:
+                buildReforgedPage(page);
+                break;
+''',
+     ''),
+    # 8g) the per-tab refreshers of dead features stop running (showTab)
+    ('''        }
+
+        refreshStatus();
+        refreshGeneralsOnlineStatus();
+        loadDxvkConfigIntoEditor();
+        refreshDiagnosticsSwitches();
+        refreshUpdatesStatus();''',
+     '''        }
+
+        refreshStatus();'''),
+    # 8i) the same refreshers in onResume, plus the UpdateManager
+    # auto-check (named deletion: kill the card alone and the invisible
+    # network checks would persist)
+    ('''        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        refreshStatus();
+        refreshGeneralsOnlineStatus();
+        loadDxvkConfigIntoEditor();
+        refreshDiagnosticsSwitches();
+        refreshUpdatesStatus();
+        // Once per process, not on every return to this screen.
+        if (!sAutoUpdateCheckedThisProcess && UpdateManager.isAutoCheckEnabled(this)) {
+            sAutoUpdateCheckedThisProcess = true;
+            runUpdateCheck(false);
+        }''',
+     '''        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        refreshStatus();'''),
+    # 8j) the support popup over the first screen dies (lab behaviour);
+    # the Vulkan migration call beside it stays
+    ('''        moveOffVulkanOnce();
+        maybeShowSupportPopup();''',
+     '''        moveOffVulkanOnce();'''),
+    # 8h) the app-bar log button opens Help, where the run log lives
+    ('''            R.drawable.ic_gzh_doc, getString(R.string.setup_button_view_logs), this::onViewLogs);''',
+     '''            R.drawable.ic_gzh_doc, getString(R.string.setup_button_view_logs), () -> showTab(TAB_HELP));'''),
+])
+
+# ---------------- 8s) the Settings tab string --------------------------
+SETTINGS_STRINGS_EN = [
+    ('nav_tab_settings', 'Settings'),
+]
+SETTINGS_STRINGS_AR = [
+    ('nav_tab_settings', 'الإعدادات'),
+]
+count = 0
+for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
+    s = open(strings_xml, encoding='utf-8').read()
+    anchor = None
+    for line in s.split('\n'):
+        if 'name="nav_tab_reforged"' in line:
+            anchor = line
+            break
+    if anchor is None:
+        continue
+    if 'name="nav_tab_settings"' in s:
+        sys.exit(f'phase3: {strings_xml} already carries nav_tab_settings')
+    is_ar = os.path.basename(os.path.dirname(strings_xml)) == 'values-ar'
+    block = ''.join(
+        f'\n    <string name="{name}">{runlog_escape(text)}</string>'
+        for name, text in (SETTINGS_STRINGS_AR if is_ar else SETTINGS_STRINGS_EN))
+    s = s.replace(anchor, anchor + block, 1)
+    open(strings_xml, 'w', encoding='utf-8').write(s)
+    count += 1
+if count < 10:
+    sys.exit(f'phase3: only {count} locale files carried nav_tab_reforged -- expected 10+')
+print(f'settings strings added to {count} locale files')
+
+
+# ---------------- 9) v1.29 launcher rebuild: Home --------------
+# The Reforged page's job moves into Home itself (committee
+# section 1): hero, state-aware Play, the folder card, two
+# shortcut rows, credit + version. The Mods row, the old page's
+# entry row, the GeneralsOnline card and the Updates card die.
+edit(SETUP, [
+    # 9a) the hero: emblem + title at the top of Home
+    ('''        final boolean generals = false;
+        LinearLayout game = UiKit.card(page);''',
+     '''        final boolean generals = false;
+        // v1.29 hero: the launcher's own emblem, then the game's
+        // name -- no fabricated art, nothing read from the game
+        // folder (absent on a first run).
+        android.widget.ImageView heroIcon = new android.widget.ImageView(this);
+        heroIcon.setImageResource(R.mipmap.ic_launcher_foreground);
+        int heroSize = UiKit.dp(this, 66);
+        LinearLayout.LayoutParams heroLp =
+            new LinearLayout.LayoutParams(heroSize, heroSize);
+        heroLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+        heroIcon.setLayoutParams(heroLp);
+        page.addView(heroIcon);
+        TextView heroTitle = UiKit.body(page, getString(R.string.app_name));
+        heroTitle.setGravity(android.view.Gravity.CENTER);
+        heroTitle.setTextSize(20);
+        LinearLayout game = UiKit.card(page);'''),
+    # 9b) the Mods row dies (owner ruling D2: no mods this version)
+    ('''        // GeneralsX @feature Android port 18/10/2026 The Mods screen (ModManagerActivity): which mods
+        // the next game starts with, and in what order.
+        // GeneralsX @tweak Android port 19/10/2026 Installed but all off is not "No mods" (owner read
+        // it as the mods being gone after an update).
+        java.util.List<ModManager.Mod> installedMods = ModManager.listMods(this);
+        int modsOn = 0;
+        for (ModManager.Mod mod : installedMods) {
+            if (mod.enabled) {
+                modsOn++;
+            }
+        }
+        UiKit.listRow(game, R.drawable.ic_gzh_folder, getString(R.string.mods_title),
+            installedMods.isEmpty() ? getString(R.string.mods_home_none)
+                : modsOn == 0 ? getString(R.string.mods_home_all_off, installedMods.size())
+                : getString(R.string.mods_home_enabled, modsOn),
+            () -> startActivityForResult(new Intent(this, ModManagerActivity.class), REQUEST_MODS));''',
+     ''),
+    # 9c) the old page's entry row dies (Home IS the page now)
+    ('''        // GeneralsX @feature Zero Hour Reforged 12/11/2026 (v1.11) The entry
+        // to our own page, on the Home page -- the way the Mods screen is
+        // entered from its row in the card above. There is deliberately no
+        // bottom-navigation item for it: Material's BottomNavigationView
+        // accepts at most five items, and the sixth added in v1.9/v1.10
+        // threw at inflation and took the whole settings interface down
+        // with it (device verdict on v1.10). Their five items stay
+        // untouched; showTab() renders our page like any other.
+        LinearLayout reforgedEntry = UiKit.card(page);
+        UiKit.listRow(reforgedEntry, R.drawable.ic_gzh_chip,
+            getString(R.string.nav_tab_reforged),
+            getString(R.string.setup_reforged_home_row_desc),
+            () -> showTab(TAB_REFORGED));''',
+     ''),
+    # 9d) Play states its reason instead of bouncing silently
+    ('''        // The one thing this app exists to do, as the first thing on it.
+        UiKit.button(page, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_play,
+            getString(R.string.setup_button_launch_game), this::onLaunchGame);''',
+     '''        // The one thing this app exists to do, as the first thing on it.
+        // v1.29: no silent bounce -- with no folder, or a folder
+        // whose game files are missing, Play disables and the line
+        // under it says why (the folder card below shows the rest).
+        com.google.android.material.button.MaterialButton playButton =
+            UiKit.button(page, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_play,
+                getString(R.string.setup_button_launch_game), this::onLaunchGame);
+        String homeGamePath = getSavedGamePath();
+        boolean homeFolderValid = homeGamePath != null
+            && isValidGameFolder(new File(homeGamePath), getSelectedGame(this));
+        if (!homeFolderValid) {
+            playButton.setEnabled(false);
+            UiKit.supporting(page, getString(homeGamePath == null
+                ? R.string.setup_home_play_needs_folder
+                : R.string.setup_home_play_folder_invalid));
+        }'''),
+    # 9e) GeneralsOnline + Updates cards die; two shortcut rows and
+    # the version line close the page instead
+    ('''        // GeneralsX @bugfix Android port 01/08/2026 kept above the advanced
+        // settings -- signing into GeneralsOnline is a primary action most
+        // people want right after picking their game folder, not something to
+        // bury under settings most players never touch.
+        buildGeneralsOnlineSection(page);
+        buildUpdatesSection(page);''',
+     '''        // v1.29: the only shortcuts Home carries -- language and
+        // the road to every other setting.
+        LinearLayout shortcuts = UiKit.card(page);
+        UiKit.listRow(shortcuts, R.drawable.ic_gzh_globe,
+            getString(R.string.setup_card_language),
+            getString(R.string.setup_home_shortcut_language_desc),
+            () -> showTab(TAB_INTERFACE));
+        UiKit.listRow(shortcuts, R.drawable.ic_gzh_sliders,
+            getString(R.string.setup_card_control_scheme),
+            getString(R.string.setup_home_shortcut_controls_desc),
+            () -> showTab(TAB_INTERFACE));
+        TextView versionLine = UiKit.supporting(page, versionLabel());
+        versionLine.setGravity(android.view.Gravity.CENTER);'''),
+])
+
+# ---------------- 9s) Home strings -------------------------------
+HOME_STRINGS_EN = [
+    ('setup_home_play_needs_folder', 'Pick the game folder first (below), then play.'),
+    ('setup_home_play_folder_invalid', 'This folder is missing the game files -- pick the full game folder below.'),
+    ('setup_home_shortcut_language_desc', 'Launcher language and the game\u2019s text language'),
+    ('setup_home_shortcut_controls_desc', 'Controls, graphics, size, theme and logs'),
+]
+HOME_STRINGS_AR = [
+    ('setup_home_play_needs_folder', 'اختر مجلد اللعبة أولًا (بالأسفل)، ثم العب.'),
+    ('setup_home_play_folder_invalid', 'هالمجلد ناقصه ملفات اللعبة -- اختر مجلد اللعبة الكامل بالأسفل.'),
+    ('setup_home_shortcut_language_desc', 'لغة المشغّل ولغة نصوص اللعبة'),
+    ('setup_home_shortcut_controls_desc', 'التحكم والرسومات والحجم والمظهر والسجل'),
+]
+count = 0
+for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
+    s = open(strings_xml, encoding='utf-8').read()
+    anchor = None
+    for line in s.split('\n'):
+        if 'name="nav_tab_reforged"' in line:
+            anchor = line
+            break
+    if anchor is None:
+        continue
+    if 'name="setup_home_play_needs_folder"' in s:
+        sys.exit(f'phase3: {strings_xml} already carries setup_home_play_needs_folder')
+    is_ar = os.path.basename(os.path.dirname(strings_xml)) == 'values-ar'
+    block = ''.join(
+        f'\n    <string name="{name}">{runlog_escape(text)}</string>'
+        for name, text in (HOME_STRINGS_AR if is_ar else HOME_STRINGS_EN))
+    s = s.replace(anchor, anchor + block, 1)
+    open(strings_xml, 'w', encoding='utf-8').write(s)
+    count += 1
+if count < 10:
+    sys.exit(f'phase3: only {count} locale files carried nav_tab_reforged -- expected 10+')
+print(f'home strings added to {count} locale files')
+
+# ---------------- 9f) the Mods request code dies with its row --------
+edit(SETUP, [
+    ('''    private static final int REQUEST_MODS = 1004;
+''',
+     ''),
+    ('''        if (requestCode == REQUEST_MODS) {
+            // Back on Home: the mods switched on may have changed.
+            showTab(currentTab);
+            return;
+        }
+''',
+     ''),
+])
+
+
+# ---------------- 10) v1.29 blockers + migrations -------------------
+# Committee 5.1 (control_scheme must not lie), 5.2 + 5.4 (one-time
+# migrations), the Options.ini re-point (the interface-size slider
+# finally writes the file our engine reads), and write-on-release
+# sliders (one interaction rule for the whole Settings page).
+edit(SETUP, [
+    # 10a) readControlScheme: army_buttons defaults ON, as the engine reads it
+    ('''    private static boolean[] readControlScheme(File file) {
+        boolean[] state = new boolean[CONTROL_SCHEME_KEYS.length];''',
+     '''    private static boolean[] readControlScheme(File file) {
+        boolean[] state = new boolean[CONTROL_SCHEME_KEYS.length];
+        // v1.29 (committee 5.1): army_buttons defaults ON -- the
+        // engine (GXControlScheme.h) treats an absent key as 1, so
+        // the UI reads it the same way or it reports the opposite
+        // of what the game will do.
+        state[1] = true;'''),
+    # 10b) the stale comment on the missing-file path
+    ('''            // No file yet: the Classic scheme.''',
+     '''            // No file yet: the defaults above.'''),
+    # 10c) writeControlScheme: never delete -- all-off must be writable
+    ('''    private static void writeControlScheme(File file, boolean[] state) {
+        if (controlSchemeIndex(state) == 0) {
+            file.delete();
+            return;
+        }''',
+     '''    private static void writeControlScheme(File file, boolean[] state) {
+        // v1.29 (committee 5.1): never delete the file -- an absent
+        // army_buttons key means ON to the engine, so "all off" has
+        // to be written out explicitly or the switches lie.'''),
+    # 10d) the section header no longer carries a preset label
+    ('''        TextView status = UiKit.sectionHeader(content, R.drawable.ic_gzh_sliders,
+            getString(R.string.setup_card_control_scheme), true);''',
+     '''        UiKit.sectionHeader(content, R.drawable.ic_gzh_sliders,
+            getString(R.string.setup_card_control_scheme), true);'''),
+    # 10e) the preset segmented control dies (redundant with the
+    # switches, and its none=Classic definition forced the delete bug)
+    ('''        CharSequence[] labels = new CharSequence[] {
+            getString(R.string.setup_control_scheme_classic),
+            getString(R.string.setup_control_scheme_tactical),
+            getString(R.string.setup_control_scheme_custom)
+        };
+        final int[] descs = new int[] {
+            R.string.setup_control_scheme_classic_desc,
+            R.string.setup_control_scheme_tactical_desc,
+            R.string.setup_control_scheme_custom_desc
+        };
+        final int current = controlSchemeIndex(state);
+        status.setText(labels[current]);
+        final com.google.android.material.button.MaterialButtonToggleGroup[] group =
+            new com.google.android.material.button.MaterialButtonToggleGroup[1];
+        final TextView[] desc = new TextView[1];
+        final SwitchCompat[] switches = new SwitchCompat[CONTROL_SCHEME_KEYS.length];
+
+        group[0] = UiKit.segmented(content, labels, current, index -> {
+            if (controlSchemeUpdating) {
+                return;
+            }
+            status.setText(labels[index]);
+            desc[0].setText(descs[index]);
+            if (index == 2) {
+                return;
+            }
+            controlSchemeUpdating = true;
+            for (int i = 0; i < switches.length; i++) {
+                state[i] = index == 1;
+                switches[i].setChecked(state[i]);
+            }
+            controlSchemeUpdating = false;
+            writeControlScheme(file, state);
+        });
+        desc[0] = UiKit.supporting(content, getString(descs[current]));''',
+     ''),
+    # 10f) the switches write for themselves now
+    ('''            switches[i].setOnCheckedChangeListener((button, checked) -> {
+                if (controlSchemeUpdating) {
+                    return;
+                }
+                state[option] = checked;
+                writeControlScheme(file, state);
+                int index = controlSchemeIndex(state);
+                controlSchemeUpdating = true;
+                group[0].check(group[0].getChildAt(index).getId());
+                controlSchemeUpdating = false;
+                status.setText(labels[index]);
+                desc[0].setText(descs[index]);
+            });''',
+     '''            switches[i].setOnCheckedChangeListener((button, checked) -> {
+                state[option] = checked;
+                writeControlScheme(file, state);
+            });'''),
+    # 10g) Options.ini lives in OUR engine's user folder now
+    ('''    private File optionsIniFile() {
+        return new File(userDataDir(this), "Options.ini");
+    }''',
+     '''    private File optionsIniFile() {
+        // v1.29: OUR engine's user folder (the app's own
+        // ZeroHourReforged/User) -- the host's userDataDir() names
+        // the old engine's shared folder, whose Options.ini our
+        // engine never reads. RfxGameActivity owns the path.
+        java.io.File dir = RfxGameActivity.userDataDir(this);
+        return dir != null ? new File(dir, "Options.ini")
+            : new File(getFilesDir(), "Options.ini");
+    }'''),
+    # 10h) text-size slider: write on release, no Apply button
+    ('''        UiKit.button(content, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_check,
+            getString(R.string.setup_button_apply_text_size), () -> {
+                writeUiScalePercent((int) uiScaleSlider.getValue());
+                Toast.makeText(this, R.string.setup_toast_text_size_saved, Toast.LENGTH_LONG).show();
+            });''',
+     '''        // v1.29: sliders write on release -- every other setting
+        // on this page applies instantly, so no Apply buttons.
+        uiScaleSlider.addOnSliderTouchListener(new Slider.OnSliderTouchListener() {
+            @Override public void onStartTrackingTouch(Slider slider) {}
+            @Override public void onStopTrackingTouch(Slider slider) {
+                writeUiScalePercent((int) slider.getValue());
+            }
+        });'''),
+    # 10i) interface-size slider: same rule
+    ('''        UiKit.button(content, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_check,
+            getString(R.string.setup_button_apply_interface_scale), () -> {
+                writeInterfaceScalePercent((int) interfaceScaleSlider.getValue());
+                Toast.makeText(this, R.string.setup_toast_render_scale_saved, Toast.LENGTH_LONG).show();
+            });''',
+     '''        interfaceScaleSlider.addOnSliderTouchListener(new Slider.OnSliderTouchListener() {
+            @Override public void onStartTrackingTouch(Slider slider) {}
+            @Override public void onStopTrackingTouch(Slider slider) {
+                writeInterfaceScalePercent((int) slider.getValue());
+            }
+        });'''),
+    # 10j) the migrations run once, from onCreate
+    ('''        moveOffVulkanOnce();
+    }''',
+     '''        moveOffVulkanOnce();
+        applyV129Migrations();
+    }'''),
+    # 10k) the migration block itself, before tabTitle()
+    ('''    private int tabTitle(int tab) {''',
+     '''    // v1.29 one-time migrations (committee 5.2/5.4), run once on
+    // the first launch of this version and never again: the retired
+    // render-scale pref goes (a stale 75 would silently break the
+    // picture the day the engine knob returns), the diagnostic
+    // marker files stranded in the game folder go (their switches
+    // are gone -- an enabled marker with no way to turn it off is
+    // a trap), the dropped GeneralsOnline session is cleared, and
+    // any engine the old updater downloaded into files/update/ is
+    // deleted -- it could otherwise load instead of this app's own.
+    private void applyV129Migrations() {
+        android.content.SharedPreferences prefs =
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        if (prefs.getBoolean("v129_migrated", false)) {
+            return;
+        }
+        prefs.edit().remove("rfx_render_scale")
+            .putBoolean("v129_migrated", true).apply();
+        String gamePath = getSavedGamePath();
+        if (gamePath != null) {
+            String[] markers = {
+                "gx_trace.txt", "gx_perf.txt", "gx_gles_gputimer.txt",
+                "gx_audio_trace.txt", "gx_net_trace.txt",
+                "gx_touch_debug.txt", "gx_testrec.txt", "dxvk_hud.txt",
+                "dxvk_validation.txt", "dxvk_verbose_log.txt"
+            };
+            for (String m : markers) {
+                new File(gamePath, m).delete();
+            }
+        }
+        getSharedPreferences("generalsonline_session", MODE_PRIVATE)
+            .edit().clear().apply();
+        new File(getFilesDir(), "generalsonline_session.txt").delete();
+        deleteRecursive(new File(getFilesDir(), "update"));
+    }
+
+    private int tabTitle(int tab) {'''),
+])
+
+# ---------------- 11) v1.29 Settings + Help additions ---------------
+# The graphics preset (owner order 19:57, section 330.1: the
+# engine's own StaticGameLOD key -- one tap in the launcher, the
+# whole picture set before entering the game), the Logs card (the
+# run-log switch, D3: Settings), the Help troubleshooting card with
+# the salvaged LAN info row, and the minimal own update banner (D1).
+edit(SETUP, [
+    # 11a) the Settings page order: Language, Controls, Appearance
+    # (theme + scales + preset), Logs
+    ('''            case TAB_INTERFACE:
+                buildLanguageSection(page);
+                buildThemeSection(page);
+                buildUiScaleSection(page);
+                buildInterfaceScaleSection(page);
+                buildControlSchemeSection(page);
+                break;''',
+     '''            case TAB_INTERFACE:
+                buildLanguageSection(page);
+                buildControlSchemeSection(page);
+                buildThemeSection(page);
+                buildUiScaleSection(page);
+                buildInterfaceScaleSection(page);
+                buildGfxPresetSection(page);
+                buildLogSettingsSection(page);
+                break;'''),
+    # 11b) Help: the remote-fed support card is replaced by our own
+    # troubleshooting card (the log card already sits after it)
+    ('''        buildSupportSection(page);
+
+        buildRfxLogSection(page);''',
+     '''        buildTroubleshootSection(page);
+
+        buildRfxLogSection(page);'''),
+    # 11c) the new builders, before tabTitle()
+    ('''    private int tabTitle(int tab) {''',
+     '''    // v1.29: the graphics preset. One segmented choice writes the
+    // engine's own StaticGameLOD key into our Options.ini -- the
+    // same bundle the in-game Options menu's detail levels set
+    // (GameLOD presets: textures, shadows, particles, effects),
+    // chosen here so the player never has to open the game's
+    // options. Until the player picks one, the engine's own
+    // hardware pick stands (IdealStaticGameLOD, which it writes
+    // back after a run); a Custom value means the game's options
+    // were fine-tuned by hand and picking a level replaces it.
+    private static final String[] GFX_PRESET_KEYS = { "Low", "Medium", "High", "Ultra" };
+
+    private void buildGfxPresetSection(LinearLayout root) {
+        LinearLayout content = UiKit.card(root);
+        UiKit.sectionHeader(content, R.drawable.ic_gzh_display,
+            getString(R.string.setup_card_gfx_preset), true);
+        java.util.Map<String, String> ini = readKeyValueFile(optionsIniFile());
+        String current = ini.get("StaticGameLOD");
+        int checked = 1;
+        boolean custom = false;
+        boolean explicit = false;
+        if (current != null) {
+            for (int i = 0; i < GFX_PRESET_KEYS.length; i++) {
+                if (GFX_PRESET_KEYS[i].equalsIgnoreCase(current.trim())) {
+                    checked = i;
+                    explicit = true;
+                }
+            }
+            custom = !explicit;
+        }
+        if (!explicit && !custom) {
+            String ideal = ini.get("IdealStaticGameLOD");
+            if (ideal != null) {
+                for (int i = 0; i < GFX_PRESET_KEYS.length; i++) {
+                    if (GFX_PRESET_KEYS[i].equalsIgnoreCase(ideal.trim())) {
+                        checked = i;
+                    }
+                }
+            }
+        }
+        CharSequence[] labels = new CharSequence[] {
+            getString(R.string.setup_gfx_low),
+            getString(R.string.setup_gfx_medium),
+            getString(R.string.setup_gfx_high),
+            getString(R.string.setup_gfx_ultra)
+        };
+        UiKit.segmented(content, labels, checked, index ->
+            writeGfxPreset(GFX_PRESET_KEYS[index]));
+        if (custom) {
+            UiKit.helpText(content, getString(R.string.setup_gfx_custom_note));
+        }
+        UiKit.helpText(content, getString(R.string.setup_gfx_preset_help));
+    }
+
+    private void writeGfxPreset(String level) {
+        File file = optionsIniFile();
+        java.util.LinkedHashMap<String, String> prefs;
+        if (!file.isFile()) {
+            prefs = new java.util.LinkedHashMap<>(readKeyValueFile(defaultOptionsIniFile()));
+        } else {
+            prefs = new java.util.LinkedHashMap<>(readKeyValueFile(file));
+        }
+        prefs.put("StaticGameLOD", level);
+        writeKeyValueFile(file, prefs);
+    }
+
+    // v1.29: the Logs card. The switch is the logging_off marker in
+    // the game's own user folder -- absent means ON -- the exact
+    // file RfxGameActivity reads before it writes a single byte of
+    // log (committee 5.3; the marker moved with the data when the
+    // owner ordered the app's own external folder).
+    private void buildLogSettingsSection(LinearLayout root) {
+        LinearLayout content = UiKit.card(root);
+        UiKit.sectionHeader(content, R.drawable.ic_gzh_doc,
+            getString(R.string.setup_card_logs), true);
+        SwitchCompat logging = UiKit.switchRow(content,
+            getString(R.string.setup_switch_logging),
+            getString(R.string.setup_switch_logging_desc));
+        java.io.File userDir = RfxGameActivity.userDataDir(this);
+        final java.io.File marker = userDir == null ? null
+            : new java.io.File(userDir, "logging_off");
+        logging.setChecked(marker == null || !marker.isFile());
+        logging.setOnCheckedChangeListener((button, checked) -> {
+            if (marker == null) {
+                return;
+            }
+            if (checked) {
+                marker.delete();
+            } else {
+                try {
+                    new java.io.FileOutputStream(marker).close();
+                } catch (Exception ignored) {}
+            }
+        });
+        UiKit.listRow(content, R.drawable.ic_gzh_doc,
+            getString(R.string.setup_log_view_row),
+            getString(R.string.setup_log_view_row_desc),
+            () -> showTab(TAB_HELP));
+    }
+
+    // v1.29: Help's install + troubleshooting card, with the one
+    // LAN diagnostic the product ships: what network this phone is
+    // on and its local address -- what a WiFi match needs to know.
+    private void buildTroubleshootSection(LinearLayout page) {
+        LinearLayout card = UiKit.card(page);
+        UiKit.sectionHeader(card, R.drawable.ic_gzh_info,
+            getString(R.string.setup_trouble_title), true);
+        UiKit.supporting(card, getString(R.string.setup_trouble_steps));
+        UiKit.listRow(card, R.drawable.ic_gzh_globe,
+            getString(R.string.setup_lan_row), lanInfoLine(), null);
+    }
+
+    private String lanInfoLine() {
+        String transport = "-";
+        String address = null;
+        try {
+            android.net.ConnectivityManager cm =
+                (android.net.ConnectivityManager)
+                    getSystemService(CONNECTIVITY_SERVICE);
+            android.net.Network net = cm == null ? null
+                : cm.getActiveNetwork();
+            android.net.NetworkCapabilities caps = net == null ? null
+                : cm.getNetworkCapabilities(net);
+            if (caps != null) {
+                if (caps.hasTransport(
+                        android.net.NetworkCapabilities.TRANSPORT_WIFI)) {
+                    transport = "Wi-Fi";
+                } else if (caps.hasTransport(
+                        android.net.NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                    transport = "Mobile";
+                } else if (caps.hasTransport(
+                        android.net.NetworkCapabilities.TRANSPORT_ETHERNET)) {
+                    transport = "Ethernet";
+                }
+            }
+            java.util.Enumeration<java.net.NetworkInterface> ifs =
+                java.net.NetworkInterface.getNetworkInterfaces();
+            while (ifs != null && ifs.hasMoreElements() && address == null) {
+                java.util.Enumeration<java.net.InetAddress> addrs =
+                    ifs.nextElement().getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    java.net.InetAddress a = addrs.nextElement();
+                    if (!a.isLoopbackAddress()
+                            && a instanceof java.net.Inet4Address) {
+                        address = a.getHostAddress();
+                        break;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return address == null ? transport
+            : transport + " - " + address;
+    }
+
+    private int tabTitle(int tab) {'''),
+])
+
+# ---------------- 11s) preset / logs / help strings -----------------
+PRODUCT_STRINGS_EN = [
+    ('setup_card_gfx_preset', 'Graphics'),
+    ('setup_gfx_low', 'Weak'),
+    ('setup_gfx_medium', 'Medium'),
+    ('setup_gfx_high', 'Strong'),
+    ('setup_gfx_ultra', 'Ultra'),
+    ('setup_gfx_custom_note', 'Custom -- fine-tuned in the game\u2019s own options. Picking a level here replaces it.'),
+    ('setup_gfx_preset_help', 'One choice for the whole picture -- textures, shadows, particles and effects -- set here so you never have to open the game\u2019s options. Applies from the next launch. Until you pick, the game chooses for your phone.'),
+    ('setup_card_logs', 'Logs'),
+    ('setup_switch_logging', 'Run log'),
+    ('setup_switch_logging_desc', 'Records every game run automatically (stage file and engine output) in the app\u2019s own folder, so a problem can be shared and diagnosed. Off stops the recording; logs already written stay.'),
+    ('setup_log_view_row', 'View the run log'),
+    ('setup_log_view_row_desc', 'In Help & About, with share and copy'),
+    ('setup_trouble_title', 'Install & troubleshooting'),
+    ('setup_trouble_steps', '1. Copy the whole Zero Hour folder from a PC (about 2-3 GB, with its Data folder inside) onto this phone, for example into Download.\\n2. On Home, tap Select Game Folder and pick that folder.\\n3. If the game will not start, open the run log below and share it.'),
+    ('setup_lan_row', 'Local network'),
+    ('setup_update_available', 'Update available: %1$s'),
+    ('setup_update_open', 'Open the download page'),
+]
+PRODUCT_STRINGS_AR = [
+    ('setup_card_gfx_preset', 'الرسومات'),
+    ('setup_gfx_low', 'ضعيف'),
+    ('setup_gfx_medium', 'متوسط'),
+    ('setup_gfx_high', 'قوي'),
+    ('setup_gfx_ultra', 'خارق'),
+    ('setup_gfx_custom_note', 'مخصص -- مضبوط بدقة من إعدادات اللعبة نفسها. اختيار مستوى من هنا يستبدله.'),
+    ('setup_gfx_preset_help', 'خيار واحد للصورة كلها -- الخامات والظلال والجسيمات والمؤثرات -- اضبطه هنا حتى لا تحتاج فتح إعدادات اللعبة أبدًا. يسري من التشغيل القادم. وحتى تختار، اللعبة تختار ما يناسب هاتفك.'),
+    ('setup_card_logs', 'السجل'),
+    ('setup_switch_logging', 'سجل التشغيل'),
+    ('setup_switch_logging_desc', 'يسجّل كل تشغيل للعبة تلقائيًا (ملف المراحل ومخرجات المحرك) في مجلد التطبيق الخاص، حتى تُشارك أي مشكلة وتُشخَّص. الإيقاف يوقف التسجيل؛ والسجلات المكتوبة تبقى.'),
+    ('setup_log_view_row', 'عرض سجل التشغيل'),
+    ('setup_log_view_row_desc', 'في المساعدة وحول، مع المشاركة والنسخ'),
+    ('setup_trouble_title', 'التثبيت وحل المشاكل'),
+    ('setup_trouble_steps', '1. انسخ مجلد Zero Hour كاملًا من كمبيوتر (نحو 2-3 غيغابايت، وبداخله مجلد Data) إلى هذا الهاتف، مثلًا داخل التنزيلات.\\n2. من الرئيسية، اضغط «اختيار مجلد اللعبة» واختر ذلك المجلد.\\n3. إذا لم تعمل اللعبة، افتح سجل التشغيل بالأسفل وشاركه.'),
+    ('setup_lan_row', 'الشبكة المحلية'),
+    ('setup_update_available', 'يوجد تحديث: %1$s'),
+    ('setup_update_open', 'فتح صفحة التنزيل'),
+]
+count = 0
+for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
+    s = open(strings_xml, encoding='utf-8').read()
+    anchor = None
+    for line in s.split('\n'):
+        if 'name="nav_tab_reforged"' in line:
+            anchor = line
+            break
+    if anchor is None:
+        continue
+    if 'name="setup_card_gfx_preset"' in s:
+        sys.exit(f'phase3: {strings_xml} already carries setup_card_gfx_preset')
+    is_ar = os.path.basename(os.path.dirname(strings_xml)) == 'values-ar'
+    block = ''.join(
+        f'\n    <string name="{name}">{runlog_escape(text)}</string>'
+        for name, text in (PRODUCT_STRINGS_AR if is_ar else PRODUCT_STRINGS_EN))
+    s = s.replace(anchor, anchor + block, 1)
+    open(strings_xml, 'w', encoding='utf-8').write(s)
+    count += 1
+if count < 10:
+    sys.exit(f'phase3: only {count} locale files carried nav_tab_reforged -- expected 10+')
+print(f'product strings added to {count} locale files')
+
+# ---------------- 11d) the minimal own update banner (D1) -----------
+# Once a day the launcher asks our own repo for its latest release
+# and caches the tag; Home shows a small dismissible banner when
+# that tag is newer than the running build. Fail-silent throughout:
+# no network, no banner, no error -- the game never waits on it.
+edit(SETUP, [
+    ('''        TextView heroTitle = UiKit.body(page, getString(R.string.app_name));
+        heroTitle.setGravity(android.view.Gravity.CENTER);
+        heroTitle.setTextSize(20);''',
+     '''        TextView heroTitle = UiKit.body(page, getString(R.string.app_name));
+        heroTitle.setGravity(android.view.Gravity.CENTER);
+        heroTitle.setTextSize(20);
+        maybeShowUpdateBanner(page);'''),
+    ('''        applyV129Migrations();
+    }''',
+     '''        applyV129Migrations();
+        checkForUpdateAsync();
+    }'''),
+    ('''    private int tabTitle(int tab) {''',
+     '''    // v1.29 (D1): our own update signal -- the repo's latest
+    // release tag, cached in prefs, checked at most once a day.
+    private void checkForUpdateAsync() {
+        final android.content.SharedPreferences prefs =
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        long last = prefs.getLong("v129_update_checked_at", 0);
+        if (System.currentTimeMillis() - last < 24L * 3600L * 1000L) {
+            return;
+        }
+        new Thread(() -> {
+            try {
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
+                    new java.net.URL("https://api.github.com/repos/louay0khaled/"
+                        + "zero-hour-reforged-android-mod/releases/latest")
+                        .openConnection();
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(8000);
+                conn.setRequestProperty("User-Agent", "ZeroHourReforged-Launcher");
+                java.io.InputStream in = conn.getInputStream();
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    bos.write(buf, 0, n);
+                }
+                in.close();
+                String body = bos.toString("UTF-8");
+                int i = body.indexOf("tag_name");
+                int q1 = i < 0 ? -1 : body.indexOf('"', body.indexOf(':', i));
+                int q2 = q1 < 0 ? -1 : body.indexOf('"', q1 + 1);
+                if (q2 > q1) {
+                    String tag = body.substring(q1 + 1, q2);
+                    if (tag.startsWith("v")) {
+                        tag = tag.substring(1);
+                    }
+                    prefs.edit().putString("v129_latest_release", tag)
+                        .putLong("v129_update_checked_at",
+                            System.currentTimeMillis()).apply();
+                }
+            } catch (Exception ignored) {}
+        }).start();
+    }
+
+    private static int versionPart(String s, int index) {
+        int part = -1;
+        int value = 0;
+        boolean inNumber = false;
+        for (int i = 0; i <= s.length(); i++) {
+            char c = i < s.length() ? s.charAt(i) : '.';
+            if (c >= '0' && c <= '9') {
+                value = value * 10 + (c - '0');
+                inNumber = true;
+            } else if (inNumber) {
+                part++;
+                if (part == index) {
+                    return value;
+                }
+                value = 0;
+                inNumber = false;
+            }
+        }
+        return 0;
+    }
+
+    private static boolean isNewerVersion(String latest, String current) {
+        for (int i = 0; i < 4; i++) {
+            int x = versionPart(latest, i);
+            int y = versionPart(current, i);
+            if (x != y) {
+                return x > y;
+            }
+        }
+        return false;
+    }
+
+    private void maybeShowUpdateBanner(LinearLayout page) {
+        android.content.SharedPreferences prefs =
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        String latest = prefs.getString("v129_latest_release", null);
+        if (latest == null || latest.equals(
+                prefs.getString("v129_update_dismissed", ""))) {
+            return;
+        }
+        String current = null;
+        try {
+            current = getPackageManager()
+                .getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {}
+        if (current == null || !isNewerVersion(latest, current)) {
+            return;
+        }
+        LinearLayout banner = UiKit.card(page);
+        UiKit.supporting(banner,
+            getString(R.string.setup_update_available, latest));
+        UiKit.button(banner, UiKit.BTN_TONAL, R.drawable.ic_gzh_check,
+            getString(R.string.setup_update_open), () -> {
+                try {
+                    startActivity(new android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse("https://github.com/louay0khaled/"
+                            + "zero-hour-reforged-android-mod/releases/latest")));
+                } catch (Exception ignored) {}
+            });
+        UiKit.button(banner, UiKit.BTN_OUTLINE, R.drawable.ic_gzh_check,
+            getString(R.string.setup_update_later), () -> {
+                prefs.edit().putString("v129_update_dismissed", latest).apply();
+                showTab(TAB_HOME);
+            });
+    }
+
+    private int tabTitle(int tab) {'''),
+])
+
+# ---------------- 11t) the banner's dismiss string ------------------
+UPDATE_STRINGS_EN = [
+    ('setup_update_later', 'Later'),
+]
+UPDATE_STRINGS_AR = [
+    ('setup_update_later', 'لاحقًا'),
+]
+count = 0
+for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
+    s = open(strings_xml, encoding='utf-8').read()
+    anchor = None
+    for line in s.split('\n'):
+        if 'name="nav_tab_reforged"' in line:
+            anchor = line
+            break
+    if anchor is None:
+        continue
+    if 'name="setup_update_later"' in s:
+        sys.exit(f'phase3: {strings_xml} already carries setup_update_later')
+    is_ar = os.path.basename(os.path.dirname(strings_xml)) == 'values-ar'
+    block = ''.join(
+        f'\n    <string name="{name}">{runlog_escape(text)}</string>'
+        for name, text in (UPDATE_STRINGS_AR if is_ar else UPDATE_STRINGS_EN))
+    s = s.replace(anchor, anchor + block, 1)
+    open(strings_xml, 'w', encoding='utf-8').write(s)
+    count += 1
+if count < 10:
+    sys.exit(f'phase3: only {count} locale files carried nav_tab_reforged -- expected 10+')
+print(f'update strings added to {count} locale files')
+
+# ---------------- 12) v1.29 identity + Arabic + Thmanyah ------------
+# Committee section 4 + 5.5 + D5: the tertiary leak closes, the
+# icon backdrop takes our gradient, the labels say the product's
+# name, Arabic tops the language picker with its own-script names,
+# and card headings wear Thmanyah Serif Display (bundled).
+LOCALE_HELPER = os.path.join(JAVA_DIR, 'LocaleHelper.java')
+UIKIT = os.path.join(JAVA_DIR, 'UiKit.java')
+
+# 12a) the icon backdrop gradient: realkot navy -> our steel
+BG_ICON = os.path.join(RES, 'drawable', 'ic_launcher_background.xml')
+bg_xml = open(BG_ICON, encoding='utf-8').read()
+for old_hex, new_hex in (('#FF23395D', '#FF283242'), ('#FF0A1222', '#FF0B0E13')):
+    if bg_xml.count(old_hex) != 1:
+        sys.exit('phase3: icon backdrop colour %s matched %d times' % (old_hex, bg_xml.count(old_hex)))
+    bg_xml = bg_xml.replace(old_hex, new_hex)
+open(BG_ICON, 'w', encoding='utf-8').write(bg_xml)
+print('icon backdrop recoloured')
+
+# 12b) the labels: the product's name, everywhere for the drawer
+# label and in values + values-ar for the window title
+labels_done = 0
+for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
+    locale = os.path.basename(os.path.dirname(strings_xml))
+    s = open(strings_xml, encoding='utf-8').read()
+    s, n = re.subn(r'(<string name="app_name">)[^<]*(</string>)',
+                   r'\g<1>Zero Hour Reforged\g<2>', s)
+    if locale in ('values', 'values-ar'):
+        s, n2 = re.subn(r'(<string name="setup_window_title">)[^<]*(</string>)',
+                        r'\g<1>Zero Hour Reforged\g<2>', s)
+        n += n2
+    if n:
+        open(strings_xml, 'w', encoding='utf-8').write(s)
+        labels_done += 1
+print('app labels set in %d locale files' % labels_done)
+
+# 12c) Arabic up the picker + own-script language names
+edit(LOCALE_HELPER, [
+    ('''    static final String[] SUPPORTED_TAGS = { "", "en", "ru", "de", "uk", "es", "zh", "fr", "ko", "pl", "pt-BR", "isv", "ar", "fa" };''',
+     '''    static final String[] SUPPORTED_TAGS = { "", "ar", "en", "ru", "de", "uk", "es", "zh", "fr", "ko", "pl", "pt-BR", "isv", "fa" };'''),
+    ('''            case "ukrainian": return "Українська";''',
+     '''            case "ukrainian": return "Українська";
+            case "arabic":    return "العربية";
+            case "persian":   return "فارسی";'''),
+])
+
+# 12d) Thmanyah headings: bundle the font, wear it in section headers
+import shutil
+font_src = os.path.join(OVERLAY, 'fonts', 'thmanyahserifdisplay-Regular.otf')
+if not os.path.isfile(font_src):
+    sys.exit('phase3: missing overlay font ' + font_src)
+font_dst_dir = os.path.join(APP, 'assets', 'fonts')
+os.makedirs(font_dst_dir, exist_ok=True)
+shutil.copyfile(font_src, os.path.join(font_dst_dir, 'thmanyahserifdisplay-Regular.otf'))
+print('thmanyah font staged into assets/fonts')
+edit(UIKIT, [
+    ('''        titleView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dim(c, R.dimen.gzh_text_title));
+        titleView.setTextColor(color(c, R.color.gzh_on_surface));
+        titleView.setTypeface(Typeface.DEFAULT_BOLD);''',
+     '''        titleView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dim(c, R.dimen.gzh_text_title));
+        titleView.setTextColor(color(c, R.color.gzh_on_surface));
+        titleView.setTypeface(headingTypeface(c));'''),
+    ('''    static TextView sectionHeader(LinearLayout body, int iconRes, CharSequence title, boolean withValue) {''',
+     '''    // v1.29 (D5): card headings wear the brand typeface, Thmanyah
+    // Serif Display, bundled in assets/fonts. Any failure (missing
+    // asset, unreadable file) falls back to the system bold -- a
+    // heading must never take its page down with it.
+    private static Typeface sHeadingTypeface;
+    static Typeface headingTypeface(Context c) {
+        if (sHeadingTypeface == null) {
+            try {
+                sHeadingTypeface = Typeface.createFromAsset(
+                    c.getAssets(), "fonts/thmanyahserifdisplay-Regular.otf");
+            } catch (Exception e) {
+                sHeadingTypeface = Typeface.DEFAULT_BOLD;
+            }
+        }
+        return sHeadingTypeface;
+    }
+
+    static TextView sectionHeader(LinearLayout body, int iconRes, CharSequence title, boolean withValue) {'''),
+])
+edit(SETUP, [
+    ('''        heroTitle.setTextSize(20);''',
+     '''        heroTitle.setTextSize(20);
+        heroTitle.setTypeface(UiKit.headingTypeface(this));'''),
+])
+
+# ---------------- 13) v1.29 first-run auto-scan (D6) -----------------
+edit(SETUP, [
+    ('''        // The one thing this app exists to do, as the first thing on it.''',
+     '''        maybeAutoFindGameFolder();
+
+        // The one thing this app exists to do, as the first thing on it.'''),
+    ('''    private int tabTitle(int tab) {''',
+     '''    // v1.29 (D6): first-run auto-scan. While no game folder is
+    // set, look in the obvious places (the storage root and
+    // Download / Documents / Games, plus one level inside each)
+    // for exactly one valid game folder and adopt it -- the
+    // friend who copied the game over and opened the app lands
+    // on a ready Play button, not a file hunt. More than one
+    // candidate: adopt none (the picker decides). Once per
+    // process, and only while unset.
+    private boolean mAutoScanDone;
+
+    private void maybeAutoFindGameFolder() {
+        if (mAutoScanDone || getSavedGamePath() != null) {
+            return;
+        }
+        mAutoScanDone = true;
+        try {
+            java.io.File sd = android.os.Environment.getExternalStorageDirectory();
+            if (sd == null) {
+                return;
+            }
+            java.util.ArrayList<java.io.File> candidates = new java.util.ArrayList<>();
+            java.io.File[] roots = {
+                sd, new java.io.File(sd, "Download"),
+                new java.io.File(sd, "Documents"), new java.io.File(sd, "Games")
+            };
+            for (java.io.File root : roots) {
+                if (root == null) {
+                    continue;
+                }
+                if (isValidGameFolder(root, getSelectedGame(this))) {
+                    candidates.add(root);
+                }
+                java.io.File[] kids = root.listFiles();
+                if (kids != null) {
+                    for (java.io.File k : kids) {
+                        if (k.isDirectory() && isValidGameFolder(k, getSelectedGame(this))) {
+                            candidates.add(k);
+                        }
+                    }
+                }
+            }
+            if (candidates.size() == 1) {
+                String path = candidates.get(0).getAbsolutePath();
+                saveGamePath(path);
+                Toast.makeText(this, getString(R.string.setup_home_autofound, path),
+                    Toast.LENGTH_LONG).show();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private int tabTitle(int tab) {'''),
+])
+
+# ---------------- 13s) the auto-scan string ---------------------------
+AUTOFIND_STRINGS_EN = [
+    ('setup_home_autofound', 'Found your game in %1$s -- ready to play'),
+]
+AUTOFIND_STRINGS_AR = [
+    ('setup_home_autofound', 'لقينا لعبتك في %1$s -- جاهزة للعب'),
+]
+count = 0
+for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
+    s = open(strings_xml, encoding='utf-8').read()
+    anchor = None
+    for line in s.split('\n'):
+        if 'name="nav_tab_reforged"' in line:
+            anchor = line
+            break
+    if anchor is None:
+        continue
+    if 'name="setup_home_autofound"' in s:
+        sys.exit(f'phase3: {strings_xml} already carries setup_home_autofound')
+    is_ar = os.path.basename(os.path.dirname(strings_xml)) == 'values-ar'
+    block = ''.join(
+        f'\n    <string name="{name}">{runlog_escape(text)}</string>'
+        for name, text in (AUTOFIND_STRINGS_AR if is_ar else AUTOFIND_STRINGS_EN))
+    s = s.replace(anchor, anchor + block, 1)
+    open(strings_xml, 'w', encoding='utf-8').write(s)
+    count += 1
+if count < 10:
+    sys.exit(f'phase3: only {count} locale files carried nav_tab_reforged -- expected 10+')
+print(f'autofind strings added to {count} locale files')
+
+# ---------------- 14) v1.29 post-edit self-checks ---------------------
+# Fail the CI loudly rather than ship a half-rebuilt launcher: every
+# deleted symbol must be gone, every kept load-bearing symbol present.
+_setup_src = open(SETUP, encoding='utf-8').read()
+for _dead in ('TAB_TESTS', 'FrameCheckActivity', 'buildTestsPage',
+              'setup_tests_', 'buildRfxRenderScaleSection',
+              'maybeRefreshTestsPage'):
+    if _dead in _setup_src:
+        sys.exit('phase3: dead symbol survived the rebuild: ' + _dead)
+for _kept, _minimum in (('RfxGameActivity', 2), ('getSavedGamePath', 3),
+                        ('buildRfxLogSection', 2),
+                        ('buildGfxPresetSection', 2),
+                        ('buildLogSettingsSection', 2),
+                        ('applyV129Migrations', 2),
+                        ('nav_tab_settings', 1)):
+    if _setup_src.count(_kept) < _minimum:
+        sys.exit('phase3: kept symbol missing or too rare: ' + _kept)
+_rfx_src = open(os.path.join(JAVA_DIR, 'RfxGameActivity.java'),
+                encoding='utf-8').read()
+if 'logging_off' not in _rfx_src:
+    sys.exit('phase3: RfxGameActivity lost its logging_off gate')
+_manifest_src = open(MANIFEST, encoding='utf-8').read()
+if 'FrameCheckActivity' in _manifest_src:
+    sys.exit('phase3: manifest still registers FrameCheckActivity')
+if _manifest_src.count('RfxGameActivity') != 1:
+    sys.exit('phase3: manifest RfxGameActivity count != 1')
+_pkg_src = open(PACKAGE_SH, encoding='utf-8').read()
+if 'GX_REFORGEDX_LIB:' in _pkg_src or 'GX_REFORGEDX_LIB}' in _pkg_src:
+    sys.exit('phase3: package script still stages libmainrfx.so')
+print('v1.29 self-checks passed')
+
 
 print('PHASE 3 DONE')
