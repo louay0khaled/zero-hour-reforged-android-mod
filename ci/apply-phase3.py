@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 3 (CI, v1.29): the Reforged product pass over the host shell.
+"""Phase 3 (CI, v1.30): the Reforged product pass over the host shell.
 
 What this script makes of the MYSOREZ launcher (owner's launcher order,
 2026-11-20: a clean product shareable among friends, not a scattered
@@ -24,6 +24,14 @@ lab):
   * The adoption reskin (section 7): Reforged palette and shapes, the
     game pinned to Zero Hour, the launch path starting
     RfxGameActivity, the developer credit on Home, in every locale.
+
+v1.30 delta (the only changes over the v1.29 script):
+  * the graphics presets write two keys for High/Ultra
+    (StaticGameLOD + ClassicGraphics = no, committee Q5), with a
+    one-time migration for existing High/Ultra installs and an
+    honest classic-on note in the preset card;
+  * RfxGameActivity gains the LAN multicast lock the engine's
+    udp.cpp calls by name (committee appendix, section 334.4).
 
 Layout: REFORGED_SRC (env) points at the MYSOREZ checkout; default is
 the parent of this overlay, matching apply-surgery.py/apply-phase2.py.
@@ -73,8 +81,10 @@ package com.generalsx.zerohour;
 
 import org.libsdl.apprfx.SDLActivity;
 
+import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.system.Os;
+import android.util.Log;
 
 /**
  * Zero Hour Reforged (v1.29): the activity that runs the Reforged
@@ -447,6 +457,42 @@ public class RfxGameActivity extends SDLActivity {
             w.write("[javastage] " + stage + "\\n");
             w.close();
         } catch (Exception ignored) {}
+    }
+
+    // ------------------------------------------------------------------
+    // LAN multicast lock (v1.30, committee appendix): many Wi-Fi
+    // drivers drop broadcast frames unless the app holds a
+    // MulticastLock, which hides LAN games. The engine's udp.cpp
+    // calls this method by name (JNI) with true when a LAN
+    // broadcast socket opens and false when it closes, so the lock
+    // is held only while the LAN lobby or a LAN match is active.
+    // The method name and signature are the contract -- do not
+    // rename. (Method body verbatim from the host's
+    // GeneralsZHActivity; TAG is this activity's own log tag.)
+    // ------------------------------------------------------------------
+
+    private static final String TAG = "RfxGame";
+
+    private WifiManager.MulticastLock lanMulticastLock;
+
+    @SuppressWarnings("unused") // called via JNI
+    public synchronized void setLanMulticastLock(boolean held) {
+        try {
+            if (lanMulticastLock == null) {
+                WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+                if (wifi == null) return;
+                lanMulticastLock = wifi.createMulticastLock("GeneralsZH-LAN");
+                lanMulticastLock.setReferenceCounted(true);
+            }
+            if (held) {
+                lanMulticastLock.acquire();
+            } else if (lanMulticastLock.isHeld()) {
+                lanMulticastLock.release();
+            }
+            Log.i(TAG, "LAN multicast lock " + (lanMulticastLock.isHeld() ? "held" : "released"));
+        } catch (RuntimeException e) {
+            Log.w(TAG, "LAN multicast lock unavailable", e);
+        }
     }
 }
 '''
@@ -1644,6 +1690,17 @@ edit(SETUP, [
         if (custom) {
             UiKit.helpText(content, getString(R.string.setup_gfx_custom_note));
         }
+        // v1.30 (committee Q5): honest read-back. The engine's
+        // ClassicGraphics defaults ON when the key is absent, and
+        // while it is on, the post chain stays off whatever the
+        // preset says -- so the note shows exactly while classic
+        // is the effective state, and only an explicit "no" (the
+        // two-key write above, or unticking Classic in-game)
+        // hides it.
+        String classic = ini.get("ClassicGraphics");
+        if (classic == null || !"no".equalsIgnoreCase(classic.trim())) {
+            UiKit.helpText(content, getString(R.string.setup_gfx_classic_on));
+        }
         UiKit.helpText(content, getString(R.string.setup_gfx_preset_help));
     }
 
@@ -1656,7 +1713,49 @@ edit(SETUP, [
             prefs = new java.util.LinkedHashMap<>(readKeyValueFile(file));
         }
         prefs.put("StaticGameLOD", level);
+        // v1.30 (committee Q5): High and Ultra MEAN the Reforged
+        // look, and the engine's ClassicGraphics default (on)
+        // forces the post chain off and the lighting classic no
+        // matter what the LOD says -- so a High/Ultra tap clears
+        // it in the same write pass. Medium/Low never touch the
+        // key, and "yes" is never written by any path.
+        if ("High".equals(level) || "Ultra".equals(level)) {
+            prefs.put("ClassicGraphics", "no");
+        }
         writeKeyValueFile(file, prefs);
+    }
+
+    // v1.30 (committee Q5): one-time migration for installs that
+    // already sit at High/Ultra from before the two-key preset
+    // write existed -- their preset must mean what it says, so
+    // ClassicGraphics is cleared once. Medium/Low installs are
+    // never touched and "yes" is never written. The marker is set
+    // regardless of outcome, so the check runs exactly once.
+    private void applyV130ClassicMigration() {
+        android.content.SharedPreferences prefs =
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        if (prefs.getBoolean("v130_classic_migrated", false)) {
+            return;
+        }
+        try {
+            File file = optionsIniFile();
+            if (file.isFile()) {
+                java.util.LinkedHashMap<String, String> ini =
+                    new java.util.LinkedHashMap<>(readKeyValueFile(file));
+                String lod = ini.get("StaticGameLOD");
+                String classic = ini.get("ClassicGraphics");
+                boolean highTier = lod != null
+                    && ("High".equalsIgnoreCase(lod.trim())
+                        || "Ultra".equalsIgnoreCase(lod.trim()));
+                boolean classicOff = classic != null
+                    && "no".equalsIgnoreCase(classic.trim());
+                if (highTier && !classicOff) {
+                    ini.put("ClassicGraphics", "no");
+                    writeKeyValueFile(file, ini);
+                }
+            }
+        } catch (Exception ignored) {}
+        prefs.edit().putBoolean("v130_classic_migrated", true).apply();
     }
 
     // v1.29: the Logs card. The switch is the logging_off marker in
@@ -1759,6 +1858,7 @@ PRODUCT_STRINGS_EN = [
     ('setup_gfx_ultra', 'Ultra'),
     ('setup_gfx_custom_note', 'Custom -- fine-tuned in the game\u2019s own options. Picking a level here replaces it.'),
     ('setup_gfx_preset_help', 'One choice for the whole picture -- textures, shadows, particles and effects -- set here so you never have to open the game\u2019s options. Applies from the next launch. Until you pick, the game chooses for your phone.'),
+    ('setup_gfx_classic_on', 'Classic graphics are on -- post-processing effects are off.'),
     ('setup_card_logs', 'Logs'),
     ('setup_switch_logging', 'Run log'),
     ('setup_switch_logging_desc', 'Records every game run automatically (stage file and engine output) in the app\u2019s own folder, so a problem can be shared and diagnosed. Off stops the recording; logs already written stay.'),
@@ -1778,6 +1878,7 @@ PRODUCT_STRINGS_AR = [
     ('setup_gfx_ultra', 'خارق'),
     ('setup_gfx_custom_note', 'مخصص -- مضبوط بدقة من إعدادات اللعبة نفسها. اختيار مستوى من هنا يستبدله.'),
     ('setup_gfx_preset_help', 'خيار واحد للصورة كلها -- الخامات والظلال والجسيمات والمؤثرات -- اضبطه هنا حتى لا تحتاج فتح إعدادات اللعبة أبدًا. يسري من التشغيل القادم. وحتى تختار، اللعبة تختار ما يناسب هاتفك.'),
+    ('setup_gfx_classic_on', 'الرسومات الكلاسيكية مفعّلة -- مؤثرات ما بعد المعالجة متوقفة'),
     ('setup_card_logs', 'السجل'),
     ('setup_switch_logging', 'سجل التشغيل'),
     ('setup_switch_logging_desc', 'يسجّل كل تشغيل للعبة تلقائيًا (ملف المراحل ومخرجات المحرك) في مجلد التطبيق الخاص، حتى تُشارك أي مشكلة وتُشخَّص. الإيقاف يوقف التسجيل؛ والسجلات المكتوبة تبقى.'),
@@ -1834,6 +1935,7 @@ edit(SETUP, [
     ('''        applyV129Migrations();
     }''',
      '''        applyV129Migrations();
+        applyV130ClassicMigration();
         checkForUpdateAsync();
     }'''),
     ('''    private int tabTitle(int tab) {''',
@@ -2171,6 +2273,9 @@ for _kept, _minimum in (('RfxGameActivity', 2), ('getSavedGamePath', 3),
                         ('buildGfxPresetSection', 2),
                         ('buildLogSettingsSection', 2),
                         ('applyV129Migrations', 2),
+                        ('applyV130ClassicMigration', 2),
+                        ('ClassicGraphics', 3),
+                        ('setup_gfx_classic_on', 1),
                         ('nav_tab_settings', 1)):
     if _setup_src.count(_kept) < _minimum:
         sys.exit('phase3: kept symbol missing or too rare: ' + _kept)
@@ -2178,6 +2283,8 @@ _rfx_src = open(os.path.join(JAVA_DIR, 'RfxGameActivity.java'),
                 encoding='utf-8').read()
 if 'logging_off' not in _rfx_src:
     sys.exit('phase3: RfxGameActivity lost its logging_off gate')
+if _rfx_src.count('setLanMulticastLock') != 1:
+    sys.exit('phase3: RfxGameActivity LAN multicast lock missing/duplicated')
 _manifest_src = open(MANIFEST, encoding='utf-8').read()
 if 'FrameCheckActivity' in _manifest_src:
     sys.exit('phase3: manifest still registers FrameCheckActivity')
@@ -2194,7 +2301,7 @@ for _sx in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
     _dups = [k for k, c in _collections.Counter(_names).items() if c > 1]
     if _dups:
         sys.exit('phase3: duplicate string keys in ' + _sx + ': ' + ', '.join(_dups))
-print('v1.29 self-checks passed')
+print('v1.29/v1.30 self-checks passed')
 
 
 print('PHASE 3 DONE')
