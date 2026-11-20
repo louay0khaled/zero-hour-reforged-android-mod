@@ -83,7 +83,7 @@ jobs:
         with:
           repository: MYSOREZ/GeneralsZH-Android-Port
           ref: ${{ env.MYSOREZ_REF }}
-          fetch-depth: 0
+          fetch-depth: 1
           submodules: false
 
       - name: Checkout Reforged overlay (this repo)
@@ -108,25 +108,9 @@ jobs:
           git -C references/fbraz3-dxvk submodule update --init --depth 1
           echo "DXVK_REF=$(git rev-parse HEAD:references/fbraz3-dxvk)" >> "$GITHUB_ENV"
 
-      # The second checkout is the ENGINE tree: pristine upstream,
-      # plus the n60 patch set and the data-path surgery (phase 1b
-      # only). It is built ONCE, with the 60-steps flip ON, and its
-      # z_generals output ships as libmainz60.so -- since v1.16 the
-      # only play engine in the APK (the tests payload aside).
-      - name: Checkout engine tree (pristine + n60 patches)
-        uses: actions/checkout@v4
-        with:
-          repository: MYSOREZ/GeneralsZH-Android-Port
-          ref: ${{ env.MYSOREZ_REF }}
-          path: reforged-src
-          fetch-depth: 0
-          submodules: false
-
-      - name: Checkout DXVK fork submodule (Reforged tree)
-        run: |
-          set -euo pipefail
-          git -C reforged-src submodule update --init --depth 1 references/fbraz3-dxvk
-          git -C reforged-src/references/fbraz3-dxvk submodule update --init --depth 1
+      # v1.29.1 trim (owner's order, 2026-11-21): the n60/pure-60 line's
+      # checkout, DXVK submodule and patch step are DELETED -- the pure-60
+      # build has been skipped since v1.20 and nothing else consumed them.
 
       # v1.16, base half: the main tree gets identity surgery
       # (phases 1a-1d), our launcher pages (phase 1e + phase 3) -- and
@@ -208,43 +192,6 @@ jobs:
       # are never packaged). This tree builds the ONLY play engine
       # the APK ships. Purity is asserted below: no smooth-motion, no
       # resync, no Reforged lighting -- the retired lineage is absent.
-      - name: Apply n60 patch set (engine tree)
-        run: |
-          set -euo pipefail
-          ( cd reforged-src
-            git apply --verbose ../reforged-overlay/ci/patches/60foundations.patch --exclude=GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
-            git apply --verbose ../reforged-overlay/ci/patches/n60-globaldata-anchor.patch
-            git apply --verbose ../reforged-overlay/ci/patches/60flip.patch
-            git apply --verbose ../reforged-overlay/ci/patches/n60-stamp.patch
-            git apply --verbose ../reforged-overlay/ci/patches/n60-pacing.patch
-            git apply --verbose ../reforged-overlay/ci/patches/v117-engine.patch
-            git apply --verbose ../reforged-overlay/ci/patches/package-android-zh-gradle-task.patch )
-          REFORGED_SRC="${{ github.workspace }}/reforged-src" REFORGED_SURGERY_MODE=paths \
-            python3 reforged-overlay/ci/apply-surgery.py
-          # Verify the patches actually landed (fail loud, not silent):
-          ! grep -q "smoothMotionCapture" reforged-src/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.cpp
-          ! grep -q "W3DSmoothMotion" reforged-src/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
-          ! grep -q "reforgeLighting" reforged-src/Core/GameEngineDevice/Source/W3DDevice/GameClient/WorldHeightMap.cpp
-          ! grep -q "resyncOnCRCMismatch" reforged-src/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
-          grep -q "ConvertRetailFrames" reforged-src/Core/GameEngine/Include/Common/GameCommon.h
-          grep -q "retailFrictionToFrame" reforged-src/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/PhysicsUpdate.cpp
-          grep -q "parseRetailPerFrameReal" reforged-src/Core/GameEngine/Include/Common/INI.h
-          grep -q "REFORGED_60_STEPS" reforged-src/cmake/config-build.cmake
-          grep -q "REFORGED_60_STEPS" reforged-src/CMakeLists.txt
-          grep -q "parseRetailFramesInt" reforged-src/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
-          grep -q "holdToRetailFireCycle" reforged-src/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
-          grep -q "0x5A300000" reforged-src/GeneralsMD/Code/GameEngine/Source/Common/version.cpp
-          grep -q '" Z60"' reforged-src/GeneralsMD/Code/GameEngine/Source/Common/version.cpp
-          grep -q "m_frameRate = LOGICFRAMES_PER_SECOND" reforged-src/Core/GameEngine/Source/GameNetwork/Network.cpp
-          # v1.17 landed: strike #1, the shell fixes and the test recorder:
-          grep -q "const AsciiString scriptName" reforged-src/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptEngine.cpp
-          grep -q "camStepMs" reforged-src/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp
-          grep -q "GXTestRecorder" reforged-src/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
-          grep -q "GXTestRecorder" reforged-src/Core/GameEngine/Source/GameNetwork/LANAPICallbacks.cpp
-          # Phase 1b landed in this tree too (the paths-mode surgery's own
-          # post-check already failed the run if any old-id path remains):
-          grep -q "com.louay.zerohour.reforged" reforged-src/Core/GameEngine/Include/Common/GXLogging.h
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -312,7 +259,8 @@ jobs:
       - name: Configure ccache
         run: |
           set -euo pipefail
-          ccache --set-config=max_size=3G
+          ccache --set-config=max_size=6G
+          ccache --set-config=compression=true
           ccache --set-config=compiler_check=content
           ccache --zero-stats
           echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
@@ -389,86 +337,6 @@ jobs:
             main_hook file_redirect_hook gsl_alloc_hook hook_impl -- -k 0 2>&1 | tee logs/build_android.log
           ccache --show-stats
 
-      # v1.16: THE engine, from the engine tree. reforged-src (the n60
-      # patch set + phase-1b paths) is configured in its own build dir
-      # with the flip ON and built once, z_generals only; its
-      # libmain.so output ships as libmainz60.so, the only play engine
-      # in the APK. There is no second pass: the v1.10-v1.15 standard
-      # pass (libmainrf.so) is deleted with the engine it shipped.
-      # No stash/restore dance (the v1.5-v1.8 Tree B shape) -- the
-      # trees are separate checkouts, so the base tree's standard
-      # libmain.so can never be confused with this one.
-      - name: Build pure 60-steps engine (libmainz60.so)
-        # v1.20: skipped (owner's order) -- no play engine in this build.
-        if: ${{ false }}
-        run: |
-          set -o pipefail
-          mkdir -p logs
-          SRCRF="${GITHUB_WORKSPACE}/reforged-src"
-          # Configure inside reforged-src ONLY (the preset resolves paths
-          # from the working directory, like the main tree's configure);
-          # the base tree's own configuration is never touched here.
-          ( cd "${SRCRF}" && cmake --preset ${{ env.PRESET }} \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DANDROID_CI_BUILD_NUMBER=${{ github.run_number }} \
-            -DREFORGED_60_STEPS=ON \
-            -DALSOFT_BACKEND_PIPEWIRE=OFF -DALSOFT_BACKEND_PULSEAUDIO=OFF -DALSOFT_BACKEND_ALSA=OFF \
-            -DALSOFT_BACKEND_OSS=OFF -DALSOFT_BACKEND_SNDIO=OFF -DALSOFT_BACKEND_PORTAUDIO=OFF -DALSOFT_BACKEND_JACK=OFF \
-            2>&1 | tee "${GITHUB_WORKSPACE}/logs/configure_reforged.log" )
-          # Print the cache state before asserting on it (self-diagnosing).
-          grep "^REFORGED_60_STEPS:" "${SRCRF}/build/${{ env.PRESET }}/CMakeCache.txt" || echo "REFORGED_60_STEPS: (absent from CMakeCache.txt)"
-          grep "^SAGE_HIGH_FPS_SIM:" "${SRCRF}/build/${{ env.PRESET }}/CMakeCache.txt" || echo "SAGE_HIGH_FPS_SIM: (absent from CMakeCache.txt)"
-          grep -q "^REFORGED_60_STEPS:BOOL=ON" "${SRCRF}/build/${{ env.PRESET }}/CMakeCache.txt"
-          ! grep -q "^SAGE_HIGH_FPS_SIM:BOOL=ON" "${SRCRF}/build/${{ env.PRESET }}/CMakeCache.txt"
-          ( cd "${SRCRF}" && cmake --build build/${{ env.PRESET }} --target z_generals -- -k 0 2>&1 | tee "${GITHUB_WORKSPACE}/logs/build_reforged.log" )
-          MAIN_SO="${SRCRF}/build/${{ env.PRESET }}/GeneralsMD/Code/Main/libmain.so"
-          [ -f "$MAIN_SO" ] || { echo "::error::reforged z_generals output missing at $MAIN_SO"; exit 1; }
-          READELF="$(ls "${ANDROID_NDK_HOME}"/toolchains/llvm/prebuilt/*/bin/llvm-readelf | head -1)"
-          [ -x "$READELF" ] || { echo "::error::llvm-readelf not found under ANDROID_NDK_HOME=${ANDROID_NDK_HOME}"; exit 1; }
-          # Post-build evidence (run #9 lesson): every check captures
-          # output first, greps the capture, and PRINTS the evidence
-          # before it is allowed to fail; the architecture check retries,
-          # like "Verify artifacts".
-          ls -la "$MAIN_SO"
-          OK=0
-          for attempt in 1 2 3 4 5; do
-            if HDR="$("$READELF" -h "$MAIN_SO" 2>&1)" && echo "$HDR" | grep -E "Machine:.*AArch64"; then OK=1; break; fi
-            echo "readelf attempt ${attempt} did not confirm AArch64; full output was:"
-            echo "$HDR"
-            sleep 1
-          done
-          [ "$OK" = "1" ] || { echo "::error::libmainz60 build is not AArch64 (see the ELF headers printed above)"; exit 1; }
-          # The Z60 version stamp must be compiled in (the same-build
-          # refusal for saves, replays and LAN lobbies depends on it),
-          # and NOTHING of the retired engines may be compiled in with
-          # it: no RF60 stamp, no smooth-motion layer, no resync heal.
-          # The compiled-in GeneralsOnline client id must be the 30 Hz
-          # one and ONLY that one: this engine is not a HIGH_FPS build,
-          # and the launcher's clientId() announces CLIENT_ID for
-          # exactly the states where this library loads -- the two must
-          # agree (v1.9 record 9.4).
-          strings "$MAIN_SO" > "${RUNNER_TEMP}/z60-strings.txt"
-          grep " Z60" "${RUNNER_TEMP}/z60-strings.txt" | head -3 || true
-          grep -q " Z60" "${RUNNER_TEMP}/z60-strings.txt" || { echo "::error::Z60 stamp missing from the pure 60-steps build"; exit 1; }
-          if grep -q " RF60" "${RUNNER_TEMP}/z60-strings.txt"; then
-            echo "::error::RF60 stamp found in the pure build -- retired-engine code leaked in"; exit 1
-          fi
-          if grep -q "smoothMotionCapture" "${RUNNER_TEMP}/z60-strings.txt"; then
-            echo "::error::smoothMotionCapture found in the pure build -- Reforged additions leaked in"; exit 1
-          fi
-          if grep -q "resyncOnCRCMismatch" "${RUNNER_TEMP}/z60-strings.txt"; then
-            echo "::error::resync strings found in the pure build -- the heal layer leaked in"; exit 1
-          fi
-          grep -o "gen_online_[0-9]*hz" "${RUNNER_TEMP}/z60-strings.txt" | sort | uniq -c || true
-          grep -q "gen_online_30hz" "${RUNNER_TEMP}/z60-strings.txt" || { echo "::error::libmainz60.so lacks the gen_online_30hz client id"; exit 1; }
-          if grep -q "gen_online_60hz" "${RUNNER_TEMP}/z60-strings.txt"; then
-            echo "::error::gen_online_60hz found in libmainz60.so -- the flip tree took the HIGH_FPS define"; exit 1
-          fi
-          cp "$MAIN_SO" "${GITHUB_WORKSPACE}/libmainz60.so"
-          ls -la "${GITHUB_WORKSPACE}/libmainz60.so"
-          ccache --show-stats
-
       # (v1.16: no second engine pass exists. The v1.10-v1.15 standard
       # pass that shipped libmainrf.so was deleted with that engine.)
 
@@ -505,32 +373,6 @@ jobs:
           strings "build/${{ env.PRESET }}/libdxvk_d3d9.so" | grep -q "SDL3 WSI:" || {
             echo "::error::libdxvk_d3d9.so built without SDL3 WSI"; exit 1; }
           echo "Artifacts verified: DXVK with SDL3 WSI; base libmain.so + libgenerals.so built for dependency staging only (not packaged). v1.20: no play engine is built or packaged."
-
-      # Symbol table of the unstripped shipped play engine
-      # (libmainz60.so), kept so crash logs from this build can be
-      # symbolized later (a few MB of text; the library itself is far
-      # too big to archive).
-      - name: Collect symbol table (before stripping)
-        # v1.20: skipped -- libmainz60.so is not built in this line.
-        if: ${{ false }}
-        run: |
-          set -e
-          TOOLS="$(dirname "$(ls "${ANDROID_NDK_HOME}"/toolchains/llvm/prebuilt/*/bin/llvm-nm | head -1)")"
-          mkdir -p symbols
-          # The play engine's unstripped copy sits at the workspace
-          # root, staged by the engine step above.
-          LIB60="${GITHUB_WORKSPACE}/libmainz60.so"
-          OUT60="symbols/libmainz60-run${{ github.run_number }}.symbols.txt"
-          BUILD_ID60="$(readelf -n "$LIB60" 2>/dev/null | sed -n 's/.*Build ID: \([0-9a-f]*\).*/\1/p' | head -1)"
-          {
-            echo "# libmainz60.so symbols -- run ${{ github.run_number }}, commit ${{ github.sha }}"
-            echo "# BuildID: ${BUILD_ID60:-UNKNOWN}"
-            "$TOOLS/llvm-readelf" --notes --program-headers "$LIB60"
-            echo "# --- defined symbols: address size type name ---"
-            "$TOOLS/llvm-nm" --defined-only --numeric-sort --print-size --demangle "$LIB60"
-          } > "$OUT60"
-          gzip -9 "$OUT60"
-          ls -la symbols/
 
       # Strip list is the v1 local build's (build-apk.sh): upstream's list
       # plus libgenerals.so. DXVK libraries are deliberately NOT stripped
@@ -633,7 +475,7 @@ jobs:
           mkdir -p "$PWD/host-tools"
           c++ -O2 -std=c++17 "$SRC/GeneralsMD/Code/Tools/fingerprint/build_fingerprint.cpp" -o "$PWD/host-tools/build_fingerprint"
           export PATH="$PWD/host-tools:$PATH"
-          cmake -S "$SRC/GeneralsMD/Code" -B "$PWD/rfx-build" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 -DCMAKE_BUILD_TYPE=Release
+          cmake -S "$SRC/GeneralsMD/Code" -B "$PWD/rfx-build" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build "$PWD/rfx-build" --target sdl_gpu_frame_selfcheck -j"$(nproc)"
           # v1.29: build-only gate -- the selfcheck is asserted here
           # and never copied into the package (no libmainrfx.so ships).
