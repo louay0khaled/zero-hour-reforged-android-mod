@@ -1435,94 +1435,15 @@ edit(SETUP, [
 """),
 ])
 
-# ---------------- 7f) tests page reads the game log from the shared folder
-edit(SETUP, [
-    ("""        java.io.File glog = new java.io.File(dir, "rfx-user/Logs/DebugLogFile.txt");
-        if (!glog.isFile()) {
-            glog = new java.io.File(dir, "rfx-user/DebugLogFile.txt");
-        }
-""",
-     """        // v1.25 (C6): the game log lives in the shared data folder now;
-        // the pre-1.25 private rfx-user paths stay as fallbacks.
-        java.io.File glog = new java.io.File(
-            android.os.Environment.getExternalStorageDirectory(),
-            "Generals/Command and Conquer Generals Zero Hour Data/Logs/DebugLogFile.txt");
-        if (!glog.isFile()) {
-            glog = new java.io.File(dir, "rfx-user/Logs/DebugLogFile.txt");
-        }
-        if (!glog.isFile()) {
-            glog = new java.io.File(dir, "rfx-user/DebugLogFile.txt");
-        }
-"""),
-])
-
-# ---------------- 7g) C6: RfxGameActivity on the shared user-data folder -
-edit(rg_path, [
-    (""" * directory (ZH_USER_DATA_DIR, read once by the engine's early
- * options; an isolated rfx-user folder under this app's external
- * files, so the game's own saves/settings never mix with the
- * shipped engines' -- sharing those is Stage C6 parity work).
-""",
-     """ * directory (ZH_USER_DATA_DIR, read once by the engine's early
- * options; since v1.25 (Stage C6 parity) the shared Zero Hour data
- * folder on public storage -- the same folder the launcher's tools
- * manage and the shipped engines used -- so saves, replays and
- * Options.ini are one set for the whole app.
-"""),
-    ("""            java.io.File userDir =
-                new java.io.File(getExternalFilesDir(null), "rfx-user");
-            userDir.mkdirs();
-""",
-     """            // v1.25 (C6 parity): the shared Zero Hour data folder, as the
-            // old engines had it (DataPackInstaller.userDataDir()).
-            java.io.File userDir =
-                new java.io.File(android.os.Environment.getExternalStorageDirectory(),
-                    "Generals/Command and Conquer Generals Zero Hour Data");
-            userDir.mkdirs();
-            migrateLegacyRfxUser(userDir);
-"""),
-    ("""    private void markGameStage(String stage) {
-""",
-     """    // One-time carry-over of the pre-1.25 private user folder (rfx-user)
-    // into the shared data folder: copies anything the shared folder does
-    // not already have, never overwrites, and leaves the original in place.
-    private void migrateLegacyRfxUser(java.io.File sharedDir) {
-        try {
-            java.io.File legacy =
-                new java.io.File(getExternalFilesDir(null), "rfx-user");
-            if (legacy.isDirectory()) {
-                copyTreeNoOverwrite(legacy, sharedDir);
-            }
-        } catch (Exception ignored) {}
-    }
-
-    private static void copyTreeNoOverwrite(java.io.File from, java.io.File to) {
-        try {
-            if (from.isDirectory()) {
-                to.mkdirs();
-                java.io.File[] kids = from.listFiles();
-                if (kids != null) {
-                    for (java.io.File kid : kids) {
-                        copyTreeNoOverwrite(kid, new java.io.File(to, kid.getName()));
-                    }
-                }
-            } else if (!to.exists()) {
-                java.io.InputStream in = new java.io.FileInputStream(from);
-                java.io.OutputStream out = new java.io.FileOutputStream(to);
-                byte[] buf = new byte[65536];
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    out.write(buf, 0, n);
-                }
-                out.close();
-                in.close();
-            }
-        } catch (Exception ignored) {}
-    }
-
-    private void markGameStage(String stage) {
-"""),
-])
+# ---------------- 7f+7g) C6 shared user-data folder: REVERTED in v1.25.1
+# v1.25 moved the engine onto the shared MYSOREZ data folder (7g) and
+# pointed the tests page at its log first (7f). v1.25 then crashed with a
+# SIGSEGV at every startup, inside engine init, before the menu -- while
+# v1.24.1 on the private rfx-user folder played to a full victory on the
+# same phone. Until the shared folder's files (written by another engine)
+# are proven innocent, the engine keeps its private folder: NO edits in
+# this section, so RfxGameActivity and the tests page stay exactly as the
+# base shell (and v1.24.1) shipped them.
 
 # ---------------- 7h) the credit string, every locale --------------------
 CREDIT_STRINGS = {
