@@ -71,6 +71,19 @@ index 10a1f1d6..82ca34ad 100644
    # C2's SDL side of Monitors.h and MessageBoxWrapper, on SDL's offscreen video driver.
    # test_gameengine_stubs.cpp: the names the executable supplies, which GCC's larger pull from sdldevice
    # reaches (ld.lld, L1b); clang's does not, and they cost nothing there.
+diff --git a/GeneralsMD/Code/Data/INI/PlayerTemplateReforged.ini b/GeneralsMD/Code/Data/INI/PlayerTemplateReforged.ini
+index 9f65a0ce..cc9c1f64 100644
+--- a/GeneralsMD/Code/Data/INI/PlayerTemplateReforged.ini
++++ b/GeneralsMD/Code/Data/INI/PlayerTemplateReforged.ini
+@@ -11,7 +11,7 @@
+ PlayerTemplate FactionTurkiye
+   Side              = Turkiye
+   BaseSide          = USA
+-  PlayableSide      = Yes
++  PlayableSide      = No ; Reforged-Android: hidden by owner order 2026-11-20 (W3D models not staged in the Android overlay; MYSOREZ/GeneralsX does not carry this faction)
+   StartMoney        = 0
+   PreferredColor    = R:255 G:0 B:0
+   IntrinsicSciences = SCIENCE_AMERICA SCIENCE_Turkiye
 diff --git a/GeneralsMD/Code/Data/Window/GroupPanel.wnd b/GeneralsMD/Code/Data/Window/GroupPanel.wnd
 new file mode 100644
 index 00000000..30e390e6
@@ -1051,6 +1064,21 @@ index 00000000..8a20fc17
 +		return s_state[option] != 0;
 +	}
 +}
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h b/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h
+index 988546e7..d7d72431 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/GlobalData.h
+@@ -92,8 +92,9 @@ enum TextLanguageType
+ 	TEXT_LANGUAGE_UKRAINIAN	= 3,
+ 	TEXT_LANGUAGE_RUSSIAN	= 4,
+ 	TEXT_LANGUAGE_FRENCH	= 5,
++	TEXT_LANGUAGE_ARABIC	= 6,
+ 
+-	TEXT_LANGUAGE_COUNT		= 6,
++	TEXT_LANGUAGE_COUNT		= 7,
+ };
+ 
+ /** The LightingStyle option.  Classic draws a map's lights as the map gives them; Reforged takes
 diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBar.h b/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBar.h
 index 4d82f338..a429582a 100644
 --- a/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBar.h
@@ -1314,6 +1342,49 @@ index 3e937858..cbf84300 100644
  	RadiusCursorType						m_curRcType;
  
  	//Floating Text Data
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/UserUiScale.h b/GeneralsMD/Code/GameEngine/Include/GameClient/UserUiScale.h
+new file mode 100644
+index 00000000..8fb6161b
+--- /dev/null
++++ b/GeneralsMD/Code/GameEngine/Include/GameClient/UserUiScale.h
+@@ -0,0 +1,37 @@
++#pragma once
++
++// User interface scale (v1.29, owner's order 2026-11-20): the launcher's
++// "interface size" slider saves GXUiScale (percent, 100-200) in Options.ini --
++// the contract MYSOREZ's launcher and its GXUiScale feature used. Our launcher
++// activity reads that value from our own user folder's Options.ini and passes
++// it to the engine as the GX_UI_SCALE environment variable; this factor is
++// what the engine's own scale points multiply by:
++//   - ControlBarUniformScaleFor / ControlBarHudScaleFor (the control bar, the
++//     radar, the C5 touch buttons, the science and power layouts the bar
++//     places), capped at the display's own horizontal stretch so the bar can
++//     never outgrow the screen;
++//   - the fitted (LAYOUT_FIT) dialogs and menus in parseScreenRect, clamped
++//     back onto the screen window by window, with their fonts in parseFont.
++// 100% (or unset) is exactly the shipped behaviour: every multiplication is
++// by 1. Client-side presentation only; nothing here touches game logic.
++
++#include "Lib/BaseType.h"
++
++#include <cstdlib>
++
++inline Real UserUiScaleFactor( void )
++{
++	static Real s_factor = -1.0f;
++	if( s_factor < 0.0f )
++	{
++		s_factor = 1.0f;
++		const char *env = getenv( "GX_UI_SCALE" );
++		if( env )
++		{
++			const Int percent = atoi( env );
++			if( percent > 100 && percent <= 200 )
++				s_factor = percent / 100.0f;
++		}
++	}
++	return s_factor;
++}
 diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/View.h b/GeneralsMD/Code/GameEngine/Include/GameClient/View.h
 index afd06b34..3256b9f2 100644
 --- a/GeneralsMD/Code/GameEngine/Include/GameClient/View.h
@@ -1342,6 +1413,26 @@ index afd06b34..3256b9f2 100644
  	virtual Real getZoomForHeight( Real heightAboveGround ) { return m_zoom; }		///< the zoom setZoomToHeight would set, without setting it
  	void setZoomToStart( Bool shellMap );																	///< the zoom a match opens at: max under StartAtMaxZoom, else START_CAMERA_HEIGHT
  	virtual void setOkToAdjustHeight( Bool val ) { m_okToAdjustHeight = val; }	///< Set this to adjust camera height
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
+index 3662d26c..1e816bbd 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
+@@ -1864,13 +1864,13 @@ Int parseDirect3D9(char *args[], int num)
+ 	return 1;
+ }
+ 
+-/* -language <english|turkish|german|ukrainian|russian|french>: the language the game's words are in for this run, over whatever
++/* -language <english|turkish|german|ukrainian|russian|french|arabic>: the language the game's words are in for this run, over whatever
+ 	 * the Options menu saved.  The string table is built once, while the game starts and after this
+ 	 * line is read, so this is how the launcher lets a player pick a language before the first menu.
+ 	 * The names follow TextLanguageType.  A name this build does not know leaves the saved one. */
+ Int parseTextLanguage(char *args[], int num)
+ {
+-	static const char *const TheTextLanguageNames[ TEXT_LANGUAGE_COUNT ] = { "english", "turkish", "german", "ukrainian", "russian", "french" };
++	static const char *const TheTextLanguageNames[ TEXT_LANGUAGE_COUNT ] = { "english", "turkish", "german", "ukrainian", "russian", "french", "arabic" };
+ 
+ 	if (TheWritableGlobalData && num > 1)
+ 	{
 diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
 index 33b72fae..155e9fd8 100644
 --- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
@@ -1519,10 +1610,18 @@ index aa7efb26..b70ed8a8 100644
  }
  
 diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
-index 951d3d8a..27e16ebb 100644
+index 951d3d8a..5d4d27eb 100644
 --- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
 +++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
-@@ -1274,6 +1274,15 @@ ControlBar::ControlBar( void )
+@@ -76,6 +76,7 @@
+ 
+ #include "GameClient/AnimateWindowManager.h"
+ #include "GameClient/ControlBar.h"
++#include "GameClient/UserUiScale.h"
+ #include "GameClient/ControlBarScheme.h"
+ #include "GameClient/Drawable.h"
+ #include "GameClient/Display.h"
+@@ -1274,6 +1275,15 @@ ControlBar::ControlBar( void )
  	m_currentControlBarStage = CONTROL_BAR_STAGE_DEFAULT;
  	m_buildToolTipLayout = NULL;
  	m_showBuildToolTipLayout = FALSE;
@@ -1538,7 +1637,7 @@ index 951d3d8a..27e16ebb 100644
  
  	// Added By Sadullah Nader
  	// initializing vars to zero
-@@ -1332,6 +1341,8 @@ ControlBar::ControlBar( void )
+@@ -1332,6 +1342,8 @@ ControlBar::ControlBar( void )
  	m_purchaseScienceColumnMs = 0;
  	m_specialPowerLayout = NULL;
  	m_scienceLayout = NULL;
@@ -1547,7 +1646,42 @@ index 951d3d8a..27e16ebb 100644
  	m_rightHUDWindow = NULL;
  	m_rightHUDCameoWindow = NULL;
  	for( i = 0; i < MAX_RIGHT_HUD_UPGRADE_CAMEOS; i++ )
-@@ -2257,6 +2268,18 @@ void ControlBar::layoutPanels( void )
+@@ -1502,8 +1514,15 @@ Real ControlBarUniformScaleFor( Int displayWidth, Int displayHeight )
+ 	const Real loadScaleX = (Real)displayWidth / CONTROL_BAR_DESIGN_W;
+ 	const Real loadScaleY = (Real)displayHeight / CONTROL_BAR_DESIGN_H;
+ 	const Real s = loadScaleX < loadScaleY ? loadScaleX : loadScaleY;
+-
+-	return s < 1.0f ? 1.0f : s;
++	const Real base = s < 1.0f ? 1.0f : s;
++
++	// The owner's interface size (UserUiScale.h): grow the one HUD scale with
++	// it, never past the display's own horizontal stretch.
++	const Real user = UserUiScaleFactor();
++	if( user <= 1.0f )
++		return base;
++	const Real grown = base * user;
++	return grown < loadScaleX ? grown : loadScaleX;
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+@@ -1518,7 +1537,15 @@ Real ControlBarUniformScale( void )
+ //-------------------------------------------------------------------------------------------------
+ Real ControlBarHudScaleFor( Int displayWidth, Int displayHeight )
+ {
+-	return (Real)displayHeight / CONTROL_BAR_DESIGN_H * CONTROL_BAR_HUD_PERCENT / 100.0f;
++	const Real base = (Real)displayHeight / CONTROL_BAR_DESIGN_H * CONTROL_BAR_HUD_PERCENT / 100.0f;
++
++	// The owner's interface size (UserUiScale.h), capped like the bar's scale.
++	const Real user = UserUiScaleFactor();
++	if( user <= 1.0f || displayWidth <= 0 )
++		return base;
++	const Real cap = (Real)displayWidth / CONTROL_BAR_DESIGN_W * CONTROL_BAR_HUD_PERCENT / 100.0f;
++	const Real grown = base * user;
++	return grown < cap ? grown : cap;
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+@@ -2257,6 +2284,18 @@ void ControlBar::layoutPanels( void )
  
  }  // end layoutPanels
  
@@ -1566,7 +1700,7 @@ index 951d3d8a..27e16ebb 100644
  /// every place layoutPanels remembers for a window and everything under it, moved across by dx
  static void shiftPlaces( GameWindow *window, Int dx )
  {
-@@ -2445,6 +2468,9 @@ void ControlBar::init( void )
+@@ -2445,6 +2484,9 @@ void ControlBar::init( void )
  	// TheCommandStore loaded the buttons and sets before the game logic existed; their images are ours
  	postProcessCommands();
  
@@ -1576,7 +1710,7 @@ index 951d3d8a..27e16ebb 100644
  	// Init the scheme manager, this will call it's won INI init funciton.
  	m_controlBarSchemeManager = NEW ControlBarSchemeManager;
  	m_controlBarSchemeManager->init();
-@@ -2472,6 +2498,13 @@ void ControlBar::shutdownWindows( void )
+@@ -2472,6 +2514,13 @@ void ControlBar::shutdownWindows( void )
  	}
  	m_scienceLayout = NULL;
  
@@ -1590,7 +1724,7 @@ index 951d3d8a..27e16ebb 100644
  	if( m_buildToolTipLayout )
  	{
  		m_buildToolTipLayout->destroyWindows();
-@@ -2569,6 +2602,10 @@ void ControlBar::initWindows( void )
+@@ -2569,6 +2618,10 @@ void ControlBar::initWindows( void )
  		m_scienceLayout = TheWindowManager->winCreateLayout("GeneralsExpPoints.wnd");
  		m_scienceLayout->hide(TRUE);
  
@@ -1601,7 +1735,7 @@ index 951d3d8a..27e16ebb 100644
  		//
  		// The rank screen is one painting with the science cameos placed on it, authored at
  		// 210..604 x 3..434.  Stretched separately in x and y it is a third too wide on a 16:9
-@@ -2820,6 +2857,7 @@ void ControlBar::initWindows( void )
+@@ -2820,6 +2873,7 @@ void ControlBar::initWindows( void )
  //-------------------------------------------------------------------------------------------------
  void ControlBar::reset( void )
  {
@@ -1609,7 +1743,7 @@ index 951d3d8a..27e16ebb 100644
  	hideSpecialPowerShortcut();
  	// do not destroy the rally drawable, it will get destroyed with everythign else during a reset
  	m_rallyPointDrawableID = INVALID_DRAWABLE_ID;
-@@ -2963,11 +3001,52 @@ void ControlBar::update( void )
+@@ -2963,11 +3017,52 @@ void ControlBar::update( void )
  
  
  	// every other use of m_buildToolTipLayout is null-guarded; this one was not
@@ -1662,7 +1796,7 @@ index 951d3d8a..27e16ebb 100644
  /*
  	else if( m_buildToolTipLayout )
  	{
-@@ -4410,6 +4489,122 @@ void ControlBar::postProcessCommands( void )
+@@ -4410,6 +4505,122 @@ void ControlBar::postProcessCommands( void )
  	}
  }
  
@@ -3271,6 +3405,91 @@ index b0f5b0d7..3c3429ff 100644
  GameWindow *GameWindowManager::getWindowUnderCursor( Int x, Int y, Bool ignoreEnabled )
  {
  	if( m_mouseCaptor )
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GameWindowManagerScript.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GameWindowManagerScript.cpp
+index 9ca6ff88..d242ad7f 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GameWindowManagerScript.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GameWindowManagerScript.cpp
+@@ -59,6 +59,7 @@
+ #include "Common/NameKeyGenerator.h"
+ #include "Common/FunctionLexicon.h"
+ #include "GameClient/Display.h"
++#include "GameClient/UserUiScale.h"
+ #include "GameClient/WindowLayout.h"
+ #include "GameClient/Gadget.h"
+ #include "GameClient/GameWindowManager.h"
+@@ -513,6 +514,9 @@ enum LayoutPlacement
+ 	LAYOUT_FIT				///< one scale, the smaller, its 800x600 standing at theLayoutAnchor
+ };
+ static LayoutPlacement theLayoutPlacement = LAYOUT_STRETCH;
++/// the layout being read lays the control bar out itself (barLaysOutItself):
++/// parseFont grows its lettering with the owner's interface size (UserUiScale.h)
++static Bool theLayoutIsBarOwned = FALSE;
+ /// a shell screen: stretched when authored at 4:3 as EA's were, fitted when authored wider (the
+ /// staging rooms at 1920x1080), so a crest, a map preview and its start spots keep their shape
+ static Bool theLayoutIsShellScreen = FALSE;
+@@ -599,6 +603,7 @@ static LayoutPlacement layoutPlacement( const char *filename )
+ {
+ 	theLayoutAnchor.x = theLayoutAnchor.y = 0.5f;
+ 	theLayoutIsShellScreen = FALSE;
++	theLayoutIsBarOwned = FALSE;
+ 	theWideFontScale = 0.0f;
+ 	if( filename == NULL )
+ 		return LAYOUT_STRETCH;
+@@ -606,6 +611,7 @@ static LayoutPlacement layoutPlacement( const char *filename )
+ 	if( startsWithFolder( filename, "window" ) )
+ 		filename += 7;
+ 	theLayoutIsShellScreen = layoutIsShellScreen( filename );
++	theLayoutIsBarOwned = barLaysOutItself( filename );
+ 	if( theLayoutIsShellScreen || barLaysOutItself( filename ) )
+ 		return LAYOUT_STRETCH;
+ 	theLayoutAnchor = classicLayoutAnchor( filename );
+@@ -677,13 +683,33 @@ static Bool parseScreenRect( char *token, char *buffer,
+ 		}
+ 		else
+ 		{
+-			const Real scale = min( xScale, yScale );
++			const Real scale = min( xScale, yScale ) * UserUiScaleFactor();
+ 			const Real left = ((Real)TheDisplay->getWidth() - (Real)createRes.x * scale) * theLayoutAnchor.x;
+ 			const Real top = ((Real)TheDisplay->getHeight() - (Real)createRes.y * scale) * theLayoutAnchor.y;
+ 			screenRegion.lo.x = (Int)((Real)screenRegion.lo.x * scale + left);
+ 			screenRegion.lo.y = (Int)((Real)screenRegion.lo.y * scale + top);
+ 			screenRegion.hi.x = (Int)((Real)screenRegion.hi.x * scale + left);
+ 			screenRegion.hi.y = (Int)((Real)screenRegion.hi.y * scale + top);
++			// The owner's interface size can grow the fitted frame past the
++			// display: pull each window back on screen, its size kept
++			// (UserUiScale.h). At 100% nothing here runs.
++			if( UserUiScaleFactor() > 1.0f )
++			{
++				if( screenRegion.lo.x < 0 ) { screenRegion.hi.x -= screenRegion.lo.x; screenRegion.lo.x = 0; }
++				if( screenRegion.lo.y < 0 ) { screenRegion.hi.y -= screenRegion.lo.y; screenRegion.lo.y = 0; }
++				if( screenRegion.hi.x > TheDisplay->getWidth() )
++				{
++					const Int d = screenRegion.hi.x - TheDisplay->getWidth();
++					screenRegion.lo.x -= d; screenRegion.hi.x -= d;
++					if( screenRegion.lo.x < 0 ) screenRegion.lo.x = 0;
++				}
++				if( screenRegion.hi.y > TheDisplay->getHeight() )
++				{
++					const Int d = screenRegion.hi.y - TheDisplay->getHeight();
++					screenRegion.lo.y -= d; screenRegion.hi.y -= d;
++					if( screenRegion.lo.y < 0 ) screenRegion.lo.y = 0;
++				}
++			}
+ 		}
+ 	}
+ 	else
+@@ -793,6 +819,11 @@ static Bool parseFont( char *token, WinInstanceData *instData,
+ 	else if( TheGlobalLanguageData )
+ 		fontSize = TheGlobalLanguageData->adjustFontSize( fontSize );
+ 
++	// The owner's interface size: the fitted dialogs' and the bar's own
++	// layouts' lettering grows with their windows (UserUiScale.h).
++	if( theLayoutPlacement == LAYOUT_FIT || theLayoutIsBarOwned )
++		fontSize = REAL_TO_INT_FLOOR( fontSize * UserUiScaleFactor() );
++
+ 	if( TheFontLibrary )
+ 	{
+ 		GameFont *font;
 diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GameClient.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GameClient.cpp
 index 84d046c8..c79312d8 100644
 --- a/GeneralsMD/Code/GameEngine/Source/GameClient/GameClient.cpp
@@ -3298,10 +3517,18 @@ index 84d046c8..c79312d8 100644
  /** Get the ray effect data for a drawable */
  void GameClient::getRayEffectData( Drawable *draw, RayEffectData *effectData )
 diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GameText.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GameText.cpp
-index f8077f5b..76675ed4 100644
+index f8077f5b..4271f9f5 100644
 --- a/GeneralsMD/Code/GameEngine/Source/GameClient/GameText.cpp
 +++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GameText.cpp
-@@ -1426,6 +1426,39 @@ UnicodeString GameTextManager::fetch( const Char *label, Bool *exists )
+@@ -232,6 +232,7 @@ static const char *const TheTextLanguageOverlays[ TEXT_LANGUAGE_COUNT ] =
+ 	"Data\\Ukrainian\\Generals.str",
+ 	"Data\\Russian\\Generals.str",
+ 	"Data\\French\\Generals.str",
++	"Data\\Arabic\\Generals.str",
+ };
+ 
+ //----------------------------------------------------------------------------
+@@ -1426,6 +1427,39 @@ UnicodeString GameTextManager::fetch( const Char *label, Bool *exists )
  	if( lookUp == NULL )
  	{
  
@@ -4111,7 +4338,7 @@ index 70256f7b..1d85be2c 100644
  	const unsigned int width = Gpu->Width(), height = Gpu->Height();
  	if (!Gpu->Read_Back(Gpu->Front_Copy(), width, height, presented)) {
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp
-index 41e2ebff..2b4ae7d3 100644
+index 41e2ebff..54c9d052 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp
 @@ -1,6 +1,7 @@
@@ -4150,7 +4377,7 @@ index 41e2ebff..2b4ae7d3 100644
      std::memcpy(constants.WorldFromClip,Sun->WorldFromClip,sizeof(Sun->WorldFromClip));
      // Headlight/Blast counts stay zero. Linux still supplies its existing vertex lights.
  }
-@@ -352,6 +367,23 @@ SDL_GPUTexture *PosixDevice9::Sun_Texture() const { return Sun ? Sun->Target.Dep
+@@ -352,6 +367,38 @@ SDL_GPUTexture *PosixDevice9::Sun_Texture() const { return Sun ? Sun->Target.Dep
  SDL_GPUSampler *PosixDevice9::Sun_Sampler() const { return Sun ? Sun->Sampler : nullptr; }
  
  namespace SunShadow {
@@ -4158,6 +4385,14 @@ index 41e2ebff..2b4ae7d3 100644
 +// the SDL driver string names the part ("Mali-G52 MC2" on the reference phone), and a
 +// tile-based Mali is where the fifty-tap receiver and the 2048 map hurt most. Asked
 +// once, answered for the process; the driver string is logged either way.
++//
++// The test is MODEL-aware, not family-wide (owner, 2026-11-20): Mali spans a decade of
++// parts, and the flagship Mali/Immortalis GPUs in Dimensity 8400-class SoCs and above
++// must never be capped by a rule written for the entry parts. Weak means a named entry
++// part only -- Mali-Txxx (pre-G) or G31/G51/G52/G57/G310. Any other Mali (G68 and up,
++// every G6xx/G7xx, Immortalis G9xx) and any Mali whose model cannot be parsed keep
++// full quality: the gate exists to help parts known to be weak, and an unknown part
++// is never capped on a guess.
 +bool WeakGpu(IDirect3DDevice9 *d) {
 +    static int weak = -1;
 +    if (weak < 0) {
@@ -4165,7 +4400,14 @@ index 41e2ebff..2b4ae7d3 100644
 +        PosixDevice9 *dev = d ? static_cast<PosixDevice9*>(d) : nullptr;
 +        if (dev && dev->Get_Gpu() && dev->Get_Gpu()->Device()) {
 +            const char *driver = SDL_GetGPUDeviceDriver(dev->Get_Gpu()->Device());
-+            if (driver && std::strstr(driver, "Mali")) weak = 1;
++            if (driver) {
++                if (const char *mali = std::strstr(driver, "Mali-")) {
++                    const char series = mali[5];
++                    const int model = std::atoi(mali + 6);
++                    if (series == 'T') weak = 1;
++                    else if (series == 'G' && (model == 31 || model == 51 || model == 52 || model == 57 || model == 310)) weak = 1;
++                }
++            }
 +            std::fprintf(stderr, "[shadow] gpu driver '%s' weak=%d\n", driver ? driver : "?", weak);
 +        }
 +    }
@@ -7151,6 +7393,24 @@ index 00000000..9805d4a3
 +	}
 +
 +}  // namespace TouchInput
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/GUI/Gadget/W3DStaticText.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/GUI/Gadget/W3DStaticText.cpp
+index 855ac561..80a354c6 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/GUI/Gadget/W3DStaticText.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/GUI/Gadget/W3DStaticText.cpp
+@@ -123,6 +123,13 @@ static void drawStaticTextText( GameWindow *window, WinInstanceData *instData,
+ 	{
+ 		textPos.x = origin.x + (size.x / 2) - (textWidth / 2);
+ 	}
++	else if( Render2DSentenceClass::Is_RTL_Text( text->getText().str() ) )
++	{
++		// Arabic text reads from the right, so a left-aligned field is
++		// right-aligned for it; otherwise every line of a tooltip starts at
++		// the box's left edge while the lines end at different places.
++		textPos.x = origin.x + size.x - tData->leftMargin - textWidth;
++	}
+ 	else
+ 	{
+ 		textPos.x = origin.x + tData->leftMargin;
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp
 index 1a7bd439..a2876472 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp
@@ -7747,6 +8007,589 @@ index a37b9014..39546d7c 100644
  #else
  	const char *directory = "/System/Library/Fonts/Supplemental/";
  	if (bold && s.macBold != NULL && fileExists( (std::string( directory ) + s.macBold).c_str() ))
+diff --git a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.cpp b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.cpp
+index 4768a6d8..db3d5c5c 100644
+--- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.cpp
++++ b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.cpp
+@@ -37,6 +37,7 @@
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
+ #include "render2dsentence.h"
++#include <vector>	// std::vector, the RTL shaping buffer (Arabic port, v1.29)
+ #if !defined(_WIN32)
+ #include "glyphrasteriser.h"
+ #include <math.h>
+@@ -60,6 +61,342 @@
+ #define no_TEST_PLACEMENT 1	 // Shows alignment markers for text.
+ 
+ #define TEXTURE_OFFSET 2
++// ---------------------------------------------------------------------------
++// Arabic RTL shaping and mirroring, lifted from the GeneralsX sentence
++// renderer (MYSOREZ's Android port, 27/09/2026) for v1.29: two steps around
++// the unchanged layout -- Prepare_RTL_Text shapes and reorders each word
++// before layout; Mirror_RTL_Lines reverses word order per line after it.
++// ---------------------------------------------------------------------------
++////////////////////////////////////////////////////////////////////////////////////
++//
++//	Right-to-left text (Arabic, Persian, Hebrew)
++//
++// GeneralsX @feature Android port 27/09/2026 The layout below places glyphs strictly left to
++// right, one glyph per code point, which is only correct for scripts that neither join nor run
++// right to left. Arabic needs both, so RTL text is handled in two steps around the unchanged
++// layout:
++//   1. Prepare_RTL_Text (before layout): Arabic letters are replaced with their contextual
++//      presentation forms (isolated/final/initial/medial, lam-alef ligatures), and each word's
++//      characters are put in visual order. Latin/digit runs inside a word keep their order;
++//      brackets inside RTL runs are mirrored; a hotkey "&X" pair stays atomic.
++//   2. Mirror_RTL_Lines (after layout): word order within each laid-out line is reversed by
++//      mirroring the chunks' screen positions, so the first word ends up on the right. A run of
++//      consecutive Latin words (a unit name, "(&K)", a number) is moved as one block and keeps
++//      its internal order. Line breaking is therefore still done in logical order.
++////////////////////////////////////////////////////////////////////////////////////
++namespace
++{
++struct ArabicForms
++{
++	WideChar	base;
++	WideChar	isolated;
++	WideChar	final_form;
++	WideChar	initial;
++	WideChar	medial;
++};
++
++// Presentation forms, U+FE70-FEFF (Arabic) and U+FB50-FDFF (Persian letters). A zero initial/medial
++// form means the letter only joins to the preceding one.
++static const ArabicForms kArabicForms[] = {
++	{ 0x0621, 0xFE80, 0,      0,      0      },
++	{ 0x0622, 0xFE81, 0xFE82, 0,      0      },
++	{ 0x0623, 0xFE83, 0xFE84, 0,      0      },
++	{ 0x0624, 0xFE85, 0xFE86, 0,      0      },
++	{ 0x0625, 0xFE87, 0xFE88, 0,      0      },
++	{ 0x0626, 0xFE89, 0xFE8A, 0xFE8B, 0xFE8C },
++	{ 0x0627, 0xFE8D, 0xFE8E, 0,      0      },
++	{ 0x0628, 0xFE8F, 0xFE90, 0xFE91, 0xFE92 },
++	{ 0x0629, 0xFE93, 0xFE94, 0,      0      },
++	{ 0x062A, 0xFE95, 0xFE96, 0xFE97, 0xFE98 },
++	{ 0x062B, 0xFE99, 0xFE9A, 0xFE9B, 0xFE9C },
++	{ 0x062C, 0xFE9D, 0xFE9E, 0xFE9F, 0xFEA0 },
++	{ 0x062D, 0xFEA1, 0xFEA2, 0xFEA3, 0xFEA4 },
++	{ 0x062E, 0xFEA5, 0xFEA6, 0xFEA7, 0xFEA8 },
++	{ 0x062F, 0xFEA9, 0xFEAA, 0,      0      },
++	{ 0x0630, 0xFEAB, 0xFEAC, 0,      0      },
++	{ 0x0631, 0xFEAD, 0xFEAE, 0,      0      },
++	{ 0x0632, 0xFEAF, 0xFEB0, 0,      0      },
++	{ 0x0633, 0xFEB1, 0xFEB2, 0xFEB3, 0xFEB4 },
++	{ 0x0634, 0xFEB5, 0xFEB6, 0xFEB7, 0xFEB8 },
++	{ 0x0635, 0xFEB9, 0xFEBA, 0xFEBB, 0xFEBC },
++	{ 0x0636, 0xFEBD, 0xFEBE, 0xFEBF, 0xFEC0 },
++	{ 0x0637, 0xFEC1, 0xFEC2, 0xFEC3, 0xFEC4 },
++	{ 0x0638, 0xFEC5, 0xFEC6, 0xFEC7, 0xFEC8 },
++	{ 0x0639, 0xFEC9, 0xFECA, 0xFECB, 0xFECC },
++	{ 0x063A, 0xFECD, 0xFECE, 0xFECF, 0xFED0 },
++	{ 0x0641, 0xFED1, 0xFED2, 0xFED3, 0xFED4 },
++	{ 0x0642, 0xFED5, 0xFED6, 0xFED7, 0xFED8 },
++	{ 0x0643, 0xFED9, 0xFEDA, 0xFEDB, 0xFEDC },
++	{ 0x0644, 0xFEDD, 0xFEDE, 0xFEDF, 0xFEE0 },
++	{ 0x0645, 0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4 },
++	{ 0x0646, 0xFEE5, 0xFEE6, 0xFEE7, 0xFEE8 },
++	{ 0x0647, 0xFEE9, 0xFEEA, 0xFEEB, 0xFEEC },
++	{ 0x0648, 0xFEED, 0xFEEE, 0,      0      },
++	{ 0x0649, 0xFEEF, 0xFEF0, 0,      0      },
++	{ 0x064A, 0xFEF1, 0xFEF2, 0xFEF3, 0xFEF4 },
++	{ 0x067E, 0xFB56, 0xFB57, 0xFB58, 0xFB59 },
++	{ 0x0686, 0xFB7A, 0xFB7B, 0xFB7C, 0xFB7D },
++	{ 0x0698, 0xFB8A, 0xFB8B, 0,      0      },
++	{ 0x06A9, 0xFB8E, 0xFB8F, 0xFB90, 0xFB91 },
++	{ 0x06AF, 0xFB92, 0xFB93, 0xFB94, 0xFB95 },
++	{ 0x06CC, 0xFBFC, 0xFBFD, 0xFBFE, 0xFBFF },
++};
++
++static const ArabicForms *Find_Arabic_Forms( WideChar ch )
++{
++	for ( const ArabicForms &forms : kArabicForms ) {
++		if ( forms.base == ch ) {
++			return &forms;
++		}
++	}
++	return nullptr;
++}
++
++// The base letter a presentation form was made from, or 0. Used when no face has the form.
++static WideChar Arabic_Presentation_Base( WideChar ch )
++{
++	for ( const ArabicForms &forms : kArabicForms ) {
++		if ( ch == forms.isolated || ch == forms.final_form
++			|| ( forms.initial != 0 && ( ch == forms.initial || ch == forms.medial ) ) ) {
++			return forms.base;
++		}
++	}
++	return 0;
++}
++
++enum JoiningType { JOIN_NONE, JOIN_RIGHT, JOIN_DUAL, JOIN_CAUSING, JOIN_TRANSPARENT };
++
++static JoiningType Get_Joining_Type( WideChar ch )
++{
++	if ( ( ch >= 0x064B && ch <= 0x065F ) || ch == 0x0670 || ( ch >= 0x06D6 && ch <= 0x06ED ) ) {
++		return JOIN_TRANSPARENT;
++	}
++	if ( ch == 0x0640 || ch == 0x200D ) {
++		return JOIN_CAUSING;
++	}
++	const ArabicForms *forms = Find_Arabic_Forms( ch );
++	if ( forms == nullptr || forms->final_form == 0 ) {
++		return JOIN_NONE;
++	}
++	return forms->initial != 0 ? JOIN_DUAL : JOIN_RIGHT;
++}
++
++static bool Is_Strong_RTL( WideChar ch )
++{
++	if ( ( ch >= 0x0660 && ch <= 0x066C ) || ( ch >= 0x06F0 && ch <= 0x06F9 ) ) {
++		return false;	// Arabic-Indic digits and the percent/decimal/thousands signs keep number order
++	}
++	return ( ch >= 0x0590 && ch <= 0x08FF ) || ( ch >= 0xFB1D && ch <= 0xFDFF ) || ( ch >= 0xFE70 && ch <= 0xFEFF );
++}
++
++static bool Is_Strong_LTR( WideChar ch )
++{
++	if ( ( ch >= u'A' && ch <= u'Z' ) || ( ch >= u'a' && ch <= u'z' ) || ( ch >= u'0' && ch <= u'9' ) ) {
++		return true;
++	}
++	if ( ( ch >= 0x0660 && ch <= 0x0669 ) || ( ch >= 0x06F0 && ch <= 0x06F9 ) ) {
++		return true;
++	}
++	if ( ch < 0x00C0 || ch == 0x00D7 || ch == 0x00F7 || ( ch >= 0x2000 && ch <= 0x2BFF ) || ( ch >= 0x3000 && ch <= 0x303F ) ) {
++		return false;
++	}
++	return !Is_Strong_RTL( ch );
++}
++
++static WideChar Mirror_Bracket( WideChar ch )
++{
++	switch ( ch ) {
++		case u'(': return u')';
++		case u')': return u'(';
++		case u'[': return u']';
++		case u']': return u'[';
++		case u'{': return u'}';
++		case u'}': return u'{';
++		case u'<': return u'>';
++		case u'>': return u'<';
++		case 0x00AB: return 0x00BB;
++		case 0x00BB: return 0x00AB;
++		default: return ch;
++	}
++}
++
++// Contextual shaping, in logical order. ZWJ/ZWNJ only steer the joining and are dropped.
++static void Shape_Arabic( const WideChar *text, std::vector<WideChar> &out )
++{
++	size_t len = 0;
++	while ( text[len] != 0 ) { ++len; }	// wcslen does not apply: WideChar is char16_t
++	out.clear();
++	out.reserve( len + 1 );
++
++	auto neighbour_type = [&]( size_t i, int step ) -> JoiningType {
++		for ( long j = (long)i + step; j >= 0 && j < (long)len; j += step ) {
++			JoiningType type = Get_Joining_Type( text[j] );
++			if ( type != JOIN_TRANSPARENT ) {
++				return type;
++			}
++		}
++		return JOIN_NONE;
++	};
++
++	for ( size_t i = 0; i < len; i++ ) {
++		const WideChar ch = text[i];
++		if ( ch == 0x200C || ch == 0x200D ) {
++			continue;
++		}
++		const JoiningType type = Get_Joining_Type( ch );
++		// Harakat (fatha, shadda, tanween, ...) are dropped: the layout gives every code point its
++		// own cell and advance, so a mark would open a gap in the middle of the word instead of
++		// sitting on its letter. Arabic reads correctly without them.
++		if ( type == JOIN_TRANSPARENT ) {
++			continue;
++		}
++		if ( type != JOIN_RIGHT && type != JOIN_DUAL ) {
++			out.push_back( ch );
++			continue;
++		}
++
++		const JoiningType prev = neighbour_type( i, -1 );
++		const bool joins_prev = ( prev == JOIN_DUAL || prev == JOIN_CAUSING );
++
++		// Lam followed by an alef becomes a single ligature that only joins to the right.
++		if ( ch == 0x0644 && i + 1 < len ) {
++			WideChar ligature = 0;
++			switch ( text[i + 1] ) {
++				case 0x0622: ligature = 0xFEF5; break;
++				case 0x0623: ligature = 0xFEF7; break;
++				case 0x0625: ligature = 0xFEF9; break;
++				case 0x0627: ligature = 0xFEFB; break;
++				default: break;
++			}
++			if ( ligature != 0 ) {
++				out.push_back( joins_prev ? (WideChar)( ligature + 1 ) : ligature );
++				i++;
++				continue;
++			}
++		}
++
++		const JoiningType next = neighbour_type( i, +1 );
++		const bool joins_next = ( type == JOIN_DUAL )
++			&& ( next == JOIN_DUAL || next == JOIN_RIGHT || next == JOIN_CAUSING );
++
++		const ArabicForms *forms = Find_Arabic_Forms( ch );
++		WideChar shaped = forms->isolated;
++		if ( joins_prev && joins_next ) {
++			shaped = forms->medial;
++		} else if ( joins_prev ) {
++			shaped = forms->final_form;
++		} else if ( joins_next ) {
++			shaped = forms->initial;
++		}
++		out.push_back( shaped );
++	}
++	out.push_back( 0 );
++}
++
++// Puts one word (no spaces or newlines) into visual order, see the block comment above.
++static void Reorder_RTL_Word( WideChar *word, size_t len )
++{
++	struct Unit { size_t start; size_t count; int dir; };	// dir: 0 neutral, 1 LTR, 2 RTL
++	std::vector<Unit> units;
++	bool any_rtl = false;
++	for ( size_t i = 0; i < len; ) {
++		Unit unit = { i, 1, 0 };
++		if ( word[i] == u'&' && i + 1 < len ) {
++			unit.count = 2;
++		}
++		const WideChar key = word[i + unit.count - 1];
++		unit.dir = Is_Strong_RTL( key ) ? 2 : ( Is_Strong_LTR( key ) ? 1 : 0 );
++		any_rtl = any_rtl || unit.dir == 2;
++		units.push_back( unit );
++		i += unit.count;
++	}
++	if ( !any_rtl ) {
++		return;
++	}
++
++	// A neutral takes the LTR direction only between two LTR units, otherwise the paragraph's.
++	for ( size_t u = 0; u < units.size(); u++ ) {
++		if ( units[u].dir != 0 ) {
++			continue;
++		}
++		int before = 0;
++		int after = 0;
++		for ( size_t k = u; k-- > 0; ) {
++			if ( units[k].dir != 0 ) { before = units[k].dir; break; }
++		}
++		for ( size_t k = u + 1; k < units.size(); k++ ) {
++			if ( units[k].dir != 0 ) { after = units[k].dir; break; }
++		}
++		units[u].dir = ( before == 1 && after == 1 ) ? 3 : 2;	// 3: resolved LTR
++	}
++
++	std::vector<WideChar> visual;
++	visual.reserve( len );
++	size_t run_end = units.size();
++	while ( run_end > 0 ) {
++		const bool rtl = units[run_end - 1].dir == 2;
++		size_t run_start = run_end - 1;
++		while ( run_start > 0 && ( units[run_start - 1].dir == 2 ) == rtl ) {
++			run_start--;
++		}
++		if ( rtl ) {
++			for ( size_t u = run_end; u-- > run_start; ) {
++				for ( size_t c = 0; c < units[u].count; c++ ) {
++					visual.push_back( units[u].count == 1 ? Mirror_Bracket( word[units[u].start] ) : word[units[u].start + c] );
++				}
++			}
++		} else {
++			for ( size_t u = run_start; u < run_end; u++ ) {
++				for ( size_t c = 0; c < units[u].count; c++ ) {
++					visual.push_back( word[units[u].start + c] );
++				}
++			}
++		}
++		run_end = run_start;
++	}
++	for ( size_t i = 0; i < len; i++ ) {
++		word[i] = visual[i];
++	}
++}
++
++static bool Contains_RTL( const WideChar *text )
++{
++	for ( ; *text != 0; text++ ) {
++		if ( Is_Strong_RTL( *text ) ) {
++			return true;
++		}
++	}
++	return false;
++}
++
++// Returns the text to lay out: `text` itself when it has no RTL characters, otherwise the
++// shaped, word-reordered copy in `buffer`.
++static const WideChar *Prepare_RTL_Text( const WideChar *text, std::vector<WideChar> &buffer, bool *is_rtl )
++{
++	*is_rtl = ( text != nullptr ) && Contains_RTL( text );
++	if ( !*is_rtl ) {
++		return text;
++	}
++	Shape_Arabic( text, buffer );
++	WideChar *chars = buffer.data();
++	size_t word_start = 0;
++	for ( size_t i = 0; ; i++ ) {
++		const WideChar ch = chars[i];
++		if ( ch == 0 || ch == u' ' || ch == u'\n' ) {
++			if ( i > word_start ) {
++				Reorder_RTL_Word( chars + word_start, i - word_start );
++			}
++			word_start = i + 1;
++			if ( ch == 0 ) {
++				break;
++			}
++		}
++	}
++	return chars;
++}
++
++} // namespace
++
+ ////////////////////////////////////////////////////////////////////////////////////
+ //
+ //	Render2DSentenceClass
+@@ -84,7 +421,11 @@ Render2DSentenceClass::Render2DSentenceClass (void) :
+ 	Centered (false),
+ 	DrawExtents (0, 0, 0, 0),
+ 	ParseHotKey( false ),
+-	useHardWordWrap( false)
++	useHardWordWrap( false),
++	LastCharOverhang (0),
++	PendingLeadPad (0),
++	ChunkHasRTL (false),
++	ChunkHasLTR (false)
+ {
+ 	Shader = Render2DClass::Get_Default_Shader ();
+ 	return ;
+@@ -299,6 +640,10 @@ Render2DSentenceClass::Set_Location (const Vector2 &loc)
+ Vector2
+ Render2DSentenceClass::Get_Text_Extents (const WideChar *text)
+ {
++	std::vector<WideChar> rtl_buffer;
++	bool is_rtl = false;
++	text = Prepare_RTL_Text(text, rtl_buffer, &is_rtl);
++
+ 	Vector2 extent (0, Font->Get_Char_Height());
+ 
+ 	while (*text) {
+@@ -321,6 +666,10 @@ Render2DSentenceClass::Get_Text_Extents (const WideChar *text)
+ Vector2
+ Render2DSentenceClass::Get_Formatted_Text_Extents (const WideChar *text)
+ {
++	std::vector<WideChar> rtl_buffer;
++	bool is_rtl = false;
++	text = Prepare_RTL_Text(text, rtl_buffer, &is_rtl);
++
+ 	return Build_Sentence_Not_Centered(text, NULL, NULL, true);
+ }
+ 
+@@ -647,7 +996,7 @@ Render2DSentenceClass::Draw_Sentence (uint32 color)
+ //
+ ////////////////////////////////////////////////////////////////////////////////////
+ void
+-Render2DSentenceClass::Record_Sentence_Chunk (void)
++Render2DSentenceClass::Record_Sentence_Chunk (bool joins_next)
+ {
+ 	//
+ 	//	Do we have anything to store?
+@@ -655,7 +1004,7 @@ Render2DSentenceClass::Record_Sentence_Chunk (void)
+ 	int width = TextureOffset.I - TextureStartX;
+ 	if (width > 0) {
+ 		float char_height = Font->Get_Char_Height ();
+-		
++
+ 		//
+ 		//	Build a structure that contains enough information
+ 		// to hold this portion of the sentence
+@@ -663,20 +1012,36 @@ Render2DSentenceClass::Record_Sentence_Chunk (void)
+ 		SentenceDataStruct sentence_data;
+ 		sentence_data.Surface = CurSurface;
+ 		sentence_data.Surface->Add_Ref ();
++		// Blit_Char writes a cell of Get_Char_Width() columns, but we only
++		// stepped TextureOffset.I by the advance, so the last glyph of this
++		// chunk spills LastCharOverhang pixels past TextureOffset.I. Inside a
++		// chunk that overlap is harmless, but at the chunk edge it falls
++		// outside the rect below and the glyph loses its tail. Widen both
++		// rects by the overhang so the tail is drawn; Cursor.X still advances
++		// by `width` only, so the next chunk overlaps by exactly the overhang.
++		int overhang = LastCharOverhang;
++
+ 		sentence_data.ScreenRect.Left		= Cursor.X;
+-		sentence_data.ScreenRect.Right	= Cursor.X + width;
++		sentence_data.ScreenRect.Right	= Cursor.X + width + overhang;
+ 		sentence_data.ScreenRect.Top		= Cursor.Y;
+ 		sentence_data.ScreenRect.Bottom	= Cursor.Y + char_height;
+ 		sentence_data.UVRect.Left			= TextureStartX;
+ 		sentence_data.UVRect.Top			= TextureOffset.J;
+-		sentence_data.UVRect.Right			= TextureOffset.I;
+-		sentence_data.UVRect.Bottom		= TextureOffset.J + char_height;		
++		sentence_data.UVRect.Right			= TextureOffset.I + overhang;
++		sentence_data.UVRect.Bottom		= TextureOffset.J + char_height;
++		sentence_data.LeadPad			= min (PendingLeadPad, (float)width);
++		sentence_data.JoinsNext			= joins_next;
++		sentence_data.HasRTL				= ChunkHasRTL;
++		sentence_data.HasLTR				= ChunkHasLTR;
+ 
+ 		//
+ 		//	Add this information to our list
+ 		//
+ 		SentenceData.Add (sentence_data);
+ 	}
++	PendingLeadPad = 0;
++	ChunkHasRTL = false;
++	ChunkHasLTR = false;
+ 
+ 	return ;
+ }
+@@ -961,7 +1326,7 @@ void	Render2DSentenceClass::Build_Sentence_Centered (const WideChar *text, int *
+ 			//	Do we need to record this portion of the sentence to its own chunk?
+ 			//
+ 			if (exceeded_texture_width || encountered_break_char) {
+-				Record_Sentence_Chunk ();
++				Record_Sentence_Chunk (!encountered_break_char);
+ 				
+ 				//
+ 				//	Adjust the positions
+@@ -1017,6 +1382,9 @@ void	Render2DSentenceClass::Build_Sentence_Centered (const WideChar *text, int *
+ 				//
+ 				Font->Blit_Char (ch, LockedPtr, LockedStride, TextureOffset.I, TextureOffset.J);
+ 
++				// see Record_Sentence_Chunk (overhang) and the RTL chunk state
++				LastCharOverhang = max( 0, (int)(Font->Get_Char_Width (ch) - char_spacing) );
++				Note_Chunk_Char (ch);
+ 				TextureOffset.I += char_spacing;
+ 			}
+ 		}
+@@ -1057,6 +1425,9 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
+ 	if (!justCalcExtents)
+ 	{
+ 		Reset_Sentence_Data ();
++		PendingLeadPad = 0;
++		ChunkHasRTL = false;
++		ChunkHasLTR = false;
+ 	}
+ 	Cursor.Set (0, 0);
+ 
+@@ -1104,7 +1475,10 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
+ 		if (exceeded_texture_width || encountered_break_char|| wordBiggerThenLine) {
+ 			if (!justCalcExtents)
+ 			{
+-				Record_Sentence_Chunk ();
++				Record_Sentence_Chunk (exceeded_texture_width && !encountered_break_char && !wordBiggerThenLine);
++				// The space that ended this chunk is blitted at the start of the
++				// next one; Mirror_RTL_Lines cuts it off there.
++				PendingLeadPad = (ch == u' ') ? char_spacing : 0;
+ 			}
+ 
+ 			//
+@@ -1200,8 +1574,12 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
+ 			//
+ 			if (!justCalcExtents)
+ 			{
+-				Font->Blit_Char (ch, LockedPtr, LockedStride, TextureOffset.I, TextureOffset.J);			
++				Font->Blit_Char (ch, LockedPtr, LockedStride, TextureOffset.I, TextureOffset.J);
+ 			}
++			// see Record_Sentence_Chunk (overhang) and the RTL chunk state
++			LastCharOverhang = justCalcExtents ? 0
++				: max( 0, (int)(Font->Get_Char_Width (ch) - char_spacing) );
++			Note_Chunk_Char (ch);
+ 			TextureOffset.I += char_spacing;
+ 		} 
+ 	}
+@@ -1227,6 +1605,9 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
+ //
+ //	Build_Sentence
+ //
++
++
++
+ ////////////////////////////////////////////////////////////////////////////////////
+ void
+ Render2DSentenceClass::Build_Sentence (const WideChar *text, int *hkX, int *hkY)
+@@ -1235,6 +1616,12 @@ Render2DSentenceClass::Build_Sentence (const WideChar *text, int *hkX, int *hkY)
+ 		return ;
+ 	}
+ 
++	// RTL text is shaped and put in visual word order before layout, and its
++	// lines mirrored after it (see Mirror_RTL_Lines).
++	std::vector<WideChar> rtl_buffer;
++	bool is_rtl = false;
++	text = Prepare_RTL_Text(text, rtl_buffer, &is_rtl);
++
+ 	//	With no render device there is nowhere to rasterize a glyph: Allocate_New_Surface would ask
+ 	//	CreateImageSurface of a null device and take the process with it.  Measure the text and stop
+ 	//	there, which is what justCalcExtents already exists to do - callers size their windows off
+@@ -1254,6 +1641,9 @@ Render2DSentenceClass::Build_Sentence (const WideChar *text, int *hkX, int *hkY)
+ 	else
+ 		Build_Sentence_Not_Centered(text, hkX, hkY);
+ 
++	if (is_rtl)
++		Mirror_RTL_Lines(hkX, hkY);
++
+ 	return;
+ 
+ }
+diff --git a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.h b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.h
+index c515e09e..cee9e039 100644
+--- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.h
++++ b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.h
+@@ -203,6 +203,7 @@ public:
+ //	const Vector2 & Get_Cursor( void )						{ return Cursor; }
+ 
+ 	Vector2	Get_Text_Extents( const WideChar * text );
++	static bool	Is_RTL_Text (const WideChar *text);
+ 	Vector2	Get_Formatted_Text_Extents( const WideChar * text );
+ 
+ 	//
+@@ -228,6 +229,12 @@ private:
+ 		SurfaceClass *		Surface;
+ 		RectClass			ScreenRect;
+ 		RectClass			UVRect;
++		// RTL mirroring state per chunk (Arabic port, v1.29 — lifted from the
++		// GeneralsX sentence renderer; see Mirror_RTL_Lines in the .cpp).
++		float				LeadPad;
++		bool				JoinsNext;
++		bool				HasRTL;
++		bool				HasLTR;
+ 
+ 		bool operator== (const SentenceDataStruct &src)	{ return false; }
+ 		bool operator!= (const SentenceDataStruct &src)	{ return true; }
+@@ -254,7 +261,9 @@ private:
+ 	//
+ 	void	Reset_Sentence_Data (void);
+ 	void	Build_Textures (void);
+-	void	Record_Sentence_Chunk (void);
++	void	Record_Sentence_Chunk (bool joins_next = false);
++	void	Note_Chunk_Char (WideChar ch);
++	void	Mirror_RTL_Lines (int *hkX, int *hkY);
+ 	void	Allocate_New_Surface (const WideChar *text, bool justCalcExtents = false);
+ 	void	Release_Pending_Surfaces (void);
+ 	void	Release_Spare_Textures (void);
+@@ -272,6 +281,10 @@ private:
+ 	Vector2											Location;
+ 	Vector2											Cursor;
+ 	Vector2i										TextureOffset;
++	int											LastCharOverhang;
++	float											PendingLeadPad;
++	bool											ChunkHasRTL;
++	bool											ChunkHasLTR;
+ 	int													TextureStartX;
+ 	int													CurrTextureSize;
+ 	int													TextureSizeHint;
 diff --git a/GeneralsMD/Code/Main/PosixMain.cpp b/GeneralsMD/Code/Main/PosixMain.cpp
 index e220d026..b2cae7af 100644
 --- a/GeneralsMD/Code/Main/PosixMain.cpp
@@ -7769,3 +8612,15 @@ index e220d026..b2cae7af 100644
  #include <SDL3/SDL.h>		// the folder dialog and the message box, before the engine exists (P1 step 4)
  #include <atomic>
  #include <mutex>
+diff --git a/GeneralsMD/Code/Tools/stage-overlay.sh b/GeneralsMD/Code/Tools/stage-overlay.sh
+index 9b7b571c..6ed09f24 100755
+--- a/GeneralsMD/Code/Tools/stage-overlay.sh
++++ b/GeneralsMD/Code/Tools/stage-overlay.sh
+@@ -80,6 +80,7 @@ else
+ 	copy Ukrainian Data/Ukrainian
+ 	copy Russian Data/Russian
+ 	copy French Data/French
++	copy Arabic Data/Arabic
+ 	copy Install_Final.bmp Install_Final.bmp
+ 	copy Art/Textures Art/Textures
+ 	copy Window Window
