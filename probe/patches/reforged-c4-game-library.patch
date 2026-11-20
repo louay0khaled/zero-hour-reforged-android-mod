@@ -4110,6 +4110,70 @@ index 70256f7b..1d85be2c 100644
  	std::vector<uint8_t> presented;
  	const unsigned int width = Gpu->Width(), height = Gpu->Height();
  	if (!Gpu->Read_Back(Gpu->Front_Copy(), width, height, presented)) {
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp
+index 41e2ebff..2b4ae7d3 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9SunShadow.cpp
+@@ -1,6 +1,7 @@
+ // Render-only sun capture. The snapshot owns COM references across caster queue flushes.
+ #include "PosixDevice9.h"
+ #include "SdlGpuFrame.h"
++#include <SDL3/SDL_gpu.h>	// SDL_GetGPUDeviceDriver, for SunShadow::WeakGpu
+ #include "SdlConstants.h"
+ #include "SdlPipelineCache.h"
+ #include "SdlRenderMatrix.h"
+@@ -12,6 +13,7 @@
+ #include <cmath>
+ #include <cstring>
+ #include <cstdio>
++#include <cstdlib>
+ 
+ // One list for declaration, capture and restoration, including shader register banks.
+ #define SUN_VALUES(X) \
+@@ -345,6 +347,19 @@ void PosixDevice9::Build_Sun_Constants(SdlEnginePixelConstants &constants) const
+     constants.VolumeParameters[1] = Sun->SmokeFilled ? SunSmoke::SelfGain : 0;
+     constants.VolumeParameters[2] = Sun_Camera_Space() ? 1 : 0;
+     constants.VolumeParameters[3] = SunSmoke::SelfCurve;
++    // Receiver quality (S1, 2026-11-20): Sky's fields are never filled on this path
++    // (SdlConstants.h), so Sky.w carries the coarse-receiver flag the shared shader
++    // branches on (ffshader.h SHADOW_APPLY) -- four taps instead of fifty on a weak
++    // GPU. ZH_SHADOW_COARSE=1/0 forces the choice either way, for a device A/B.
++    {
++        static int coarse = -1;
++        if (coarse < 0) {
++            const char *env = std::getenv("ZH_SHADOW_COARSE");
++            coarse = env ? (env[0] == '1' ? 1 : 0) : (SunShadow::WeakGpu(const_cast<PosixDevice9 *>(this)) ? 1 : 0);
++            std::fprintf(stderr, "[shadow] coarse receivers %s\n", coarse ? "ON" : "off");
++        }
++        constants.Sky[3] = coarse ? 1.0f : 0.0f;
++    }
+     std::memcpy(constants.WorldFromClip,Sun->WorldFromClip,sizeof(Sun->WorldFromClip));
+     // Headlight/Blast counts stay zero. Linux still supplies its existing vertex lights.
+ }
+@@ -352,6 +367,23 @@ SDL_GPUTexture *PosixDevice9::Sun_Texture() const { return Sun ? Sun->Target.Dep
+ SDL_GPUSampler *PosixDevice9::Sun_Sampler() const { return Sun ? Sun->Sampler : nullptr; }
+ 
+ namespace SunShadow {
++// The weak-GPU test behind both shadow savings (S1 coarse receivers, S3 sun-map cap):
++// the SDL driver string names the part ("Mali-G52 MC2" on the reference phone), and a
++// tile-based Mali is where the fifty-tap receiver and the 2048 map hurt most. Asked
++// once, answered for the process; the driver string is logged either way.
++bool WeakGpu(IDirect3DDevice9 *d) {
++    static int weak = -1;
++    if (weak < 0) {
++        weak = 0;
++        PosixDevice9 *dev = d ? static_cast<PosixDevice9*>(d) : nullptr;
++        if (dev && dev->Get_Gpu() && dev->Get_Gpu()->Device()) {
++            const char *driver = SDL_GetGPUDeviceDriver(dev->Get_Gpu()->Device());
++            if (driver && std::strstr(driver, "Mali")) weak = 1;
++            std::fprintf(stderr, "[shadow] gpu driver '%s' weak=%d\n", driver ? driver : "?", weak);
++        }
++    }
++    return weak == 1;
++}
+ bool FillSmoke(IDirect3DDevice9 *d,const float *c,unsigned n,float s) { return d && static_cast<PosixDevice9*>(d)->Fill_Sun_Smoke(c,n,s); }
+ bool CasterEffects(IDirect3DDevice9 *d) { return d && static_cast<PosixDevice9*>(d)->Get_Gpu(); }
+ void SetCasterEffect(IDirect3DDevice9 *d,unsigned e,const float p[4]) { if(d) static_cast<PosixDevice9*>(d)->Set_Sun_Caster_Effect(e,p); }
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
 index 9a804e2f..349a51cf 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
@@ -7088,10 +7152,19 @@ index 00000000..9805d4a3
 +
 +}  // namespace TouchInput
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp
-index 1a7bd439..63285547 100644
+index 1a7bd439..a2876472 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp
-@@ -4334,7 +4334,10 @@ void W3DVolumetricShadowManager::renderShadowMap( CameraClass &sceneCamera )
+@@ -76,6 +76,8 @@
+ #include "GameClient/View.h"
+ #include "Platform/RenderTypes.h"
+ #include "Platform/SunShadow.h"
++
++#include <cstdlib>	// getenv, for the ZH_SHADOW_TEXELS override below
+ #include "Lib/Clock.h"		// Clock_Ticks: QueryPerformanceCounter on Windows, a monotonic clock elsewhere
+ #include "GameClient/ParticleSys.h"
+ #include "W3DDevice/GameClient/W3DParticleSys.h"
+@@ -4334,7 +4336,10 @@ void W3DVolumetricShadowManager::renderShadowMap( CameraClass &sceneCamera )
  	// it may keep an otherwise empty depth capture alive without enabling geometry.
  #if defined(__linux__)
  	const Bool geometryShadows = TheGlobalData->m_useShadowVolumes || TheGlobalData->m_useShadowDecals;
@@ -7103,6 +7176,30 @@ index 1a7bd439..63285547 100644
  #else
  	const Bool geometryShadows = TRUE;
  	const Bool captureShadows = m_shadowList != NULL;
+@@ -4350,7 +4355,22 @@ void W3DVolumetricShadowManager::renderShadowMap( CameraClass &sceneCamera )
+ 	/* The ShadowQuality option halves or doubles the usual map: 1024, 2048 or 4096 a side.  The filter
+ 		 below is held in ground units against the 2048 map, so a level changes how sharp an edge is
+ 		 and not how wide its penumbra is. */
+-	const UnsignedInt chosenTexels = (SHADOW_MAP_TEXELS / 2) << TheGlobalData->m_shadowQuality;
++	UnsignedInt chosenTexels = (SHADOW_MAP_TEXELS / 2) << TheGlobalData->m_shadowQuality;
++	/* Weak-GPU cap (S3, 2026-11-20): on a Mali-class part the capture pass over a 2048
++		map is a real share of the frame under load, and 1024 over the same box still
++		reads as the same shadow, a little softer at the edge. ZH_SHADOW_TEXELS forces
++		a size outright (512/1024/2048/4096), for a device A/B. */
++	{
++		static int forcedTexels = -1;
++		if (forcedTexels < 0) {
++			const char *env = getenv("ZH_SHADOW_TEXELS");
++			forcedTexels = env ? atoi(env) : 0;
++		}
++		if (forcedTexels == 512 || forcedTexels == 1024 || forcedTexels == 2048 || forcedTexels == 4096)
++			chosenTexels = (UnsignedInt)forcedTexels;
++		else if (SunShadow::WeakGpu(DX8Wrapper::_Get_D3D_Device()) && chosenTexels > 1024)
++			chosenTexels = 1024;
++	}
+ 	UnsignedInt texels = chosenTexels;
+ 	Bool begun = FALSE;
+ 	if (TheGlobalData->m_shadowMap && captureShadows && TheTacticalView != NULL)
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
 index 827031df..dcda52b3 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
@@ -7411,6 +7508,116 @@ index 00000000..e1411b8b
 +	for( size_t i = 0; i < ARRAY_SIZE( kIcons ); ++i )
 +		registerIcon( kIcons[ i ] );
 +}
+diff --git a/GeneralsMD/Code/Libraries/Include/Platform/SunShadow.h b/GeneralsMD/Code/Libraries/Include/Platform/SunShadow.h
+index 1860fc2c..9df3caaa 100644
+--- a/GeneralsMD/Code/Libraries/Include/Platform/SunShadow.h
++++ b/GeneralsMD/Code/Libraries/Include/Platform/SunShadow.h
+@@ -7,6 +7,9 @@ bool Begin(IDirect3DDevice9 *device, unsigned size);
+ // End restores the scene and reports whether this capture can be used.
+ bool End(IDirect3DDevice9 *device);
+ void Clear(IDirect3DDevice9 *device);
++// True when the GPU is a weak mobile part (Mali-class driver): callers shrink shadow work
++// (a smaller sun map, coarser receiver taps). Cached after the first answer.
++bool WeakGpu(IDirect3DDevice9 *device);
+ // Five floats per caster: world xyz, radius and optical depth. False retains particle blob shadows.
+ bool FillSmoke(IDirect3DDevice9 *device, const float *casters, unsigned count, float strength);
+ bool CasterEffects(IDirect3DDevice9 *device);
+diff --git a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ffshader.h b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ffshader.h
+index 3f8068cb..6bc12708 100644
+--- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ffshader.h
++++ b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ffshader.h
+@@ -262,8 +262,41 @@ const unsigned NORMAL_MAPPED_LIGHTS = 4;
+ 	"    float strength = ShadowParameters.z * (1.0 - ShadowSoftness.w * openness);\n" \
+ 	"    return 1.0 - strength * (blocked / 25.0);\n" \
+ 	"}\n" \
++	"\n" \
++	"bool sun_point(float4 position, out float3 sun)\n" \
++	"{\n" \
++	"    float2 ndc = float2((position.x - ShadowViewport.z) * ShadowViewport.x * 2.0 - 1.0,\n" \
++	"                        1.0 - (position.y - ShadowViewport.w) * ShadowViewport.y * 2.0);\n" \
++	"    float4 at = mul(float4(ndc, position.z, 1.0), ShadowFromClip);\n" \
++	"    sun = float3(0.0, 0.0, 0.0);\n" \
++	"    if (at.w <= 0.0) return false;\n" \
++	"    at /= at.w;\n" \
++	"    sun = float3(0.5 * at.x + 0.5, 0.5 - 0.5 * at.y, at.z);\n" \
++	"    return sun.x >= 0.0 && sun.x <= 1.0 && sun.y >= 0.0 && sun.y <= 1.0;\n" \
++	"}\n" \
++	"\n" \
++	"float sun_reaching_coarse(float4 position)\n" \
++	"{\n" \
++	"    float3 sun;\n" \
++	"    if (ShadowParameters.z <= 0.0 || !sun_point(position, sun)) return 1.0;\n" \
++	"    if (sun.z < 0.0 || sun.z > 1.0) return 1.0;\n" \
++	"    float reach = ShadowParameters.x * ShadowParameters.w * 0.5;\n" \
++	"    float bias = ShadowParameters.y * 2.0;\n" \
++	"    float blocked = 0.0;\n" \
++	"    blocked += (ShadowMap.SampleLevel(ShadowSampler, sun.xy + float2(-reach, -reach), 0).r + bias < sun.z) ? 1.0 : 0.0;\n" \
++	"    blocked += (ShadowMap.SampleLevel(ShadowSampler, sun.xy + float2( reach, -reach), 0).r + bias < sun.z) ? 1.0 : 0.0;\n" \
++	"    blocked += (ShadowMap.SampleLevel(ShadowSampler, sun.xy + float2(-reach,  reach), 0).r + bias < sun.z) ? 1.0 : 0.0;\n" \
++	"    blocked += (ShadowMap.SampleLevel(ShadowSampler, sun.xy + float2( reach,  reach), 0).r + bias < sun.z) ? 1.0 : 0.0;\n" \
++	"    return 1.0 - ShadowParameters.z * (1.0 - ShadowSoftness.w) * (blocked * 0.25);\n" \
++	"}\n" \
++	"\n" \
+ 	"\n"
+ 
++// The coarse receiver and the projection it shares with the smoke: four taps at the filter's
++// widest reach instead of the full fifty.  Defined here, beside sun_reaching, so a receiver
++// program can take it too; SHADOW_APPLY chooses by Sky.w, which the SDL backend fills with
++// its coarse-receiver flag (the field is otherwise unused on that path -- SdlConstants.h).
++
+ // Putting the shadow on the pixel, which is not a plain multiply.  A pixel that is already dark is
+ // dark for a reason - it is under the shroud, or it is the fogged snapshot of a building somebody
+ // cannot see - and multiplying that again takes it to black: from a camera far enough out, a
+@@ -277,7 +310,7 @@ const unsigned NORMAL_MAPPED_LIGHTS = 4;
+ #define SHADOW_LIT \
+ 	"    float shadow_lit = saturate(dot(current.rgb, float3(0.3333, 0.3333, 0.3333)) * 6.0);\n"
+ #define SHADOW_APPLY SHADOW_LIT \
+-	"    current.rgb *= lerp(1.0, sun_reaching(input.Position), shadow_lit);\n"
++	"    current.rgb *= lerp(1.0, Sky.w > 0.5 ? sun_reaching_coarse(input.Position) : sun_reaching(input.Position), shadow_lit);\n"
+ 
+ // Shared Windows and SDL smoke sampling, following SHADOW_SAMPLING.
+ //
+@@ -301,18 +334,6 @@ const unsigned NORMAL_MAPPED_LIGHTS = 4;
+ 	"Texture2D SmokeMap : register(t6);\n" \
+ 	"SamplerState SmokeSampler : register(s6);\n" \
+ 	"\n" \
+-	"bool sun_point(float4 position, out float3 sun)\n" \
+-	"{\n" \
+-	"    float2 ndc = float2((position.x - ShadowViewport.z) * ShadowViewport.x * 2.0 - 1.0,\n" \
+-	"                        1.0 - (position.y - ShadowViewport.w) * ShadowViewport.y * 2.0);\n" \
+-	"    float4 at = mul(float4(ndc, position.z, 1.0), ShadowFromClip);\n" \
+-	"    sun = float3(0.0, 0.0, 0.0);\n" \
+-	"    if (at.w <= 0.0) return false;\n" \
+-	"    at /= at.w;\n" \
+-	"    sun = float3(0.5 * at.x + 0.5, 0.5 - 0.5 * at.y, at.z);\n" \
+-	"    return sun.x >= 0.0 && sun.x <= 1.0 && sun.y >= 0.0 && sun.y <= 1.0;\n" \
+-	"}\n" \
+-	"\n" \
+ 	"float smoke_reaching(float4 position)\n" \
+ 	"{\n" \
+ 	"    float3 sun;\n" \
+@@ -344,21 +365,6 @@ const unsigned NORMAL_MAPPED_LIGHTS = 4;
+ 	"    return 1.0 - gain * (1.0 - exp(-sums.x * ahead));\n" \
+ 	"}\n" \
+ 	"\n" \
+-	"float sun_reaching_coarse(float4 position)\n" \
+-	"{\n" \
+-	"    float3 sun;\n" \
+-	"    if (ShadowParameters.z <= 0.0 || !sun_point(position, sun)) return 1.0;\n" \
+-	"    if (sun.z < 0.0 || sun.z > 1.0) return 1.0;\n" \
+-	"    float reach = ShadowParameters.x * ShadowParameters.w * 0.5;\n" \
+-	"    float bias = ShadowParameters.y * 2.0;\n" \
+-	"    float blocked = 0.0;\n" \
+-	"    blocked += (ShadowMap.SampleLevel(ShadowSampler, sun.xy + float2(-reach, -reach), 0).r + bias < sun.z) ? 1.0 : 0.0;\n" \
+-	"    blocked += (ShadowMap.SampleLevel(ShadowSampler, sun.xy + float2( reach, -reach), 0).r + bias < sun.z) ? 1.0 : 0.0;\n" \
+-	"    blocked += (ShadowMap.SampleLevel(ShadowSampler, sun.xy + float2(-reach,  reach), 0).r + bias < sun.z) ? 1.0 : 0.0;\n" \
+-	"    blocked += (ShadowMap.SampleLevel(ShadowSampler, sun.xy + float2( reach,  reach), 0).r + bias < sun.z) ? 1.0 : 0.0;\n" \
+-	"    return 1.0 - ShadowParameters.z * (1.0 - ShadowSoftness.w) * (blocked * 0.25);\n" \
+-	"}\n" \
+-	"\n" \
+ 	"float light_reaching(float4 position)\n" \
+ 	"{\n" \
+ 	"    float sun = 1.0;\n" \
 diff --git a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp
 index a37b9014..39546d7c 100644
 --- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/glyphrasteriser.cpp
