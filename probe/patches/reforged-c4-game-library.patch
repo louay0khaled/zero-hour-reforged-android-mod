@@ -8008,7 +8008,7 @@ index a37b9014..39546d7c 100644
  	const char *directory = "/System/Library/Fonts/Supplemental/";
  	if (bold && s.macBold != NULL && fileExists( (std::string( directory ) + s.macBold).c_str() ))
 diff --git a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.cpp b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.cpp
-index 4768a6d8..db3d5c5c 100644
+index 4768a6d8..a0bcb73c 100644
 --- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.cpp
 +++ b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/render2dsentence.cpp
 @@ -37,6 +37,7 @@
@@ -8415,7 +8415,7 @@ index 4768a6d8..db3d5c5c 100644
  		//
  		//	Build a structure that contains enough information
  		// to hold this portion of the sentence
-@@ -663,20 +1012,36 @@ Render2DSentenceClass::Record_Sentence_Chunk (void)
+@@ -663,25 +1012,186 @@ Render2DSentenceClass::Record_Sentence_Chunk (void)
  		SentenceDataStruct sentence_data;
  		sentence_data.Surface = CurSurface;
  		sentence_data.Surface->Add_Ref ();
@@ -8455,7 +8455,157 @@ index 4768a6d8..db3d5c5c 100644
  
  	return ;
  }
-@@ -961,7 +1326,7 @@ void	Render2DSentenceClass::Build_Sentence_Centered (const WideChar *text, int *
+ 
+ 
++////////////////////////////////////////////////////////////////////////////////////
++//
++//	Note_Chunk_Char
++//
++// v1.29.1 repair (2026-11-20): the v1.29 port wired the declarations and the
++// call sites but never carried these three definitions over from the donor;
++// the CI link of librfx_game.so failed on exactly these symbols (run #50).
++// Bodies are the donor's (GeneralsX sentence renderer), WCHAR -> WideChar.
++//
++////////////////////////////////////////////////////////////////////////////////////
++void
++Render2DSentenceClass::Note_Chunk_Char (WideChar ch)
++{
++	ChunkHasRTL = ChunkHasRTL || Is_Strong_RTL (ch);
++	ChunkHasLTR = ChunkHasLTR || Is_Strong_LTR (ch);
++}
++
++
++////////////////////////////////////////////////////////////////////////////////////
++//
++//	Is_RTL_Text
++//
++// GeneralsX @feature Android port 27/09/2026 Same test Build_Sentence uses to decide whether a
++// sentence is shaped and mirrored, so a caller's alignment always agrees with the layout.
++////////////////////////////////////////////////////////////////////////////////////
++bool
++Render2DSentenceClass::Is_RTL_Text (const WideChar *text)
++{
++	return text != NULL && Contains_RTL (text);
++}
++
++////////////////////////////////////////////////////////////////////////////////////
++//
++//	Mirror_RTL_Lines
++//
++// GeneralsX @feature Android port 27/09/2026 Reverses the word order of every laid-out line of
++// an RTL sentence (see the block comment at the top of the file). Each line is mirrored inside
++// [0, widest line], which keeps centred lines centred, right-aligns wrapped paragraphs, and leaves
++// the sentence's extents unchanged. Chunks of one word split at the texture edge move together;
++// consecutive LTR words move as one block so they keep their order. A blitted leading space is
++// cut off its chunk first, otherwise it would end up between the wrong two words.
++////////////////////////////////////////////////////////////////////////////////////
++void
++Render2DSentenceClass::Mirror_RTL_Lines (int *hkX, int *hkY)
++{
++	const int count = SentenceData.Count ();
++	if (count == 0) {
++		return;
++	}
++
++	std::vector<RectClass> original (count);
++	float span = 0;
++	for (int index = 0; index < count; index ++) {
++		SentenceDataStruct &data = SentenceData[index];
++		original[index] = data.ScreenRect;
++		if (data.LeadPad > 0) {
++			data.ScreenRect.Left	+= data.LeadPad;
++			data.UVRect.Left		+= data.LeadPad;
++		}
++		span = max (span, data.ScreenRect.Right);
++	}
++
++	std::vector<float> delta (count, 0.0F);
++	int line_start = 0;
++	while (line_start < count) {
++		int line_end = line_start + 1;
++		while (line_end < count && SentenceData[line_end].ScreenRect.Top == SentenceData[line_start].ScreenRect.Top) {
++			line_end ++;
++		}
++
++		//	Words: chunks joined across a texture edge. dir: 1 LTR, 2 RTL, 0 neutral.
++		struct Word { int first; int last; int dir; };
++		std::vector<Word> words;
++		for (int index = line_start; index < line_end; index ++) {
++			Word word = { index, index, 0 };
++			while (SentenceData[word.last].JoinsNext && word.last + 1 < line_end) {
++				word.last ++;
++			}
++			bool has_rtl = false;
++			bool has_ltr = false;
++			for (int k = word.first; k <= word.last; k ++) {
++				has_rtl = has_rtl || SentenceData[k].HasRTL;
++				has_ltr = has_ltr || SentenceData[k].HasLTR;
++			}
++			word.dir = has_rtl ? 2 : (has_ltr ? 1 : 0);
++			words.push_back (word);
++			index = word.last;
++		}
++		for (size_t w = 0; w < words.size (); w ++) {
++			if (words[w].dir != 0) {
++				continue;
++			}
++			bool ltr_before = false;
++			bool ltr_after = false;
++			for (size_t k = w; k-- > 0; ) {
++				if (words[k].dir != 0) { ltr_before = (words[k].dir == 1); break; }
++			}
++			for (size_t k = w + 1; k < words.size (); k ++) {
++				if (words[k].dir != 0) { ltr_after = (words[k].dir == 1); break; }
++			}
++			words[w].dir = (ltr_before && ltr_after) ? 3 : 2;
++		}
++
++		//	Blocks: an RTL word on its own, or a run of LTR words.
++		for (size_t w = 0; w < words.size (); ) {
++			size_t w_end = w + 1;
++			if (words[w].dir != 2) {
++				while (w_end < words.size () && words[w_end].dir != 2) {
++					w_end ++;
++				}
++			}
++			const int first = words[w].first;
++			const int last = words[w_end - 1].last;
++			float left = SentenceData[first].ScreenRect.Left;
++			float right = SentenceData[first].ScreenRect.Right;
++			for (int k = first; k <= last; k ++) {
++				left = min (left, SentenceData[k].ScreenRect.Left);
++				right = max (right, SentenceData[k].ScreenRect.Right);
++			}
++			const float shift = span - right - left;
++			for (int k = first; k <= last; k ++) {
++				delta[k] = shift;
++			}
++			w = w_end;
++		}
++		line_start = line_end;
++	}
++
++	for (int index = 0; index < count; index ++) {
++		SentenceData[index].ScreenRect.Left		+= delta[index];
++		SentenceData[index].ScreenRect.Right	+= delta[index];
++	}
++
++	//	The hotkey letter is drawn separately at (hkX, hkY); move it with the chunk it was in.
++	if (hkX != NULL && hkY != NULL) {
++		for (int index = 0; index < count; index ++) {
++			if (original[index].Top == (float)*hkY && (float)*hkX >= original[index].Left && (float)*hkX < original[index].Right) {
++				*hkX += (int)delta[index];
++				break;
++			}
++		}
++	}
++}
++
++
+ ////////////////////////////////////////////////////////////////////////////////////
+ //
+ //	Allocate_New_Surface
+@@ -961,7 +1471,7 @@ void	Render2DSentenceClass::Build_Sentence_Centered (const WideChar *text, int *
  			//	Do we need to record this portion of the sentence to its own chunk?
  			//
  			if (exceeded_texture_width || encountered_break_char) {
@@ -8464,7 +8614,7 @@ index 4768a6d8..db3d5c5c 100644
  				
  				//
  				//	Adjust the positions
-@@ -1017,6 +1382,9 @@ void	Render2DSentenceClass::Build_Sentence_Centered (const WideChar *text, int *
+@@ -1017,6 +1527,9 @@ void	Render2DSentenceClass::Build_Sentence_Centered (const WideChar *text, int *
  				//
  				Font->Blit_Char (ch, LockedPtr, LockedStride, TextureOffset.I, TextureOffset.J);
  
@@ -8474,7 +8624,7 @@ index 4768a6d8..db3d5c5c 100644
  				TextureOffset.I += char_spacing;
  			}
  		}
-@@ -1057,6 +1425,9 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
+@@ -1057,6 +1570,9 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
  	if (!justCalcExtents)
  	{
  		Reset_Sentence_Data ();
@@ -8484,7 +8634,7 @@ index 4768a6d8..db3d5c5c 100644
  	}
  	Cursor.Set (0, 0);
  
-@@ -1104,7 +1475,10 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
+@@ -1104,7 +1620,10 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
  		if (exceeded_texture_width || encountered_break_char|| wordBiggerThenLine) {
  			if (!justCalcExtents)
  			{
@@ -8496,7 +8646,7 @@ index 4768a6d8..db3d5c5c 100644
  			}
  
  			//
-@@ -1200,8 +1574,12 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
+@@ -1200,8 +1719,12 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
  			//
  			if (!justCalcExtents)
  			{
@@ -8510,7 +8660,7 @@ index 4768a6d8..db3d5c5c 100644
  			TextureOffset.I += char_spacing;
  		} 
  	}
-@@ -1227,6 +1605,9 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
+@@ -1227,6 +1750,9 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WideChar *text
  //
  //	Build_Sentence
  //
@@ -8520,7 +8670,7 @@ index 4768a6d8..db3d5c5c 100644
  ////////////////////////////////////////////////////////////////////////////////////
  void
  Render2DSentenceClass::Build_Sentence (const WideChar *text, int *hkX, int *hkY)
-@@ -1235,6 +1616,12 @@ Render2DSentenceClass::Build_Sentence (const WideChar *text, int *hkX, int *hkY)
+@@ -1235,6 +1761,12 @@ Render2DSentenceClass::Build_Sentence (const WideChar *text, int *hkX, int *hkY)
  		return ;
  	}
  
@@ -8533,7 +8683,7 @@ index 4768a6d8..db3d5c5c 100644
  	//	With no render device there is nowhere to rasterize a glyph: Allocate_New_Surface would ask
  	//	CreateImageSurface of a null device and take the process with it.  Measure the text and stop
  	//	there, which is what justCalcExtents already exists to do - callers size their windows off
-@@ -1254,6 +1641,9 @@ Render2DSentenceClass::Build_Sentence (const WideChar *text, int *hkX, int *hkY)
+@@ -1254,6 +1786,9 @@ Render2DSentenceClass::Build_Sentence (const WideChar *text, int *hkX, int *hkY)
  	else
  		Build_Sentence_Not_Centered(text, hkX, hkY);
  
