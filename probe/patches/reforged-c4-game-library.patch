@@ -1991,11 +1991,43 @@ index 00000000..8b0e0880
 +#pragma once
 +
 +void W3DRegisterTouchButtonImages();
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9.cpp
+index 70256f7b..1d85be2c 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/PosixDevice9.cpp
+@@ -380,6 +380,11 @@ RenderResult PosixDevice9::Gpu_Download_Front(IDirect3DSurface9 *dest)
+ 	if (Gpu == NULL || dest == NULL) {
+ 		return D3DERR_INVALIDCALL;
+ 	}
++	// (v1.26 P2) FrontCopy is refreshed on demand now: if the last Present did not
++	// copy, capture the current back buffer first (at a frame boundary it still
++	// holds the last presented picture).
++	if (!Gpu->Front_Copy_Fresh())
++		Gpu->Capture_Front_Now();
+ 	std::vector<uint8_t> presented;
+ 	const unsigned int width = Gpu->Width(), height = Gpu->Height();
+ 	if (!Gpu->Read_Back(Gpu->Front_Copy(), width, height, presented)) {
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
-index 9a804e2f..0a8f902f 100644
+index 9a804e2f..349a51cf 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.cpp
-@@ -280,8 +280,38 @@ SdlGpuFrame::~SdlGpuFrame()
+@@ -219,6 +219,15 @@ SdlGpuFrame * SdlGpuFrame::Create(RenderWindow window, unsigned int width, unsig
+ 		delete frame;
+ 		return NULL;
+ 	}
++	// (v1.26 P1) Three frames in flight instead of SDL's default two: the swapchain
++	// acquire fence-waits on the submit from allowedFramesInFlight presents ago, so a
++	// third image absorbs one slow frame instead of stalling a later Present in full.
++	if (frame->Window != NULL) {
++		if (SDL_SetGPUAllowedFramesInFlight(frame->GpuDevice, 3))
++			fprintf(stderr, "SdlGpuFrame: allowed frames in flight = 3\n");
++		else
++			fprintf(stderr, "SdlGpuFrame: SDL_SetGPUAllowedFramesInFlight(3) refused: %s\n", SDL_GetError());
++	}
+ 	const SdlGpuDepthFormat depth = Sdl_Select_Depth_Format(
+ 		[frame](SDL_GPUTextureFormat format, SDL_GPUTextureType type, SDL_GPUTextureUsageFlags usage) {
+ 			return SDL_GPUTextureSupportsFormat(frame->GpuDevice, format, type, usage);
+@@ -280,8 +289,51 @@ SdlGpuFrame::~SdlGpuFrame()
  	SDL_DestroyGPUDevice(GpuDevice);
  }
  
@@ -2022,6 +2054,19 @@ index 9a804e2f..0a8f902f 100644
 +	return scale;
 +}
 +
++// (v1.26 P2/E4) ZH_FRONT_COPY=always restores the pre-1.26 unconditional
++// BackBuffer->FrontCopy blit at every Present, so the on-demand copy's saving
++// is measured, not assumed. Default: on demand only.
++static bool Sdl_Front_Copy_Always()
++{
++	static int mode = -1;
++	if (mode < 0) {
++		const char *env = getenv("ZH_FRONT_COPY");
++		mode = (env != NULL && strcmp(env, "always") == 0) ? 1 : 0;
++	}
++	return mode == 1;
++}
++
  bool SdlGpuFrame::Create_Targets(unsigned int width, unsigned int height)
  {
 +	const float renderScale = Sdl_Render_Scale();
@@ -2034,6 +2079,104 @@ index 9a804e2f..0a8f902f 100644
  	SDL_GPUTextureCreateInfo info;
  	SDL_zero(info);
  	info.type = SDL_GPU_TEXTURETYPE_2D;
+@@ -307,6 +359,7 @@ bool SdlGpuFrame::Create_Targets(unsigned int width, unsigned int height)
+ 	Release_Targets();
+ 	BackBuffer = back;
+ 	FrontCopy = front;
++	FrontCopyFresh = false;
+ 	DepthStencil = depth;
+ 	BackWidth = width;
+ 	BackHeight = height;
+@@ -329,6 +382,7 @@ void SdlGpuFrame::Release_Targets()
+ 	BackBuffer = NULL;
+ 	DepthStencil = NULL;
+ 	FrontCopy = NULL;
++	FrontCopyFresh = false;
+ 	DisplayTexture = NULL;		// made again at the new size by the next offscreen Present
+ }
+ 
+@@ -1103,14 +1157,43 @@ bool SdlGpuFrame::Copy_To_Front(SDL_GPUCommandBuffer * commands)
+ 	return true;
+ }
+ 
++// (v1.26 P2) Capture-on-demand: the copy Present used to make every frame, made
++// only when a reader actually asks for the front buffer.
++bool SdlGpuFrame::Capture_Front_Now()
++{
++	if (GpuDevice == NULL || BackBuffer == NULL || FrontCopy == NULL) {
++		return false;
++	}
++	SDL_GPUCommandBuffer * commands = SDL_AcquireGPUCommandBuffer(GpuDevice);
++	if (commands == NULL) {
++		return false;
++	}
++	const bool ok = Copy_To_Front(commands);
++	if (!SDL_SubmitGPUCommandBuffer(commands)) {
++		return false;
++	}
++	if (ok) {
++		FrontCopyFresh = true;
++	}
++	return ok;
++}
++
+ bool SdlGpuFrame::Present(const uint16_t (*ramp)[256])
+ {
+ 	Refresh_Water_Snapshots();
++	FrontCopyFresh = false;
+ 	SDL_GPUCommandBuffer * commands = SDL_AcquireGPUCommandBuffer(GpuDevice);
+ 	if (commands == NULL) {
+ 		return false;
+ 	}
+-	bool ok = Record_Batch(commands) && Copy_To_Front(commands);
++	bool ok = Record_Batch(commands);
++	if (ok && (FrontCopyWanted || Sdl_Front_Copy_Always())) {
++		ok = Copy_To_Front(commands);
++		if (ok) {
++			FrontCopyFresh = true;
++			FrontCopyWanted = false;
++		}
++	}
+ 	if (Window != NULL) {
+ 		SDL_GPUTexture * swapchain = NULL;
+ 		Uint32 width = 0;
+@@ -1176,6 +1259,9 @@ bool SdlGpuFrame::Present_To(SDL_GPUTexture * target, unsigned int width, unsign
+ 		return false;
+ 	}
+ 	bool ok = Record_Batch(commands) && Copy_To_Front(commands);
++	if (ok) {
++		FrontCopyFresh = true;
++	}
+ 	ok = Present_Into(commands, target, width, height, BACK_BUFFER_FORMAT, ramp) && ok;
+ 	const bool submitted = Submit(commands);
+ 	End_Batch();
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.h b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.h
+index 884abe57..4f0451c3 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.h
++++ b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlGpuFrame.h
+@@ -234,6 +234,13 @@ public:
+ 	/// What the last Present showed: the back buffer is copied here at each Present, so the front buffer
+ 	/// (GetFrontBufferData) is the presented picture whenever it is asked for (A3d).
+ 	SDL_GPUTexture * Front_Copy() const { return FrontCopy; }
++	/// (v1.26 P2) Ask the next windowed Present to refresh FrontCopy; the copy is no
++	/// longer unconditional. ZH_FRONT_COPY=always restores the old behaviour (E4 A/B).
++	void Request_Front_Copy() { FrontCopyWanted = true; }
++	/// True when FrontCopy holds the picture of the most recent Present.
++	bool Front_Copy_Fresh() const { return FrontCopyFresh; }
++	/// Copy the back buffer into FrontCopy right now, in its own submission.
++	bool Capture_Front_Now();
+ 	/// Opaque scene before the first water draw, cached per actual colour/depth target and frame.
+ 	SDL_GPUTexture * Water_Background(const SdlTarget &source);
+ 	/// Device depth (0..1), resolved into an independent R32_FLOAT texture between render passes, in the
+@@ -318,6 +325,8 @@ private:
+ 	SDL_GPUTexture * BackBuffer;
+ 	SDL_GPUTexture * DepthStencil;
+ 	SDL_GPUTexture * FrontCopy;			///< the last presented picture
++	bool FrontCopyWanted = false;		///< a capture asked the next Present to refresh FrontCopy
++	bool FrontCopyFresh = false;		///< FrontCopy holds the most recent Present's picture
+ 	SDL_GPUTexture *SunShadowTexture = NULL;
+ 	unsigned SunShadowSize = 0;
+ 	struct SmokeResources;
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlProgramCache.cpp b/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlProgramCache.cpp
 index e414c150..636b652c 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/PosixDevice/Render/SdlProgramCache.cpp
@@ -4841,6 +4984,22 @@ index 00000000..9805d4a3
 +	}
 +
 +}  // namespace TouchInput
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp
+index 1a7bd439..63285547 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp
+@@ -4334,7 +4334,10 @@ void W3DVolumetricShadowManager::renderShadowMap( CameraClass &sceneCamera )
+ 	// it may keep an otherwise empty depth capture alive without enabling geometry.
+ #if defined(__linux__)
+ 	const Bool geometryShadows = TheGlobalData->m_useShadowVolumes || TheGlobalData->m_useShadowDecals;
+-	const Bool captureShadows = geometryShadows || TheGlobalData->m_volumetricSmokeShadows;
++	// (v1.26 S2) The capture itself is gated on shadow VOLUMES alone: with volumes off
++	// (Low/Medium), decals no longer keep a full sun-map capture + receiver sampling
++	// alive behind a "3D shadows off" setting. Smoke may still keep a capture alive.
++	const Bool captureShadows = TheGlobalData->m_useShadowVolumes || TheGlobalData->m_volumetricSmokeShadows;
+ #else
+ 	const Bool geometryShadows = TRUE;
+ 	const Bool captureShadows = m_shadowList != NULL;
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
 index 827031df..dcda52b3 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
