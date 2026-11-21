@@ -593,7 +593,7 @@ jobs:
           # with its Thmanyah faces -- rides the overlay at
           # Data/Arabic, the engine's per-language overlay slot.
           mkdir -p "$GITHUB_WORKSPACE/rfx-overlay-out/Data/Arabic/Fonts"
-          cp reforged-overlay/probe/data/arabic/Generals.str reforged-overlay/probe/data/arabic/Language.ini reforged-overlay/probe/data/arabic/HeaderTemplate.ini reforged-overlay/probe/data/arabic/CommandMap.ini "$GITHUB_WORKSPACE/rfx-overlay-out/Data/Arabic/"
+          cp reforged-overlay/probe/data/arabic/Generals.str reforged-overlay/probe/data/arabic/Generals.csf reforged-overlay/probe/data/arabic/Language.ini reforged-overlay/probe/data/arabic/HeaderTemplate.ini reforged-overlay/probe/data/arabic/CommandMap.ini "$GITHUB_WORKSPACE/rfx-overlay-out/Data/Arabic/"
           cp reforged-overlay/probe/data/arabic/Fonts/thmanyahserifdisplay-Regular.otf reforged-overlay/probe/data/arabic/Fonts/thmanyahserifdisplay-Black.otf "$GITHUB_WORKSPACE/rfx-overlay-out/Data/Arabic/Fonts/"
           (cd "$GITHUB_WORKSPACE/rfx-overlay-out" && zip -r -q "$GITHUB_WORKSPACE/rfx-overlay.zip" .)
           mkdir -p android/app/src/main/assets
@@ -603,6 +603,7 @@ jobs:
           unzip -l android/app/src/main/assets/rfx-overlay.zip | grep -q "Data/Arabic/Generals.str"
           unzip -l android/app/src/main/assets/rfx-overlay.zip | grep -q "Data/Arabic/HeaderTemplate.ini"
           unzip -l android/app/src/main/assets/rfx-overlay.zip | grep -q "Data/Arabic/CommandMap.ini"
+          unzip -l android/app/src/main/assets/rfx-overlay.zip | grep -q "Data/Arabic/Generals.csf"
           unzip -l android/app/src/main/assets/rfx-overlay.zip | grep -q "Data/Arabic/Fonts/thmanyahserifdisplay-Regular.otf"
           ls -la android/app/src/main/assets/rfx-overlay.zip
 
