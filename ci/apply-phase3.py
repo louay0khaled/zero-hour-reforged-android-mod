@@ -315,7 +315,7 @@ public class RfxGameActivity extends SDLActivity {
         return args.toArray(new String[0]);
     }
 
-    private static final String OVERLAY_REV = "2";
+    private static final String OVERLAY_REV = "3";
 
     private java.io.File overlayDir() {
         java.io.File base = getExternalFilesDir(null);
@@ -328,13 +328,20 @@ public class RfxGameActivity extends SDLActivity {
     // ships as an overlay directory searched before the install root
     // (PosixMain -overlay). It rides in the APK as assets/rfx-overlay.zip,
     // staged in CI by the fork's own Tools/stage-overlay.sh, and is
-    // extracted here, once per OVERLAY_REV, before the engine starts.
+    // extracted here, once per overlay key (OVERLAY_REV + the app
+    // versionCode, so any new build re-extracts), before it starts.
     // Failure leaves the marker absent, getArguments() then omits
     // -overlay, and the launch degrades -- never worse than no overlay.
     private void ensureOverlay() {
         try {
             java.io.File dir = overlayDir();
             if (dir == null) return;
+            String overlayKey = OVERLAY_REV;
+            try {
+                overlayKey = OVERLAY_REV + "@" + getPackageManager()
+                    .getPackageInfo(getPackageName(), 0)
+                    .getLongVersionCode();
+            } catch (Throwable ignored) { }
             java.io.File marker =
                 new java.io.File(dir, ".rfx-overlay-version");
             if (marker.isFile()) {
@@ -342,11 +349,15 @@ public class RfxGameActivity extends SDLActivity {
                     new java.io.FileReader(marker));
                 String v = r.readLine();
                 r.close();
-                if (OVERLAY_REV.equals(v)) {
+                if (overlayKey.equals(v)) {
                     markGameStage("overlay-ready");
                     return;
                 }
             }
+            // Clean extract: files dropped from the zip must not
+            // linger from an older build.
+            deleteRecursively(dir);
+            dir.mkdirs();
             markGameStage("overlay-extract-begin");
             java.util.zip.ZipInputStream zin =
                 new java.util.zip.ZipInputStream(
@@ -371,12 +382,21 @@ public class RfxGameActivity extends SDLActivity {
             }
             zin.close();
             java.io.FileWriter w = new java.io.FileWriter(marker);
-            w.write(OVERLAY_REV);
+            w.write(overlayKey);
             w.close();
             markGameStage("overlay-ready");
         } catch (Exception ex) {
             markGameStage("overlay-failed");
         }
+    }
+
+    private static void deleteRecursively(java.io.File f) {
+        if (f == null || !f.exists()) return;
+        java.io.File[] kids = f.listFiles();
+        if (kids != null) {
+            for (java.io.File k : kids) deleteRecursively(k);
+        }
+        f.delete();
     }
 
     // The engine reads ZH_USER_DATA_DIR once, before SDL_main runs;
@@ -2301,6 +2321,32 @@ for _sx in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
     _dups = [k for k, c in _collections.Counter(_names).items() if c > 1]
     if _dups:
         sys.exit('phase3: duplicate string keys in ' + _sx + ': ' + ', '.join(_dups))
+# v1.30.2 (run #56 device evidence, record section 366): the overlay
+# extraction gate must be keyed to the build, and the shipped Arabic
+# Language.ini must carry its Language block -- the two defects that
+# broke the 1.30 / 1.30.1 Arabic boots.
+if 'OVERLAY_REV = "3"' not in _rfx_src:
+    sys.exit('phase3: OVERLAY_REV not bumped to 3')
+if 'getLongVersionCode' not in _rfx_src or 'overlayKey' not in _rfx_src:
+    sys.exit('phase3: overlay extraction is not keyed to the build')
+if 'deleteRecursively' not in _rfx_src:
+    sys.exit('phase3: overlay clean-extract helper missing')
+for _cand in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           '..', 'probe', 'data', 'arabic',
+                           'Language.ini'),
+              os.path.join(os.getcwd(), 'probe', 'data', 'arabic',
+                           'Language.ini')):
+    if os.path.isfile(_cand):
+        _lines = [ln.strip() for ln in
+                  open(_cand, encoding='utf-8').read().splitlines()
+                  if ln.strip() and not ln.strip().startswith(';')]
+        if not _lines or _lines[0] != 'Language' or _lines[-1] != 'End':
+            sys.exit('phase3: Arabic Language.ini lacks its Language '
+                     'block: ' + _cand)
+        break
+else:
+    print('phase3: WARNING Arabic Language.ini not found for the '
+          'content gate (skipped)')
 print('v1.29/v1.30 self-checks passed')
 
 
