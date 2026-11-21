@@ -2419,6 +2419,30 @@ for _cand in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
 else:
     print('phase3: WARNING Arabic HeaderTemplate.ini not found for '
           'the content gate (skipped)')
+# v1.30.5: the Arabic pack must also carry CommandMap.ini -- the
+# engine loads it per language at boot (GameEngine::init -> TheMetaMap)
+# and 1.30.4 died there. The retail Arabic edition's own file: pure
+# key bindings, descriptions via CSF keys. Gate: block census plus
+# canary bindings.
+for _cand in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           '..', 'probe', 'data', 'arabic',
+                           'CommandMap.ini'),
+              os.path.join(os.getcwd(), 'probe', 'data', 'arabic',
+                           'CommandMap.ini')):
+    if os.path.isfile(_cand):
+        _cm = open(_cand, encoding='utf-8').read()
+        if _cm.count('CommandMap ') < 90:
+            sys.exit('phase3: Arabic CommandMap.ini has too few '
+                     'blocks: ' + _cand)
+        for _canary in ('SELECT_NEXT_UNIT', 'SELECT_NEXT_WORKER',
+                        'SAVE_VIEW1'):
+            if _canary not in _cm:
+                sys.exit('phase3: Arabic CommandMap.ini missing '
+                         'binding ' + _canary + ': ' + _cand)
+        break
+else:
+    print('phase3: WARNING Arabic CommandMap.ini not found for '
+          'the content gate (skipped)')
 print('v1.29/v1.30 self-checks passed')
 
 
