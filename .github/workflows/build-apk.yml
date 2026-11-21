@@ -590,11 +590,11 @@ jobs:
           cp reforged-overlay/ci/fonts/arial.ttf reforged-overlay/ci/fonts/arialbold.ttf reforged-overlay/ci/fonts/couriernew.ttf reforged-overlay/ci/fonts/timesnewroman.ttf reforged-overlay/ci/fonts/LICENSE "$GITHUB_WORKSPACE/rfx-overlay-out/fonts/"
           # v1.29: the Arabic language pack -- the merged donor pack
           # plus the in-house translation of every Reforged addition,
-          # with its Thmanyah/Noto faces -- rides the overlay at
+          # with its Thmanyah faces -- rides the overlay at
           # Data/Arabic, the engine's per-language overlay slot.
           mkdir -p "$GITHUB_WORKSPACE/rfx-overlay-out/Data/Arabic/Fonts"
           cp reforged-overlay/probe/data/arabic/Generals.str reforged-overlay/probe/data/arabic/Language.ini "$GITHUB_WORKSPACE/rfx-overlay-out/Data/Arabic/"
-          cp reforged-overlay/probe/data/arabic/Fonts/thmanyahserifdisplay-Regular.otf reforged-overlay/probe/data/arabic/Fonts/thmanyahserifdisplay-Black.otf reforged-overlay/probe/data/arabic/Fonts/NotoSansArabic-Regular.ttf "$GITHUB_WORKSPACE/rfx-overlay-out/Data/Arabic/Fonts/"
+          cp reforged-overlay/probe/data/arabic/Fonts/thmanyahserifdisplay-Regular.otf reforged-overlay/probe/data/arabic/Fonts/thmanyahserifdisplay-Black.otf "$GITHUB_WORKSPACE/rfx-overlay-out/Data/Arabic/Fonts/"
           (cd "$GITHUB_WORKSPACE/rfx-overlay-out" && zip -r -q "$GITHUB_WORKSPACE/rfx-overlay.zip" .)
           mkdir -p android/app/src/main/assets
           cp "$GITHUB_WORKSPACE/rfx-overlay.zip" android/app/src/main/assets/rfx-overlay.zip
