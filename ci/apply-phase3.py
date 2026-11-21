@@ -23,7 +23,8 @@ lab):
     at the app's own folder).
   * The adoption reskin (section 7): Reforged palette and shapes, the
     game pinned to Zero Hour, the launch path starting
-    RfxGameActivity, the developer credit on Home, in every locale.
+    RfxGameActivity, and the credits card in Help & About (7i;
+    Home itself carries no name -- owner's order, 2026-11-21).
 
 v1.30 delta (the only changes over the v1.29 script):
   * the graphics presets write two keys for High/Ultra
@@ -1095,22 +1096,11 @@ setup_src = (setup_src[:span_start]
     + setup_src[span_end:])
 open(SETUP, 'w', encoding='utf-8').write(setup_src)
 
-# ---------------- 7e) developer credit on the Home page ------------------
-edit(SETUP, [
-    ("""        // The one thing this app exists to do, as the first thing on it.
-        UiKit.button(page, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_play,
-            getString(R.string.setup_button_launch_game), this::onLaunchGame);
-""",
-     """        // The one thing this app exists to do, as the first thing on it.
-        UiKit.button(page, UiKit.BTN_PRIMARY, R.drawable.ic_gzh_play,
-            getString(R.string.setup_button_launch_game), this::onLaunchGame);
-
-        // v1.25: the developer credit, centred under the launch button.
-        TextView developerCredit = UiKit.supporting(page,
-            getString(R.string.setup_developer_credit));
-        developerCredit.setGravity(android.view.Gravity.CENTER);
-"""),
-])
+# ---------------- 7e) developer credit on the Home page: REMOVED ---
+# Owner's order, 2026-11-21: no name on Home. The developer line and
+# the credits & thanks list live in Help & About instead (card in
+# section 7i, strings in section 7h). Nothing is added under the
+# launch button.
 
 # ---------------- 7f+7g) C6 shared user-data folder: REVERTED in v1.25.1
 # v1.25 moved the engine onto the shared MYSOREZ data folder (7g) and
@@ -1122,21 +1112,30 @@ edit(SETUP, [
 # this section, so RfxGameActivity and the tests page stay exactly as the
 # base shell (and v1.24.1) shipped them.
 
-# ---------------- 7h) the credit string, every locale --------------------
+# ---------------- 7h) the About credits strings (v1.30.4) -------------
+# Owner's order, 2026-11-21: Arabic carries the agreed credits text
+# verbatim; English is its faithful rendering and every other locale's
+# fallback (a locale file without the key resolves to the default
+# values, per Android rules). Reda's role is the agreed wording --
+# testing, technical and community support -- never the inflated one
+# from his channel post. _NL is the two-character newline escape the
+# Android string parser turns into a line break.
+ABOUT_TITLES = {
+    'values': 'About this app',
+    'values-ar': 'حول التطبيق',
+}
+_NL = chr(92) + 'n'
 CREDIT_STRINGS = {
-    'values': 'Developer: Louay Khaled',
-    'values-ar': 'المطوّر: لؤي خالد',
-    'values-b+isv': 'Razvojnik: Louay Khaled',
-    'values-de': 'Entwickler: Louay Khaled',
-    'values-es': 'Desarrollador: Louay Khaled',
-    'values-fa': 'توسعه‌دهنده: لؤي خالد',
-    'values-fr': 'Développeur : Louay Khaled',
-    'values-ko': '개발자: Louay Khaled',
-    'values-pl': 'Twórca: Louay Khaled',
-    'values-pt-rBR': 'Desenvolvedor: Louay Khaled',
-    'values-ru': 'Разработчик: Louay Khaled',
-    'values-uk': 'Розробник: Louay Khaled',
-    'values-zh': '开发者：Louay Khaled',
+    'values': ('Developer: Louay Khaled — Reforged ported and adapted to Android'
+               + _NL + _NL + 'Credits & thanks:'
+               + _NL + '• olcayseygan — creator of the original Reforged mod'
+               + _NL + '• MYSOREZ — the base Android port and launcher shell'
+               + _NL + '• Reda Fayez (RedaF12) — testing, technical and community support'),
+    'values-ar': ('المطوّر: لؤي خالد — نقل وتكييف Reforged إلى أندرويد'
+                  + _NL + _NL + 'اعتمادات وشكر:'
+                  + _NL + '- olcayseygan — مطوّر مود Reforged الأصلي'
+                  + _NL + '- MYSOREZ — بورت الأندرويد الأساسي وواجهة التشغيل'
+                  + _NL + '- رضا فايز (RedaF12) — اختبار ودعم تقني ومجتمعي'),
 }
 credit_added = 0
 for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))):
@@ -1144,22 +1143,52 @@ for strings_xml in sorted(glob.glob(os.path.join(RES, 'values*', 'strings.xml'))
     if locale not in CREDIT_STRINGS:
         continue
     xml = open(strings_xml, encoding='utf-8').read()
-    if 'name="setup_developer_credit"' in xml:
-        sys.exit('phase3: %s already carries setup_developer_credit' % strings_xml)
+    if 'name="setup_about_credits"' in xml:
+        sys.exit('phase3: %s already carries setup_about_credits' % strings_xml)
     lines = xml.split('\n')
     for idx, line in enumerate(lines):
         if 'name="nav_tab_reforged"' in line:
             indent = line[:len(line) - len(line.lstrip())]
-            lines.insert(idx + 1, indent + '<string name="setup_developer_credit">'
+            lines.insert(idx + 1, indent + '<string name="setup_about_credits">'
                          + xml_escape(CREDIT_STRINGS[locale]) + '</string>')
+            lines.insert(idx + 1, indent + '<string name="setup_about_title">'
+                         + xml_escape(ABOUT_TITLES[locale]) + '</string>')
             credit_added += 1
             break
     else:
         sys.exit('phase3: no nav_tab_reforged anchor in %s' % strings_xml)
     open(strings_xml, 'w', encoding='utf-8').write('\n'.join(lines))
-if credit_added < 10:
-    sys.exit('phase3: developer credit added to only %d locales' % credit_added)
-print('developer credit string added to %d locale files' % credit_added)
+if credit_added != 2:
+    sys.exit('phase3: About credits added to %d locale files, expected 2' % credit_added)
+print('About credits strings added to %d locale files (values + values-ar)' % credit_added)
+
+# ---------------- 7i) credits card in Help & About (v1.30.4) ----------
+# Owner's order, 2026-11-21: the agreed credits text lives in Help &
+# About (strings in 7h); Home carries no name (7e removed).
+edit(SETUP, [
+    # 7i-a) the card call, inside buildHelpSection after the log card
+    ("""        buildRfxLogSection(page);
+
+        LinearLayout help = UiKit.card(page);""",
+     """        buildRfxLogSection(page);
+
+        buildCreditsSection(page);
+
+        LinearLayout help = UiKit.card(page);"""),
+    # 7i-b) the card builder, before tabTitle()
+    ("""    private int tabTitle(int tab) {""",
+     """    // Zero Hour Reforged (v1.30.4): the credits card in Help & About --
+    // the developer line and the credits & thanks list (the owner's
+    // agreed wording, 2026-11-21). Home carries no name by the same order.
+    private void buildCreditsSection(LinearLayout page) {
+        LinearLayout credits = UiKit.card(page);
+        UiKit.sectionHeader(credits, R.drawable.ic_gzh_info,
+            getString(R.string.setup_about_title), true);
+        UiKit.supporting(credits, getString(R.string.setup_about_credits));
+    }
+
+    private int tabTitle(int tab) {"""),
+])
 
 # ---------------- 8) v1.29 launcher rebuild: three destinations --------
 # Home / Settings / Help (committee section 1). The Graphics and Tools
@@ -2347,6 +2376,49 @@ for _cand in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
 else:
     print('phase3: WARNING Arabic Language.ini not found for the '
           'content gate (skipped)')
+# v1.30.4 (owner's order, 2026-11-21): Home carries no developer credit;
+# the agreed credits text lives in Help & About, Arabic verbatim, with
+# Reda's role in the agreed wording only.
+if 'setup_developer_credit' in _setup_src or 'developerCredit' in _setup_src:
+    sys.exit('phase3: Home developer credit survived its removal')
+for _kept, _minimum in (('buildCreditsSection', 2),
+                        ('setup_about_credits', 1),
+                        ('setup_about_title', 1)):
+    if _setup_src.count(_kept) < _minimum:
+        sys.exit('phase3: credits symbol missing or too rare: ' + _kept)
+for _sx, _want in ((os.path.join(RES, 'values', 'strings.xml'),
+                    'Reforged ported and adapted to Android'),
+                   (os.path.join(RES, 'values-ar', 'strings.xml'),
+                    'اختبار ودعم تقني ومجتمعي')):
+    _txt = open(_sx, encoding='utf-8').read()
+    if 'setup_about_credits' not in _txt or _want not in _txt:
+        sys.exit('phase3: About credits string wrong in ' + _sx)
+    if 'محاكاة التزامن' in _txt:
+        sys.exit('phase3: inflated Reda wording leaked into ' + _sx)
+# v1.30.4: the Arabic pack must also carry HeaderTemplate.ini -- the
+# engine loads it per language at boot (HeaderTemplateManager::init)
+# and 1.30.3 died there. Gate: the retail 15 templates plus the
+# ControlBarPro addition, Thmanyah face only.
+for _cand in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           '..', 'probe', 'data', 'arabic',
+                           'HeaderTemplate.ini'),
+              os.path.join(os.getcwd(), 'probe', 'data', 'arabic',
+                           'HeaderTemplate.ini')):
+    if os.path.isfile(_cand):
+        _ht = open(_cand, encoding='utf-8').read()
+        if _ht.count('HeaderTemplate ') < 16:
+            sys.exit('phase3: Arabic HeaderTemplate.ini has too few '
+                     'templates: ' + _cand)
+        _font_lines = [ln for ln in _ht.splitlines()
+                       if ln.strip().startswith('Font')]
+        if len(_font_lines) < 16 or any(
+                'Thmanyah Serif Display' not in ln for ln in _font_lines):
+            sys.exit('phase3: Arabic HeaderTemplate.ini faces wrong: '
+                     + _cand)
+        break
+else:
+    print('phase3: WARNING Arabic HeaderTemplate.ini not found for '
+          'the content gate (skipped)')
 print('v1.29/v1.30 self-checks passed')
 
 
