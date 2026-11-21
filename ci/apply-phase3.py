@@ -41,6 +41,7 @@ Run AFTER apply-surgery.py (mode=full) and apply-phase2.py.
 
 import glob
 import os
+import struct
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -2442,6 +2443,31 @@ for _cand in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
         break
 else:
     print('phase3: WARNING Arabic CommandMap.ini not found for '
+          'the content gate (skipped)')
+# v1.30.6: the Arabic pack must also carry Generals.csf -- the compiled
+# string table IS the base table (GameTextManager::init loads
+# data\\<lang>\\Generals.csf; the language .str is only an overlay on
+# top of a loaded base). 1.30.5 booted with every string FATAL because
+# the pack carried only the .str. Gate: CSF magic + version + a label
+# census in the header.
+for _cand in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           '..', 'probe', 'data', 'arabic',
+                           'Generals.csf'),
+              os.path.join(os.getcwd(), 'probe', 'data', 'arabic',
+                           'Generals.csf')):
+    if os.path.isfile(_cand):
+        with open(_cand, 'rb') as _fh:
+            _hdr = _fh.read(24)
+        if len(_hdr) < 24 or _hdr[0:4] != b' FSC':
+            sys.exit('phase3: Arabic Generals.csf has a bad header: '
+                     + _cand)
+        _ver, _nlab = struct.unpack('<II', _hdr[4:12])
+        if _ver != 3 or _nlab < 7000:
+            sys.exit('phase3: Arabic Generals.csf header implausible '
+                     '(version %d, labels %d): %s' % (_ver, _nlab, _cand))
+        break
+else:
+    print('phase3: WARNING Arabic Generals.csf not found for '
           'the content gate (skipped)')
 print('v1.29/v1.30 self-checks passed')
 
